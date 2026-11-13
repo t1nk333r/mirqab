@@ -594,8 +594,9 @@ Deferred, each to where the code it guards is written:
 - Phase D, step 27: re-subscribing sets "sample now" each time and can beat
   the floor; clamp in `sampler_loop` to at most one immediate sample a
   second (clearing it only for a new subscriber is not enough: unsubscribe
-  then subscribe gets past). `client.rs` must accept an event that arrives
-  before its subscribe reply. `config.set live.intervalMs` does not
+  then subscribe gets past). (The event that could arrive before its
+  subscribe reply was fixed in phase C, after it failed CI on PR #3: the
+  reply is queued in the step that adds the subscription.) `config.set live.intervalMs` does not
   re-floor live subscriptions already open.
 - Phase D: an earlier interface is not restored when the latest one
   disconnects (`Client.ui_pid` is unused); a `config.json` that is a
@@ -687,6 +688,12 @@ merge, each with a test:
 - From the phase B review: `status` no longer lists a config problem the
   last `config.set` fixed, and the socket-path test fails after 5 s
   instead of hanging if that bug returns.
+- CI on PR #3 lost a first event: the sampler could send it before the
+  `subscribe` reply was queued, and a client skipping events while waiting
+  for that reply dropped it (the ordering race the phase B review
+  deferred). The reply is now queued in the same locked step that adds the
+  subscription, before the sampler is woken; a test checks the order 100
+  times.
 - The writer sleeps on the monotonic clock, recomputed from the wall clock
   each minute (step 22 said `CLOCK_REALTIME`); after a suspend one write
   lands mid-minute and the next realigns.

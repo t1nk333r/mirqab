@@ -651,7 +651,11 @@ impl Inner {
         let rid = req.id;
         let reply = match req.method.as_str() {
             "capabilities" => Reply::ok(rid, json!(self.capabilities())),
-            "subscribe" => self.subscribe(id, &req),
+            "subscribe" => match self.subscribe(id, &req) {
+                Ok(reply) => reply,
+                // Already queued, ahead of the first event.
+                Err(Replied) => return,
+            },
             "unsubscribe" => self.unsubscribe(id, &req),
             "get" => self.get(&req),
             "status" => Reply::ok(rid, self.status()),
@@ -696,10 +700,12 @@ impl Inner {
         None
     }
 
-    fn subscribe(&self, id: u64, req: &Request) -> Reply {
+    /// `Err(Replied)` when the reply was already queued (a stream
+    /// subscription); otherwise the reply to send.
+    fn subscribe(&self, id: u64, req: &Request) -> Result<Reply, Replied> {
         let name = match Self::stream_param(req) {
             Ok(n) => n,
-            Err(r) => return r,
+            Err(r) => return Ok(r),
         };
         if name == stream::UI {
             let as_ui = req.param("role").and_then(Value::as_str) == Some("ui");
@@ -721,10 +727,10 @@ impl Inner {
                 state.ui = Some((id, pid));
             }
             self.refresh_shared(&state);
-            return Reply::ok(req.id, json!({"stream": name}));
+            return Ok(Reply::ok(req.id, json!({"stream": name})));
         }
         if let Some(r) = self.check_stream(req, name) {
-            return r;
+            return Ok(r);
         }
         let slot = &self.slots[name];
         let live = req.param("live").and_then(Value::as_bool).unwrap_or(false);
@@ -740,7 +746,16 @@ impl Inner {
             FLOOR_MS
         };
         let interval_ms = asked.max(floor);
+        let reply = frame::encode(&ServerFrame::Reply(Reply::ok(
+            req.id,
+            json!({"stream": name, "interval": interval_ms}),
+        )));
         {
+            // The reply is queued in the same locked step that adds the
+            // subscription, so no event of this stream can reach the client
+            // before it (architecture §5.2: reply, then events). A client
+            // that skipped events while waiting for its reply lost the first
+            // one (CI on PR #3).
             let mut state = lock(&self.state);
             if let Some(c) = state.clients.get_mut(&id) {
                 c.subs.insert(
@@ -750,12 +765,13 @@ impl Inner {
                         live: live && slot.live,
                     },
                 );
+                c.send(&reply);
             }
             state.runs.entry(name.to_string()).or_default().now = true;
             self.refresh_shared(&state);
         }
         self.wake(name);
-        Reply::ok(req.id, json!({"stream": name, "interval": interval_ms}))
+        Err(Replied)
     }
 
     fn unsubscribe(&self, id: u64, req: &Request) -> Reply {
@@ -1015,6 +1031,9 @@ impl Inner {
         Reply::ok(req.id, json!({"done": [entry]}))
     }
 }
+
+/// A handler already queued its reply.
+struct Replied;
 
 /// `dryRun`: absent is false, a boolean is itself, and anything else is a
 /// bad request. "true" or 1 must never fall through to the real action (the

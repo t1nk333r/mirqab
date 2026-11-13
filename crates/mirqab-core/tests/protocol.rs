@@ -178,6 +178,8 @@ fn subscribe_brings_events_and_unsubscribe_stops_them() {
         .call("subscribe", Some("self"), json!({"interval": 5000}))
         .unwrap();
     assert_eq!(r, json!({"stream": "self", "interval": 5000}));
+    // The reply came first and the first event follows it: `call` skipped
+    // nothing, so a lost first event shows as a five-second wait.
     let data = c.event("self").expect("a first event at once");
     assert!(
         t.elapsed() < Duration::from_secs(4),
@@ -192,7 +194,7 @@ fn subscribe_brings_events_and_unsubscribe_stops_them() {
 
     c.call("unsubscribe", Some("self"), Value::Null).unwrap();
     c.stream
-        .set_read_timeout(Some(Duration::from_millis(2600)))
+        .set_read_timeout(Some(Duration::from_millis(5600)))
         .unwrap();
     assert!(c.event("self").is_none(), "no event after unsubscribe");
 }
@@ -479,4 +481,18 @@ fn a_dry_run_flag_that_is_not_a_boolean_is_refused() {
             .unwrap(),
         json!({"units.clock": "auto"})
     );
+}
+
+#[test]
+fn the_subscribe_reply_comes_before_the_first_event() {
+    let d = start("order");
+    for i in 0..100 {
+        let mut c = Client::connect(&d);
+        c.hello();
+        let id = c.send("subscribe", Some("self"), json!({"interval": 5000}));
+        match c.frame() {
+            Some(ServerFrame::Reply(r)) => assert_eq!(r.id, id, "try {i}"),
+            other => panic!("try {i}: an event or nothing before the reply: {other:?}"),
+        }
+    }
 }
