@@ -96,8 +96,8 @@ pub struct PowerCard {
     /// RAPL is there but needs root (plan 015's helper), as the daemon
     /// says; not merely a missing first reading (review of PR #8).
     pub needs_helper: bool,
-    /// The machine has a package counter, so the graph has something to
-    /// draw once readable.
+    /// The package counter is readable, so the graph has something to
+    /// draw.
     pub rapl: bool,
 }
 
