@@ -11,4 +11,7 @@ Restart=on-failure
 RestartSec=2
 
 [Install]
+# Started at login, not only on a first client: the minute writer keeps
+# history whether or not anything is connected (architecture §6.3).
+WantedBy=default.target
 Also=mirqab.socket

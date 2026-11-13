@@ -114,6 +114,8 @@ struct SelfShared {
 }
 
 struct Inner {
+    /// Held, never read: the lock is released when the process ends.
+    _lock: std::fs::File,
     root: Root,
     socket: PathBuf,
     started: Instant,
@@ -221,7 +223,32 @@ pub fn default_socket() -> Option<PathBuf> {
 
 /// Binds the socket (or adopts systemd's), probes the samplers and starts
 /// their threads. Nothing is accepted until `serve`.
+/// Takes `<socket>.lock` for the life of the process. Two daemons started at
+/// the same moment both see a dead socket and could both bind; only one gets
+/// this lock, so only one serves and writes history (review of plan 001
+/// phase B, deferred to phase C).
+fn take_lock(socket: &Path) -> Result<std::fs::File, ListenError> {
+    if let Some(dir) = socket.parent().filter(|d| !d.as_os_str().is_empty()) {
+        mkdir_private(dir).map_err(ListenError::Failed)?;
+    }
+    let path = PathBuf::from(format!("{}.lock", socket.display()));
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&path)
+        .map_err(|e| ListenError::Failed(format!("{}: {e}", path.display())))?;
+    match file.try_lock() {
+        Ok(()) => Ok(file),
+        Err(std::fs::TryLockError::WouldBlock) => Err(ListenError::AlreadyRunning),
+        Err(std::fs::TryLockError::Error(e)) => {
+            Err(ListenError::Failed(format!("{}: {e}", path.display())))
+        }
+    }
+}
+
 pub fn listen(opts: Options) -> Result<Server, ListenError> {
+    let lock = take_lock(&opts.socket)?;
     let (listener, activated) = match sys::listen_fd() {
         Some(l) => (l, true),
         None => (bind(&opts.socket)?, false),
@@ -280,6 +307,7 @@ pub fn listen(opts: Options) -> Result<Server, ListenError> {
         log(&strings::config_broken(why));
     }
     let inner = Arc::new(Inner {
+        _lock: lock,
         root: opts.root,
         socket: opts.socket,
         started,

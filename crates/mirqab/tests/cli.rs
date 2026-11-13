@@ -39,6 +39,10 @@ fn start(name: &str) -> Daemon {
         .arg(&fixture)
         .env("XDG_RUNTIME_DIR", &run)
         .env("XDG_CONFIG_HOME", dir.join("config"))
+        // History and anything else the daemon keeps stay in the scratch
+        // dir, never in the developer's home.
+        .env("XDG_STATE_HOME", dir.join("state"))
+        .env("HOME", &dir)
         .env_remove("MIRQAB_SOCKET")
         .env_remove("NOTIFY_SOCKET")
         .stdout(Stdio::piped())
@@ -172,4 +176,22 @@ fn a_file_or_directory_at_the_socket_path_is_never_removed() {
             .is_symlink()
     );
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_second_daemon_refuses_even_when_the_socket_file_is_gone() {
+    // Two daemons racing both find a dead socket; the lock decides. Removing
+    // the first daemon's socket file stands in for the race.
+    let d = start("lock");
+    std::fs::remove_file(&d.socket).unwrap();
+    let out = Command::new(BIN)
+        .args(["daemon", "--socket"])
+        .arg(&d.socket)
+        .env("XDG_RUNTIME_DIR", d.dir.join("run"))
+        .env("XDG_CONFIG_HOME", d.dir.join("config"))
+        .env("XDG_STATE_HOME", d.dir.join("state"))
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("already listens"));
 }

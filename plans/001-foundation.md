@@ -653,6 +653,12 @@ Phase C as built (2026-11-13), where it differs from the steps above:
   there were any, else one point sample (architecture §6.3).
 - A minute whose counter baseline is more than 90 s old stores no CPU
   value: the machine slept or the daemon stalled.
+- One daemon per socket: `<socket>.lock`, taken with `File::try_lock`
+  before binding and held for the process's life. Two daemons started
+  together both found a dead socket and both ran (review of phase B,
+  deferred here because both would write `history.db`).
+- `mirqab.service` is `WantedBy=default.target`, so the minute writer runs
+  from login, not from the first client (review of phase B).
 - `history.list` (the series history keeps) backs `mirqab history --list`;
   `mirqab history SERIES… [--range R] [--json]` prints one bucket a line.
   Plan 005 owns the rest of the read commands.
