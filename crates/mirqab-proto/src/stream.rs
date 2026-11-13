@@ -217,6 +217,9 @@ pub struct Power {
     pub battery_watts: Option<f64>,
     /// `rapl`, `battery`, `both` or `none`.
     pub source: String,
+    /// RAPL is there but needs root: the root helper (plan 015) would give
+    /// package watts.
+    pub needs_helper: bool,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
