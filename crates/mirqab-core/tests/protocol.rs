@@ -69,6 +69,7 @@ fn start(name: &str) -> Daemon {
         root: Root::new(fixture("root-desktop")),
         config_path: dir.join("config/mirqab/config.json"),
         samplers: vec![Box::new(Fake), Box::new(Missing)],
+        history: None,
     })
     .expect("listens");
     std::thread::spawn(move || server.serve());
@@ -158,10 +159,10 @@ fn hello_comes_first_with_the_capabilities() {
     let d = start("hello");
     let mut c = Client::connect(&d);
     let caps = c.hello();
-    assert_eq!(caps, ["fake", "self", "ui"]);
+    assert_eq!(caps, ["fake", "self", "system", "ui"]);
     assert_eq!(
         c.call("capabilities", None, Value::Null).unwrap(),
-        json!(["fake", "self", "ui"])
+        json!(["fake", "self", "system", "ui"])
     );
 }
 
@@ -171,11 +172,17 @@ fn subscribe_brings_events_and_unsubscribe_stops_them() {
     let mut c = Client::connect(&d);
     c.hello();
     let t = Instant::now();
-    let r = c.call("subscribe", Some("self"), json!({})).unwrap();
-    assert_eq!(r, json!({"stream": "self", "interval": 2000}));
+    // A long interval, so "the first event does not wait for it" has a wide
+    // margin on a busy CI runner (a 1 s bound against 2 s failed there).
+    let r = c
+        .call("subscribe", Some("self"), json!({"interval": 5000}))
+        .unwrap();
+    assert_eq!(r, json!({"stream": "self", "interval": 5000}));
+    // The reply came first and the first event follows it: `call` skipped
+    // nothing, so a lost first event shows as a five-second wait.
     let data = c.event("self").expect("a first event at once");
     assert!(
-        t.elapsed() < Duration::from_secs(1),
+        t.elapsed() < Duration::from_secs(4),
         "the first event does not wait an interval"
     );
     // The first sample on root-desktop is the golden file, uptime aside.
@@ -187,9 +194,21 @@ fn subscribe_brings_events_and_unsubscribe_stops_them() {
 
     c.call("unsubscribe", Some("self"), Value::Null).unwrap();
     c.stream
-        .set_read_timeout(Some(Duration::from_millis(2600)))
+        .set_read_timeout(Some(Duration::from_millis(5600)))
         .unwrap();
     assert!(c.event("self").is_none(), "no event after unsubscribe");
+}
+
+#[test]
+fn the_system_stream_matches_its_golden_file() {
+    let d = start("system");
+    let mut c = Client::connect(&d);
+    c.hello();
+    c.call("subscribe", Some("system"), json!({})).unwrap();
+    // The first sample has no previous reading, so no CPU percent yet.
+    let golden: Value =
+        serde_json::from_str(include_str!("../../../tests/golden/system.json")).unwrap();
+    assert_eq!(c.event("system").unwrap(), golden);
 }
 
 #[test]
@@ -462,4 +481,18 @@ fn a_dry_run_flag_that_is_not_a_boolean_is_refused() {
             .unwrap(),
         json!({"units.clock": "auto"})
     );
+}
+
+#[test]
+fn the_subscribe_reply_comes_before_the_first_event() {
+    let d = start("order");
+    for i in 0..100 {
+        let mut c = Client::connect(&d);
+        c.hello();
+        let id = c.send("subscribe", Some("self"), json!({"interval": 5000}));
+        match c.frame() {
+            Some(ServerFrame::Reply(r)) => assert_eq!(r.id, id, "try {i}"),
+            other => panic!("try {i}: an event or nothing before the reply: {other:?}"),
+        }
+    }
 }

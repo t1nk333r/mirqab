@@ -25,7 +25,7 @@ status_is "an unknown option exits 64" 64 "$STATUS"
 capture "$BIN/mirqab" --version
 status_is "--version exits 0" 0 "$STATUS"
 like "--version prints the version" "$OUTPUT" "mirqab 0."
-for c in daemon status open toggle close help; do
+for c in daemon status open toggle close history help; do
     capture "$BIN/mirqab" "$c" --help
     status_is "$c --help exits 0" 0 "$STATUS"
     like "$c --help prints its usage" "$OUTPUT" "usage: mirqab $c"
@@ -55,4 +55,20 @@ is "open --dry-run says what it would do" '{"event":"show","mode":"popover","tab
 capture "$BIN/mirqab" open
 status_is "open without an interface exits 1" 1 "$STATUS"
 like "and says why" "$OUTPUT" "no interface is running"
+
+# History: the file is made in the sandbox's state dir; no minute has passed.
+like "status reports history on" "$("$BIN/mirqab" status --json | jq -c .history)" '"enabled":true'
+ok_file="$XDG_STATE_HOME/mirqab/history.db"
+[[ -f $ok_file ]] && ok || not_ok "history.db created under XDG_STATE_HOME"
+capture "$BIN/mirqab" history --list
+status_is "history --list exits 0" 0 "$STATUS"
+like "history --list names cpu.total" "$OUTPUT" "cpu.total"
+capture "$BIN/mirqab" history cpu.total --range 24h --json
+status_is "history --json exits 0" 0 "$STATUS"
+is "a fresh history has no points" "0" "$(jq '.series["cpu.total"].points | length' <<<"$OUTPUT")"
+is "24h buckets are four minutes" "240" "$(jq .bucketSec <<<"$OUTPUT")"
+capture "$BIN/mirqab" history cpu.total --range 2y
+status_is "an unknown range is refused" 1 "$STATUS"
+capture "$BIN/mirqab" history
+status_is "history needs a series" 64 "$STATUS"
 stop_daemon

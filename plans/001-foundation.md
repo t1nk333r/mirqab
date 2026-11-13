@@ -14,7 +14,7 @@
   2026-11-13: `tools/lint.sh`, `tools/check-docs.sh`, `tools/secrets.sh`
   pass on the branch, and `tests/run.sh` 93/93. Phase B (daemon and
   protocol) implemented 2026-11-13: `tests/run.sh --affected` 140/140.
-  Phases C to E open.
+  Phase C (history) implemented 2026-11-13: 152/152. Phases D and E open.
 
 ## Problem
 
@@ -594,8 +594,9 @@ Deferred, each to where the code it guards is written:
 - Phase D, step 27: re-subscribing sets "sample now" each time and can beat
   the floor; clamp in `sampler_loop` to at most one immediate sample a
   second (clearing it only for a new subscriber is not enough: unsubscribe
-  then subscribe gets past). `client.rs` must accept an event that arrives
-  before its subscribe reply. `config.set live.intervalMs` does not
+  then subscribe gets past). (The event that could arrive before its
+  subscribe reply was fixed in phase C, after it failed CI on PR #3: the
+  reply is queued in the step that adds the subscription.) `config.set live.intervalMs` does not
   re-floor live subscriptions already open.
 - Phase D: an earlier interface is not restored when the latest one
   disconnects (`Client.ui_pid` is unused); a `config.json` that is a
@@ -626,6 +627,96 @@ Deferred, each to where the code it guards is written:
 23. `history.query` and `history.events` methods; CLI `mirqab history
     <series> [--range R] [--json]` and `mirqab history --list`.
 24. `tests/history.rs`; `tests/golden/system.json` (core shape).
+
+Phase C as built (2026-11-13), where it differs from the steps above:
+
+- **The 40 MB budget is tight, and holds only with two storage changes.**
+  Measured by `crates/mirqab-core/tests/history.rs` on the development
+  machine (SQLite 3.54.0, 4 KiB pages), 64 series × 43,200 minutes:
+  - 43.4 MB written minute by minute with small values. Each series' run of
+    rows grows in the middle of the `(series, ts)` key, so pages split half
+    full; architecture §6.2's 35 MB assumed packed pages.
+  - 44.7 MB with half the series holding byte counts in the tens of
+    gigabytes (6-byte integers), packed except for the last day.
+  - 42.0 MB after storing minutes from 2026-01-01 instead of 1970
+    (`history::EPOCH`: a 3-byte integer for 15 years, not 4 bytes).
+  - **39.1 MB** with one series in four holding byte counts, which is
+    §6.1's mix (memory, swap, VRAM, network and disk bytes; the rest
+    percentages, temperatures, speeds and counts). The test fills that mix.
+  The two changes: the epoch, and `History::compact` (`VACUUM`) once a day
+  from the minute writer, which packs the split pages.
+  **Budget: 40 MiB** for the file and its write-ahead log (owner,
+  2026-11-13, choosing it over 48 MB without compaction and over byte
+  series in KiB). Measured with the log and no manual checkpoint, the last
+  day written one transaction a minute: 40,295,008 bytes (38.4 MiB).
+- `history.query` returns unscaled values, `[unixSeconds, avg, max]` per
+  bucket, and omits empty buckets. Buckets align to `EPOCH`, which is on a
+  2-hour boundary, so every range's buckets start on the hour.
+- A memory minute stores the mean of the live samples taken during it when
+  there were any, else one point sample (architecture §6.3).
+- A minute whose counter baseline is more than 90 s old stores no CPU
+  value: the machine slept or the daemon stalled.
+- One daemon per socket: `<socket>.lock`, taken with `File::try_lock`
+  before binding and held for the process's life. Two daemons started
+  together both found a dead socket and both ran (review of phase B,
+  deferred here because both would write `history.db`).
+- `mirqab.service` is `WantedBy=default.target`, so the minute writer runs
+  from login, not from the first client (review of phase B).
+- `history.list` (the series history keeps) backs `mirqab history --list`;
+  `mirqab history SERIES… [--range R] [--json]` prints one bucket a line.
+  Plan 005 owns the rest of the read commands.
+
+Review of phase C (Sonnet, checked by Fable, 2026-11-13). Fixed before
+merge, each with a test:
+
+- The newest minute was missing from every range for 59 seconds of each
+  60: rows were labelled with the minute the writer woke in. They are now
+  labelled with the minute their values cover (wake time − 30 s), so `1h`
+  keeps 60 points and a slightly early wake lands in the same minute.
+- `VACUUM` in WAL mode left a log as large as the database (about 72 MB
+  on disk in all). `compact` now ends with a truncating checkpoint, the
+  log is checkpointed every 256 pages and cut back to 1 MiB, and the size
+  test measures without a manual checkpoint.
+- Compaction ran only after 24 h of uptime, so a machine shut down nightly
+  never compacted (43.3 MB). The last compaction's time is kept in `meta`.
+- A history file with a newer schema was moved aside as broken and
+  replaced by an empty one. Only a file SQLite calls not a database or
+  corrupt is moved aside now; a newer schema leaves history off with the
+  reason in `status`.
+- Architecture §5.2, §6.2, §6.3 and §9.1 now describe the epoch, the
+  label, the compaction, `history.list`, the reply shape and the budget.
+- From the phase B review: `status` no longer lists a config problem the
+  last `config.set` fixed, and the socket-path test fails after 5 s
+  instead of hanging if that bug returns.
+- CI on PR #3 lost a first event: the sampler could send it before the
+  `subscribe` reply was queued, and a client skipping events while waiting
+  for that reply dropped it (the ordering race the phase B review
+  deferred). The reply is now queued in the same locked step that adds the
+  subscription, before the sampler is woken; a test checks the order 100
+  times.
+- The writer sleeps on the monotonic clock, recomputed from the wall clock
+  each minute (step 22 said `CLOCK_REALTIME`); after a suspend one write
+  lands mid-minute and the next realigns.
+
+Deferred:
+
+- Phase E, step 32: the lock is per socket, so a second daemon on another
+  socket shares `history.db`; key the lock on the history path when the
+  benchmark first runs a second daemon on purpose. Also there: `mirqab
+  daemon --root <fixture>` writes fixture values into the real history
+  unless `XDG_STATE_HOME` is set.
+- Plan 002: series outside `history::SERIES` are not reloaded at open
+  (a restart loses `net.rx` until it is registered again); the `system`
+  sampler's first minute has no CPU value, `swap.used` is a point sample,
+  `live_prev` never expires and `cpu_percent` is not clamped; prune scans
+  the whole table (37 ms an hour on a full file).
+- Plan 005: clamp `history.query`'s `from` and `to` (a debug daemon panics
+  the client thread on `i64::MIN`) and cap series and points; the CLI's
+  exit codes for an unknown series or range, and `--dry-run` on `history`.
+- The first plan that writes events: create `history.db`, its directory
+  and the lock file 0600/0700.
+- Plan 020: a socket-activated service that finds the lock held by a
+  hand-run daemon exits 1 and restarts until that daemon stops.
 
 ### Phase D — interface shell (PR 4)
 

@@ -9,7 +9,7 @@ pub const SELF: &str = "self";
 pub const UI: &str = "ui";
 
 /// Every stream the protocol defines so far.
-pub const STREAMS: &[&str] = &["self", "ui"];
+pub const STREAMS: &[&str] = &["self", "system", "ui"];
 
 /// The `self` stream: what mirqab costs (plan 001).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

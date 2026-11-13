@@ -15,10 +15,12 @@
 //! writing to a socket.
 
 use crate::config::{Config, SetError};
+use crate::history::{self, History};
 use crate::proto::stream::{self, ProcessCost, SelfData, UiCost, UiEvent};
 use crate::proto::{Code, Event, Hello, PROTOCOL, Reply, Request, ServerFrame, frame, strings};
 use crate::root::Root;
 use crate::sampler::Sampler;
+use crate::samplers::system_core::SystemCore;
 use crate::selfcost::Meter;
 use crate::sys;
 use serde_json::{Value, json};
@@ -30,7 +32,7 @@ use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{SyncSender, TrySendError, sync_channel};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 /// The floor for a subscription without `live` (§5.3).
 pub const FLOOR_MS: u64 = 2000;
@@ -46,6 +48,8 @@ pub struct Options {
     pub config_path: PathBuf,
     /// Extra samplers beyond the built-in ones (tests register fakes).
     pub samplers: Vec<Box<dyn Sampler>>,
+    /// The history file; None runs without history (some tests).
+    pub history: Option<PathBuf>,
 }
 
 #[derive(Debug)]
@@ -110,6 +114,8 @@ struct SelfShared {
 }
 
 struct Inner {
+    /// Held, never read: the lock is released when the process ends.
+    _lock: std::fs::File,
     root: Root,
     socket: PathBuf,
     started: Instant,
@@ -121,6 +127,9 @@ struct Inner {
     unavailable: BTreeMap<String, String>,
     config: Mutex<Config>,
     shared: Arc<Mutex<SelfShared>>,
+    history: Option<Mutex<History>>,
+    /// Why history is off, when a file was given but could not be opened.
+    history_error: Option<String>,
 }
 
 pub struct Server {
@@ -214,7 +223,32 @@ pub fn default_socket() -> Option<PathBuf> {
 
 /// Binds the socket (or adopts systemd's), probes the samplers and starts
 /// their threads. Nothing is accepted until `serve`.
+/// Takes `<socket>.lock` for the life of the process. Two daemons started at
+/// the same moment both see a dead socket and could both bind; only one gets
+/// this lock, so only one serves and writes history (review of plan 001
+/// phase B, deferred to phase C).
+fn take_lock(socket: &Path) -> Result<std::fs::File, ListenError> {
+    if let Some(dir) = socket.parent().filter(|d| !d.as_os_str().is_empty()) {
+        mkdir_private(dir).map_err(ListenError::Failed)?;
+    }
+    let path = PathBuf::from(format!("{}.lock", socket.display()));
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&path)
+        .map_err(|e| ListenError::Failed(format!("{}: {e}", path.display())))?;
+    match file.try_lock() {
+        Ok(()) => Ok(file),
+        Err(std::fs::TryLockError::WouldBlock) => Err(ListenError::AlreadyRunning),
+        Err(std::fs::TryLockError::Error(e)) => {
+            Err(ListenError::Failed(format!("{}: {e}", path.display())))
+        }
+    }
+}
+
 pub fn listen(opts: Options) -> Result<Server, ListenError> {
+    let lock = take_lock(&opts.socket)?;
     let (listener, activated) = match sys::listen_fd() {
         Some(l) => (l, true),
         None => (bind(&opts.socket)?, false),
@@ -228,6 +262,7 @@ pub fn listen(opts: Options) -> Result<Server, ListenError> {
         daemon: None,
         ui: None,
     })];
+    samplers.push(Box::new(SystemCore::new()));
     samplers.extend(opts.samplers);
 
     let mut slots = BTreeMap::new();
@@ -249,11 +284,30 @@ pub fn listen(opts: Options) -> Result<Server, ListenError> {
         );
     }
 
+    let (history, history_error) = match &opts.history {
+        None => (None, None),
+        Some(path) => match History::open(path, unix_now()) {
+            Ok(h) => {
+                if let Some(aside) = &h.moved_aside {
+                    log(&format!(
+                        "history could not be opened; moved it to {}",
+                        aside.display()
+                    ));
+                }
+                (Some(Mutex::new(h)), None)
+            }
+            Err(e) => {
+                log(&format!("history is off: {e}"));
+                (None, Some(e.to_string()))
+            }
+        },
+    };
     let config = Config::load(&opts.config_path);
     if let Some(why) = config.broken() {
         log(&strings::config_broken(why));
     }
     let inner = Arc::new(Inner {
+        _lock: lock,
         root: opts.root,
         socket: opts.socket,
         started,
@@ -269,7 +323,17 @@ pub fn listen(opts: Options) -> Result<Server, ListenError> {
         unavailable,
         config: Mutex::new(config),
         shared,
+        history,
+        history_error,
     });
+    if inner.history.is_some() {
+        let inner = Arc::clone(&inner);
+        std::thread::Builder::new()
+            .name("history".into())
+            .stack_size(STACK)
+            .spawn(move || history_loop(inner))
+            .map_err(|e| ListenError::Failed(e.to_string()))?;
+    }
     for (name, slot) in &inner.slots {
         let (inner, name, slot) = (Arc::clone(&inner), name.clone(), Arc::clone(slot));
         std::thread::Builder::new()
@@ -312,6 +376,60 @@ fn bind(socket: &Path) -> Result<UnixListener, ListenError> {
     std::fs::set_permissions(socket, std::fs::Permissions::from_mode(0o600))
         .map_err(|e| ListenError::Failed(format!("chmod {}: {e}", socket.display())))?;
     Ok(listener)
+}
+
+fn unix_now() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
+/// The minute writer (architecture §6.3): wakes once a minute, aligned to the
+/// minute, asks every sampler for its minute values and writes them in one
+/// transaction; prunes once an hour and compacts once a day. The only work
+/// done with no subscribers.
+fn history_loop(inner: Arc<Inner>) {
+    let mut last_prune = 0;
+    loop {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default();
+        let into_minute = Duration::from_millis((now.as_millis() % 60_000) as u64);
+        std::thread::sleep(Duration::from_secs(60) - into_minute);
+        let ts = unix_now();
+        let mut values = Vec::new();
+        for slot in inner.slots.values() {
+            values.extend(lock(&slot.sampler).minute(&inner.root));
+        }
+        let Some(h) = &inner.history else { return };
+        let mut h = lock(h);
+        // Woken just after a boundary, the values cover the minute that just
+        // ended: label them with it (30 s back lands inside it, and a wake a
+        // little early or late lands in the same minute). The minute running
+        // now is then never half-written in a query (review of phase C).
+        if let Err(e) = h.write_minute(ts - 30, &values) {
+            log(&format!("history write failed: {e}"));
+        }
+        if ts - last_prune >= 3600 {
+            if let Err(e) = h.prune(ts) {
+                log(&format!("history prune failed: {e}"));
+            }
+            last_prune = ts;
+        }
+        // Once a day, pack the pages the minute writes split. The time of the
+        // last compaction is kept in the file, so a machine that is shut down
+        // every night still compacts (review of phase C).
+        match h.compaction_due(ts) {
+            Ok(true) => {
+                if let Err(e) = h.compact(ts) {
+                    log(&format!("history compaction failed: {e}"));
+                }
+            }
+            Ok(false) => {}
+            Err(e) => log(&format!("history compaction check failed: {e}")),
+        }
+    }
 }
 
 /// One sampler's thread: sleeps while nobody subscribes, otherwise samples at
@@ -424,6 +542,9 @@ impl Inner {
     fn capabilities(&self) -> Vec<String> {
         let mut caps: Vec<String> = self.slots.keys().cloned().collect();
         caps.push(stream::UI.to_string());
+        if self.history.is_some() {
+            caps.push("history".to_string());
+        }
         caps.sort();
         caps
     }
@@ -530,11 +651,18 @@ impl Inner {
         let rid = req.id;
         let reply = match req.method.as_str() {
             "capabilities" => Reply::ok(rid, json!(self.capabilities())),
-            "subscribe" => self.subscribe(id, &req),
+            "subscribe" => match self.subscribe(id, &req) {
+                Ok(reply) => reply,
+                // Already queued, ahead of the first event.
+                Err(Replied) => return,
+            },
             "unsubscribe" => self.unsubscribe(id, &req),
             "get" => self.get(&req),
             "status" => Reply::ok(rid, self.status()),
             "config.get" => self.config_get(&req),
+            "history.query" => self.history_query(&req),
+            "history.events" => self.history_events(&req),
+            "history.list" => self.with_history(&req, |h| Ok(h.list())),
             "config.set" => self.config_set(&req),
             "action" => self.action(&req),
             "shutdown" => {
@@ -572,10 +700,12 @@ impl Inner {
         None
     }
 
-    fn subscribe(&self, id: u64, req: &Request) -> Reply {
+    /// `Err(Replied)` when the reply was already queued (a stream
+    /// subscription); otherwise the reply to send.
+    fn subscribe(&self, id: u64, req: &Request) -> Result<Reply, Replied> {
         let name = match Self::stream_param(req) {
             Ok(n) => n,
-            Err(r) => return r,
+            Err(r) => return Ok(r),
         };
         if name == stream::UI {
             let as_ui = req.param("role").and_then(Value::as_str) == Some("ui");
@@ -597,10 +727,10 @@ impl Inner {
                 state.ui = Some((id, pid));
             }
             self.refresh_shared(&state);
-            return Reply::ok(req.id, json!({"stream": name}));
+            return Ok(Reply::ok(req.id, json!({"stream": name})));
         }
         if let Some(r) = self.check_stream(req, name) {
-            return r;
+            return Ok(r);
         }
         let slot = &self.slots[name];
         let live = req.param("live").and_then(Value::as_bool).unwrap_or(false);
@@ -616,7 +746,16 @@ impl Inner {
             FLOOR_MS
         };
         let interval_ms = asked.max(floor);
+        let reply = frame::encode(&ServerFrame::Reply(Reply::ok(
+            req.id,
+            json!({"stream": name, "interval": interval_ms}),
+        )));
         {
+            // The reply is queued in the same locked step that adds the
+            // subscription, so no event of this stream can reach the client
+            // before it (architecture §5.2: reply, then events). A client
+            // that skipped events while waiting for its reply lost the first
+            // one (CI on PR #3).
             let mut state = lock(&self.state);
             if let Some(c) = state.clients.get_mut(&id) {
                 c.subs.insert(
@@ -626,12 +765,13 @@ impl Inner {
                         live: live && slot.live,
                     },
                 );
+                c.send(&reply);
             }
             state.runs.entry(name.to_string()).or_default().now = true;
             self.refresh_shared(&state);
         }
         self.wake(name);
-        Reply::ok(req.id, json!({"stream": name, "interval": interval_ms}))
+        Err(Replied)
     }
 
     fn unsubscribe(&self, id: u64, req: &Request) -> Reply {
@@ -674,7 +814,7 @@ impl Inner {
     fn status(&self) -> Value {
         let state = lock(&self.state);
         let mut streams = serde_json::Map::new();
-        for name in self.capabilities() {
+        for name in self.capabilities().into_iter().filter(|n| n != "history") {
             let subs: Vec<&Sub> = state
                 .clients
                 .values()
@@ -721,6 +861,7 @@ impl Inner {
                 "broken": config.broken(),
                 "problems": config.problems(),
             },
+            "history": self.history_status(),
         })
     }
 
@@ -761,6 +902,82 @@ impl Inner {
             }
             Err(SetError::Write(why)) => Reply::err(req.id, Code::Failed, why),
         }
+    }
+
+    fn history_status(&self) -> Value {
+        match &self.history {
+            None => json!({"enabled": false, "error": self.history_error}),
+            Some(h) => {
+                let h = lock(h);
+                json!({
+                    "enabled": true,
+                    "path": h.path().display().to_string(),
+                    "sizeBytes": h.size_bytes(),
+                    "movedAside": h.moved_aside.as_ref().map(|p| p.display().to_string()),
+                })
+            }
+        }
+    }
+
+    fn with_history(
+        &self,
+        req: &Request,
+        f: impl FnOnce(&History) -> Result<Value, history::HistoryError>,
+    ) -> Reply {
+        let Some(h) = &self.history else {
+            let why = self
+                .history_error
+                .clone()
+                .unwrap_or_else(|| "history is off".into());
+            return Reply::err(req.id, Code::Unavailable, why);
+        };
+        match f(&lock(h)) {
+            Ok(v) => Reply::ok(req.id, v),
+            Err(e) => Reply::err(req.id, Code::Failed, e.to_string()),
+        }
+    }
+
+    /// `history.query`: `series[]` with `range` (1h, 24h, 7d, 30d) or
+    /// `from`/`to` in unix seconds (then 1-minute buckets).
+    fn history_query(&self, req: &Request) -> Reply {
+        let series: Vec<&str> = match req.param("series").and_then(Value::as_array) {
+            Some(a) => a.iter().filter_map(Value::as_str).collect(),
+            None => return Reply::err(req.id, Code::BadRequest, "series is required"),
+        };
+        let now = unix_now();
+        let (from, to, bucket) = match req.param("range").and_then(Value::as_str) {
+            Some(name) => match history::range(name) {
+                Some((span, bucket)) => (now - span, now + 1, bucket),
+                None => {
+                    return Reply::err(req.id, Code::BadRequest, format!("unknown range: {name}"));
+                }
+            },
+            None => match (
+                req.param("from").and_then(Value::as_i64),
+                req.param("to").and_then(Value::as_i64),
+            ) {
+                (Some(f), Some(t)) if f < t => (f, t, 60),
+                _ => {
+                    return Reply::err(
+                        req.id,
+                        Code::BadRequest,
+                        "range, or from and to, are required",
+                    );
+                }
+            },
+        };
+        self.with_history(req, |h| h.query(&series, from, to, bucket))
+    }
+
+    fn history_events(&self, req: &Request) -> Reply {
+        let kind = req.param("kind").and_then(Value::as_str);
+        let now = unix_now();
+        let from = req
+            .param("from")
+            .and_then(Value::as_i64)
+            .unwrap_or(now - history::KEEP_SECS);
+        let to = req.param("to").and_then(Value::as_i64).unwrap_or(now + 1);
+        self.with_history(req, |h| h.events(kind, from, to))
     }
 
     /// Sends a `ui` event to every client subscribed to `ui`.
@@ -814,6 +1031,9 @@ impl Inner {
         Reply::ok(req.id, json!({"done": [entry]}))
     }
 }
+
+/// A handler already queued its reply.
+struct Replied;
 
 /// `dryRun`: absent is false, a boolean is itself, and anything else is a
 /// bad request. "true" or 1 must never fall through to the real action (the
