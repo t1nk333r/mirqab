@@ -41,9 +41,10 @@ is "it ran nothing" "" "$(cat "$STUB_LOG" 2>/dev/null)"
 # A terminal to answer in but stdout piped: the question could not be
 # seen, so nothing is asked and nothing runs.
 code=0
-# script's input stays open and silent, so without the check the prompt
+# script runs the command under $SHELL, so bash for pipefail. Its
+# input stays open and silent, so without the check the prompt
 # would wait on the terminal until the timeout (exit 124, not 3).
-timeout 10 script -qec "set -o pipefail; '$BIN/mirqab' mcp-config codex --write | cat" /dev/null \
+SHELL=/bin/bash timeout 10 script -qec "set -o pipefail; '$BIN/mirqab' mcp-config codex --write | cat" /dev/null \
     < <(sleep 12) >/dev/null || code=$?
 is "--write with stdout piped needs confirmation" 3 "$code"
 is "and ran nothing" "" "$(cat "$STUB_LOG" 2>/dev/null)"

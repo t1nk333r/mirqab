@@ -232,6 +232,10 @@ fn a_modern_client_discovers_and_an_unknown_version_is_refused() {
         no_caps["error"]["code"], -32602,
         "no capabilities: {no_caps}"
     );
+    let mut wrong = modern(6, "tools/list", json!({}));
+    wrong["params"]["_meta"]["io.modelcontextprotocol/clientCapabilities"] = json!([]);
+    let not_object = s.ask(wrong);
+    assert_eq!(not_object["error"]["code"], -32602, "{not_object}");
     assert!(
         refused["error"]["data"]["supported"]
             .as_array()

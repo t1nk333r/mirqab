@@ -84,8 +84,9 @@ pub fn handle(socket: &Path, id: Value, method: &str, params: &Value) -> Value {
             id,
             json!({
                 "resultType": "complete",
-                // Cacheable results (2026-07-28): the tools never change
-                // while the server runs, and nothing in them is per user.
+                // Cacheable results (2026-07-28). 0 asks the client not to
+                // cache, for now: a later mirqab may add tools behind a
+                // setting. Nothing in them is per user, so public.
                 "ttlMs": 0,
                 "cacheScope": "public",
                 "supportedVersions": supported(),
