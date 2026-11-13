@@ -165,6 +165,7 @@
   },
   "power": {
     "batteryWatts": null,
+    "needsHelper": false,
     "packageWatts": null,
     "source": "rapl"
   },

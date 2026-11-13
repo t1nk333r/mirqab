@@ -37,8 +37,8 @@ impl MemoryCard {
         total.add_css_class("title-2");
         total.add_css_class("numeric");
         total.set_xalign(0.0);
-        // Used, then cache stacked under it: the second meter's fill
-        // starts where the first ends, drawn as used + cache.
+        // Two meters, used and cache, each filled from zero; one meter
+        // split three ways is a follow-up (review of PR #8).
         let used = Meter::new();
         used.set_series(0);
         let cache = Meter::new();

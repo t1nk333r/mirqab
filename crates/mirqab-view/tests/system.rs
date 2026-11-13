@@ -45,7 +45,11 @@ fn the_golden_event_fills_every_card() {
     assert_eq!(kinds, ["CPU", "GPU", "Disk", "Memory"]);
     assert_eq!(v.temps[0].1[0].label, "Tctl");
     assert!((v.temps[0].1[0].fraction - 52.0 / 95.0).abs() < 1e-9);
-    assert!(v.power.needs_helper, "no package watts in the first event");
+    assert!(
+        !v.power.needs_helper,
+        "RAPL is readable; the first event only lacks a baseline"
+    );
+    assert!(v.power.rapl);
 }
 
 #[test]
@@ -97,6 +101,7 @@ fn suspended_gpus_battery_power_and_thermal_tones() {
             package_watts: Some(12.34),
             battery_watts: Some(9.0),
             source: "both".into(),
+            needs_helper: false,
         }),
         ..SystemData::default()
     };
@@ -112,13 +117,14 @@ fn suspended_gpus_battery_power_and_thermal_tones() {
     assert_eq!(system::thermal_tone("hot", false), Tone::Warning);
     assert_eq!(system::thermal_tone("critical", false), Tone::Error);
     assert_eq!(system::thermal_tone("cool", true), Tone::Error);
+    assert_eq!(system::thermal_tone("molten", false), Tone::Neutral);
 }
 
 #[test]
 fn graphs_read_live_events_and_history_replies() {
     let event = json!({"cpu": {"percent": 12.5}, "mem": {"usedBytes": 1000},
                        "gpus": [{"busyPercent": 3.0}, {"busyPercent": 40.0}],
-                       "pressure": {"io": {"some10": 2.0}}});
+                       "pressure": {"io": {"some10": 9.0, "some60": 2.0}}});
     assert_eq!((system::CPU_GRAPH.live)(&event), Some(12.5));
     assert_eq!((system::MEMORY_GRAPH.live)(&event), Some(1000.0));
     assert_eq!((system::gpu_graph(1).unwrap().live)(&event), Some(40.0));
@@ -131,4 +137,42 @@ fn graphs_read_live_events_and_history_replies() {
     assert_eq!(avg, [(1_800_000_000, 10.0), (1_800_000_060, 12.0)]);
     assert_eq!(max[0], (1_800_000_000, 30.0));
     assert!(system::history_points(&reply, "nope").0.is_empty());
+}
+
+#[test]
+fn history_keeps_two_gpus_and_so_does_the_page() {
+    let gpu = |id: &str| Gpu {
+        id: id.into(),
+        name: id.into(),
+        vendor: "amd".into(),
+        ..Gpu::default()
+    };
+    let d = SystemData {
+        gpus: vec![gpu("card0"), gpu("card1"), gpu("card2")],
+        ..SystemData::default()
+    };
+    let v = system::view(&d, TempUnit::Celsius);
+    let ids: Vec<&str> = v.gpus.iter().map(|g| g.id.as_str()).collect();
+    assert_eq!(ids, ["card0", "card1"]);
+}
+
+#[test]
+fn the_helper_line_follows_the_daemon_not_a_missing_reading() {
+    let with = |source: &str, needs_helper: bool| {
+        let d = SystemData {
+            power: Some(Power {
+                source: source.into(),
+                needs_helper,
+                ..Power::default()
+            }),
+            ..SystemData::default()
+        };
+        system::view(&d, TempUnit::Celsius).power
+    };
+    assert!(with("none", true).needs_helper);
+    let no_rapl = with("battery", false);
+    assert!(
+        !no_rapl.needs_helper && !no_rapl.rapl,
+        "no RAPL: no line, no graph"
+    );
 }

@@ -26,11 +26,15 @@ its tests need no display) and the window (`crates/mirqab-ui`).
 - The daemon (`mirqab daemon`) serves a private Unix socket at
   `$XDG_RUNTIME_DIR/mirqab/daemon.sock`, or at `$MIRQAB_SOCKET` or
   `--socket PATH` when given. Only one daemon runs per socket. It streams
-  its own CPU and memory cost on the `self` stream, and the machine's CPU
-  percent and memory on the `system` stream.
-- History: once a minute the daemon stores one value for each of four
-  series: `cpu.total` (percent, the average over the minute), `mem.used`,
-  `mem.available` and `swap.used` (bytes). It keeps 30 days in
+  its own CPU and memory cost on the `self` stream, and the machine's CPU,
+  load, memory, pressure, temperatures, GPUs and power on the `system`
+  stream.
+- History: once a minute the daemon stores one value for each of 25
+  series. `mirqab history --list` names them. The first four are
+  `cpu.total` (percent, the average over the minute), `mem.used`,
+  `mem.available` and `swap.used` (bytes). The rest cover CPU split, load,
+  cache, pressure, paging, swap traffic, temperatures, GPU use and VRAM,
+  power and CPU clock. It keeps 30 days in
   `~/.local/state/mirqab/history.db`, or `$XDG_STATE_HOME/mirqab/history.db`
   when that is set. The budget is 40 MiB for the file and its write-ahead
   log together, and the file is compacted once a day. Minutes while the
@@ -40,7 +44,9 @@ its tests need no display) and the window (`crates/mirqab-ui`).
   one daemon may use a history file (`history.db.lock`).
 - The CLI has `daemon`, `status [--json]`, `open [TAB] [--window]`,
   `toggle [TAB]`, `close`, `history SERIES... [--range 1h|24h|7d|30d]
-  [--json]`, `history --list`, `help [COMMAND]`, `--help` and `--version`.
+  [--json]`, `history --list`, `load [--json]` (CPU, load, memory, pressure
+  and the thermal word), `sensors [--json]` (temperatures, GPUs and power),
+  `help [COMMAND]`, `--help` and `--version`.
   Every command takes `--socket PATH`. `open`, `toggle` and `close` take
   `--dry-run`, which prints what the action would do.
 - Theme tokens can be overridden in `~/.config/mirqab/theme.json`, one
@@ -55,17 +61,22 @@ its tests need no display) and the window (`crates/mirqab-ui`).
   line, and a Settings button. Escape or `mirqab close` hides the window,
   and the process quits 60 s after it was last hidden. The `.desktop`
   entry opens a window.
-- Home and System work (plans 002 and 003). System shows CPU with its
-  cores, memory, pressure, the GPUs, temperatures and power, each with a
-  graph that updates every second while it is on screen and a range
-  picker for stored history. Every System card has "Pin to Home". Home
-  shows the pinned cards on two columns, starts with the overview, CPU
-  and memory, and reorders by dragging a card's handle or with Alt+Up and
-  Alt+Down. The window opens on Home; `window.rememberTab` reopens the
-  last tab instead.
-- Not built yet: the other tabs (each one is a placeholder until its plan
-  lands), the MCP server and the root helper. `mirqab-fand` only
-  prints its version.
+- The System tab shows these cards: the overview (the thermal word,
+  uptime, load and restart advice), CPU with its cores, memory, pressure,
+  graphics (one section per GPU, at most two, as history keeps),
+  temperatures and power. Each card with one graph, and the graphics
+  card, has a range picker. `2m` is live and updates every second while
+  the page is on screen (the default `live.intervalMs`). `1h`, `24h`,
+  `7d` and `30d` come from history: each is read when chosen, then once a
+  minute. The numbers update every 2 s. Pressure has three small live
+  graphs and no picker. Every card has "Pin to Home".
+- Home shows the pinned cards on two columns, compact and live, and starts
+  with the overview, CPU and memory. Reorder by dragging a card's handle
+  or with Alt+Up and Alt+Down; a card's pin control unpins it. The window
+  opens on Home; `window.rememberTab` reopens the last tab instead.
+- Not built yet: the content of the other tabs (each one is a placeholder
+  until its plan lands), the MCP server and the root helper.
+  `mirqab-fand` only prints its version.
 
 The config is `~/.config/mirqab/config.json` (under `$XDG_CONFIG_HOME` when
 set), its keys are listed in `share/mirqab/config.schema.json`, the daemon
@@ -178,6 +189,20 @@ series. The first value appears after the first whole minute the daemon
 runs: memory is stored at the first minute boundary, and `cpu.total`,
 which needs two readings, a minute later. Until then the command prints
 nothing.
+
+`mirqab load` prints the CPU percent, load averages, memory, pressure and
+the thermal word. `mirqab sensors` prints every temperature, each GPU, and
+package and battery power. Both take `--json`:
+
+```sh
+mirqab load
+mirqab sensors
+```
+
+Package power needs the root helper, which is a later plan. `sensors`
+says so only where the CPU's RAPL counter exists but cannot be read. A
+suspended GPU is reported as suspended, and nothing is read from it, so it
+is not woken.
 
 Exit codes: 0 done, 1 refused or failed, 2 no daemon, 64 usage error.
 

@@ -180,7 +180,7 @@ New trees: `root-intel-hybrid/` (coretemp, `cpu_core`/`cpu_atom`,
 |------|--------|
 | `crates/mirqab-core/tests/system.rs` | Golden `system.json` for each fixture root; CPU and paging rates from the `.t1` delta; thermal word at each threshold; `throttling` on the Intel fixture; missing files give `null`, never an error or a zero |
 | same | `advice` appears for uptime over 30 d and for 7 d with swap pressure |
-| `crates/mirqab-view/tests/system.rs` | memory split sums to total, range switching, label choice |
+| `crates/mirqab-view/tests/system.rs` | memory split sums to total, label choice, graph specs read events and history replies, at most two GPUs; range switching is tested with plan 003 (review of PR #8) |
 | `tests/test-ui-system.sh` (`mirqab-ui --selftest system`, plan 001) | `mirqab-ui --selftest system` against `root-desktop` and `root-minimal`: the cards present, the GPU card absent on minimal |
 | `tests/test-cli.sh` | `load --json` and `sensors --json` shapes |
 
@@ -250,6 +250,29 @@ Part 1 (2026-11-13), where it differs from the plan:
 - The restart advice's pressure condition uses the sampler's own last 60
   minutes of memory `some60`, not a history query.
 
+From the review of PR #7 (2026-11-13):
+
+- A suspended GPU is never woken: its sensor chip under `class/hwmon` is
+  skipped (`root-laptop` carries one as a trap), and `nvidia-smi` runs
+  only while no NVIDIA card is suspended (`gpu::nvidia_wanted`). After a
+  failed or empty `nvidia-smi` it waits 60 s.
+- `gpu.N` series are keyed by the card's place among all cards, in the
+  minute writer as in the live means; a suspended card leaves its slot
+  empty. Cards without a PCI vendor (simpledrm, vkms, USB display
+  adapters) are not GPUs.
+- `get` uses the youngest baseline 1–90 s old, and otherwise takes its own
+  second reading 200 ms later; with history off it averaged since the
+  daemon started. A subscription's first event reads against the minute
+  baseline when that is 1–90 s old.
+- Package watts: None for a decrease with no known wrap point and above
+  2 kW (a counter reset read as 62 kW). Battery watts take the absolute
+  value. `power.needsHelper` is true only where RAPL exists and cannot be
+  read, and only then does the CLI name the helper.
+- Left for a follow-up: reading static sensor files (labels, limits,
+  `cpu_capacity`) once at probe and slow sensors (disks) every 10 s; CPUs
+  brought online after the probe; matching `nvidia-smi` rows by PCI bus
+  id.
+
 Part 2 (2026-11-13), where it differs from the plan:
 
 - Memory "cache" is available − free, so used, cache and free add up to
@@ -271,6 +294,19 @@ Part 2 (2026-11-13), where it differs from the plan:
   003; each card's pin toggles its id in `home.pinned`.
 - Checked by eye on the development machine (window mode, release data
   from the real `/`): 16 cores, both GPUs, zram, pressure and 20 sensors.
+
+From the review of PR #8 (2026-11-13):
+
+- The view keeps at most two GPUs, as history does; a third card made the
+  page rebuild its GPU cards on every event.
+- The helper line follows the daemon's `power.needsHelper`, so it no longer
+  flashes on the first event, and the power graph shows only where there
+  is a package counter.
+- The live pressure graphs plot `some60`, as the number beside them and
+  history do.
+- Memory is two meters, used and cache, each from zero; one meter split
+  three ways is a follow-up.
+- A thermal state this version does not know is neutral, not "cool".
 
 ## Unverified
 

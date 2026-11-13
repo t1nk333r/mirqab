@@ -45,6 +45,11 @@ pub fn read(root: &Root) -> Vec<Temp> {
     let mut seen: std::collections::BTreeMap<String, u32> = Default::default();
     for dir in dirs {
         let base = format!("sys/class/hwmon/{dir}");
+        // A suspended GPU's sensor chip is listed here too; reading it
+        // would wake the card (review of PR #7).
+        if super::gpu::suspended(root, &format!("{base}/device")) {
+            continue;
+        }
         let Ok(name) = root.read(&format!("{base}/name")) else {
             continue;
         };

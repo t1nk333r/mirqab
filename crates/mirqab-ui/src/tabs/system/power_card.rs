@@ -60,7 +60,7 @@ impl PowerCard {
         self.battery
             .set_value(v.battery.as_deref().unwrap_or_default());
         self.helper.set_visible(v.needs_helper);
-        self.graph.graph.set_visible(!v.needs_helper);
+        self.graph.graph.set_visible(v.rapl && !v.needs_helper);
     }
 }
 

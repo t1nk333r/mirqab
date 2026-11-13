@@ -25,16 +25,36 @@ fn read_num<T: std::str::FromStr>(root: &Root, rel: &str) -> Option<T> {
     read_trim(root, rel)?.parse().ok()
 }
 
-/// The cards, in card order.
+/// The cards with a PCI vendor, in card order. A virtual card (simpledrm,
+/// vkms, a USB display adapter) has none and would take a history slot
+/// from a real GPU (review of PR #7).
 pub fn cards(root: &Root) -> Vec<String> {
     let mut cards: Vec<String> = root
         .read_dir("sys/class/drm")
         .unwrap_or_default()
         .into_iter()
         .filter(|c| is_card(c))
+        .filter(|c| read_trim(root, &format!("sys/class/drm/{c}/device/vendor")).is_some())
         .collect();
     cards.sort_by_key(|c| c[4..].parse::<u32>().unwrap_or(u32::MAX));
     cards
+}
+
+/// Whether the device under `dev` (a sysfs path) is runtime-suspended:
+/// reading most of its files, or asking its driver, would wake it.
+pub fn suspended(root: &Root, dev: &str) -> bool {
+    read_trim(root, &format!("{dev}/power/runtime_status")).as_deref() == Some("suspended")
+}
+
+/// Whether `nvidia-smi` may run: an NVIDIA card exists and none is
+/// suspended, since the query wakes a sleeping card (review of PR #7).
+pub fn nvidia_wanted(root: &Root) -> bool {
+    let nvidia: Vec<String> = cards(root)
+        .into_iter()
+        .map(|c| format!("sys/class/drm/{c}/device"))
+        .filter(|dev| read_trim(root, &format!("{dev}/vendor")).as_deref() == Some("0x10de"))
+        .collect();
+    !nvidia.is_empty() && !nvidia.iter().any(|dev| suspended(root, dev))
 }
 
 /// One reading of every card. `nvidia` holds the last `nvidia-smi` rows,
@@ -57,9 +77,7 @@ pub fn read(root: &Root, nvidia: &[NvidiaRow]) -> Vec<Gpu> {
                 vendor: vendor.to_string(),
                 ..Gpu::default()
             };
-            if read_trim(root, &format!("{dev}/power/runtime_status")).as_deref()
-                == Some("suspended")
-            {
+            if suspended(root, &dev) {
                 g.suspended = true;
                 return g;
             }

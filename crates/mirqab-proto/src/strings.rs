@@ -491,15 +491,20 @@ pub fn busy(percent: &str) -> String {
     format!("{percent} busy")
 }
 
-pub fn power_line(package: Option<&str>, battery: Option<&str>) -> String {
-    let p = package.map_or_else(
-        || PACKAGE_POWER_NEEDS_HELPER.to_string(),
-        |w| format!("package {w}"),
-    );
-    match battery {
-        Some(b) => format!("{:<7} {p}, battery {b}", "power"),
-        None => format!("{:<7} {p}", "power"),
+/// `mirqab sensors`' power line. The helper hint only where RAPL exists
+/// but needs root (review of PR #7: it showed on machines with no RAPL).
+pub fn power_line(package: Option<&str>, battery: Option<&str>, needs_helper: bool) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    match package {
+        Some(w) => parts.push(format!("package {w}")),
+        None if needs_helper => parts.push(PACKAGE_POWER_NEEDS_HELPER.to_string()),
+        None => {}
     }
+    parts.extend(battery.map(|b| format!("battery {b}")));
+    if parts.is_empty() {
+        parts.push(NO_VALUE.to_string());
+    }
+    format!("{:<7} {}", "power", parts.join(", "))
 }
 
 pub const PACKAGE_POWER_NEEDS_HELPER: &str = "package power needs the root helper (Fans tab)";

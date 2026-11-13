@@ -89,11 +89,126 @@ fn live_samples_give_shares_and_their_means_fill_the_minute() {
 fn get_reads_against_the_minute_baseline() {
     let mut s = System::new();
     s.probe(&fixture("root-desktop")).unwrap();
-    let snap = data(s.snapshot(&fixture("root-desktop.t1"), Instant::now()));
+    let t0 = Instant::now();
+    let snap = data(s.snapshot(&fixture("root-desktop.t1"), t0 + Duration::from_secs(30)));
     assert_eq!(snap.cpu.unwrap().percent, Some(20.0));
     // The live baseline did not move: the next live sample has none.
     let live = data(s.sample(&fixture("root-desktop.t1"), Instant::now()));
     assert_eq!(live.cpu.unwrap().percent, None);
+}
+
+#[test]
+fn get_never_averages_over_a_stale_baseline() {
+    // History off or after a sleep: the probe's baseline is 600 s old.
+    // `get` takes its own second reading instead (here the same counters,
+    // so no rate), never the 600 s average (review of PR #7).
+    let mut s = System::new();
+    s.probe(&fixture("root-desktop")).unwrap();
+    let late = Instant::now() + Duration::from_secs(600);
+    let snap = data(s.snapshot(&fixture("root-desktop.t1"), late));
+    assert_eq!(snap.cpu.unwrap().percent, None);
+}
+
+#[test]
+fn the_first_live_event_reads_against_a_fresh_minute_baseline() {
+    let mut s = System::new();
+    s.probe(&fixture("root-desktop")).unwrap();
+    let first = data(s.sample(
+        &fixture("root-desktop.t1"),
+        Instant::now() + Duration::from_secs(30),
+    ));
+    assert_eq!(first.cpu.unwrap().percent, Some(20.0));
+}
+
+#[test]
+fn a_stale_minute_baseline_gives_the_first_event_no_rate() {
+    let mut s = System::new();
+    s.probe(&fixture("root-desktop")).unwrap();
+    let late = data(s.sample(
+        &fixture("root-desktop.t1"),
+        Instant::now() + Duration::from_secs(600),
+    ));
+    assert_eq!(late.cpu.unwrap().percent, None);
+}
+
+#[test]
+fn gpu_history_keys_follow_the_card_not_the_awake_count() {
+    // card0 suspends between a live sample and the minute: its slot stays
+    // empty and card1 keeps gpu.1 (review of PR #7).
+    let d = scratch("gpukeys", "root-desktop");
+    let root = Root::new(&d.0);
+    let mut s = System::new();
+    s.probe(&root).unwrap();
+    let t0 = Instant::now();
+    s.minute_at(&root, WALL, t0);
+    s.sample(&root, t0 + Duration::from_secs(10));
+    let power = d.0.join("sys/class/drm/card0/device/power");
+    std::fs::create_dir_all(&power).unwrap();
+    std::fs::write(power.join("runtime_status"), "suspended\n").unwrap();
+    let m = s.minute_at(&root, WALL + 60, t0 + Duration::from_secs(60));
+    let get = |k: &str| m.iter().find(|(key, _)| *key == k).map(|(_, v)| *v);
+    assert_eq!(get("gpu.0.busy"), None);
+    assert_eq!(get("gpu.0.vram"), None);
+    assert_eq!(get("gpu.1.busy"), Some(300));
+    assert_eq!(get("gpu.1.vram"), Some(1_073_741_824));
+}
+
+#[test]
+fn a_card_without_a_pci_vendor_is_not_a_gpu() {
+    let d = scratch("virtual", "root-desktop");
+    std::fs::create_dir_all(d.0.join("sys/class/drm/card9/device")).unwrap();
+    let root = Root::new(&d.0);
+    assert_eq!(
+        mirqab_core::samplers::system::gpu::cards(&root),
+        ["card0", "card1"]
+    );
+}
+
+#[test]
+fn nvidia_smi_never_wakes_a_suspended_card() {
+    use mirqab_core::samplers::system::gpu::nvidia_wanted;
+    let d = scratch("nvidia", "root-laptop");
+    let root = Root::new(&d.0);
+    assert!(!nvidia_wanted(&root), "no NVIDIA card");
+    std::fs::write(d.0.join("sys/class/drm/card1/device/vendor"), "0x10de\n").unwrap();
+    assert!(!nvidia_wanted(&root), "the NVIDIA card is suspended");
+    std::fs::write(
+        d.0.join("sys/class/drm/card1/device/power/runtime_status"),
+        "active\n",
+    )
+    .unwrap();
+    assert!(nvidia_wanted(&root));
+}
+
+#[test]
+fn power_needs_the_helper_only_where_rapl_is_unreadable() {
+    use mirqab_core::samplers::system::power;
+    assert!(!power::needs_helper(&fixture("root-desktop")), "readable");
+    assert!(!power::needs_helper(&fixture("root-minimal")), "no RAPL");
+    // A directory in place of the counter: it exists and cannot be read,
+    // even by root.
+    let d = scratch("rapl", "root-minimal");
+    std::fs::create_dir_all(d.0.join("sys/class/powercap/intel-rapl:0/energy_uj")).unwrap();
+    assert!(power::needs_helper(&Root::new(&d.0)));
+}
+
+#[test]
+fn a_signed_discharge_current_is_still_a_draw() {
+    use mirqab_core::samplers::system::power;
+    let d = scratch("battery", "root-laptop");
+    std::fs::write(
+        d.0.join("sys/class/power_supply/BAT0/power_now"),
+        "-9000000\n",
+    )
+    .unwrap();
+    assert_eq!(power::battery(&Root::new(&d.0)), Some(9.0));
+}
+
+#[test]
+fn cpulist_ranges_and_an_overflowing_one() {
+    use mirqab_core::samplers::system::cpu::cpulist;
+    assert_eq!(cpulist("0-3,8,10-11\n"), [0, 1, 2, 3, 8, 10, 11]);
+    assert_eq!(cpulist("4294967295-4294967295"), [u32::MAX]);
 }
 
 #[test]
@@ -112,6 +227,10 @@ fn a_hybrid_laptop_with_a_suspended_dgpu_and_a_battery() {
     assert_eq!(d.gpus[0].mhz, Some(800));
     assert!(d.gpus[1].suspended);
     assert_eq!(d.gpus[1].busy_percent, None, "a suspended card is not read");
+    assert!(
+        !d.temps.iter().any(|t| t.id.starts_with("amdgpu")),
+        "nor is its sensor chip under class/hwmon"
+    );
     let p = d.power.unwrap();
     assert_eq!(p.battery_watts, Some(9.0));
     assert_eq!(p.source, "battery");
