@@ -571,6 +571,7 @@ name = "mirqab"
 version = "0.1.0"
 dependencies = [
  "mirqab-core",
+ "mirqab-view",
  "serde_json",
 ]
 

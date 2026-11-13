@@ -10,7 +10,10 @@
 - **Depends on**: 001
 - **Category**: tab
 - **Planned at**: 2026-11-13, from the owner
-- **State**: PLANNED
+- **State**: IN PROGRESS. Part 1 (the sampler, history series, `load`
+  and `sensors`) implemented 2026-11-13. Measured on the development
+  machine (release build, real `/`): 0.116 % of one core subscribed at
+  2 s, 0.233 % live at 1 s, 5.4–5.6 MiB RSS.
 
 ## Problem
 
@@ -208,6 +211,43 @@ New trees: `root-intel-hybrid/` (coretemp, `cpu_core`/`cpu_atom`,
 8. Run `tools/bench-idle.sh --subscribe system` (2 s) and
    `tools/bench-idle.sh --subscribe system --live` (1 s, budget under 1 %
    of one core); record both numbers here.
+
+## As built
+
+Part 1 (2026-11-13), where it differs from the plan:
+
+- **Two pull requests.** Part 1 is the daemon side (checklist steps 1–5
+  and 8); part 2 is the page (steps 6–7).
+- The stream's data structs live in `mirqab-proto::stream` (`SystemData`
+  and its parts), so the daemon, the CLI and the view model share one
+  shape.
+- One Intel tree, not two: `root-laptop` is the Intel hybrid laptop
+  (cpu_core/cpu_atom, coretemp, throttle counters, `gt_cur_freq_mhz`) and
+  also carries a runtime-suspended AMD dGPU and a battery. There is no
+  `root-nvidia`: the `nvidia-smi` row parser is unit-tested, and the
+  NVIDIA path stays experimental until a machine confirms its fields
+  (Unverified).
+- A runtime-suspended card (`device/power/runtime_status` = `suspended`)
+  is reported as `suspended` and nothing else is read from it: reading it
+  would wake the dGPU of a hybrid laptop (haseen's sysusage plugin).
+- GPU hwmon is read through the card (`device/hwmon/hwmonN`), so no
+  symlink has to be followed; temperatures come from `class/hwmon`. A
+  driver name seen twice gets `.1`, `.2` in the sensor id.
+- Rates use three baselines: live (events), minute (history and `get`),
+  and the live samples' means for the minute's gauges. A live baseline
+  older than 10 s is dropped, so the first event after a quiet spell has
+  no CPU value instead of the spell's average; `get` reads against the
+  minute baseline without moving it (`Sampler::snapshot`).
+- From the review of plan 001 phase C, done here: the first minute has a
+  CPU value (the baseline is taken at probe); `swap.used` and the other
+  gauges are live means when a live graph ran; shares are clamped to
+  0–100; series a later plan registers are reloaded at open; prune deletes
+  one series' range at a time instead of scanning the table.
+- `page.in`/`page.out` are KiB per minute and per second (vmstat counts
+  pgpgin in KiB); `swap.in`/`swap.out` pages. The CLI prints Celsius;
+  `units.temperature` reaches the CLI with plan 005.
+- The restart advice's pressure condition uses the sampler's own last 60
+  minutes of memory `some60`, not a history query.
 
 ## Unverified
 

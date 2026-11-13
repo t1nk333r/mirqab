@@ -13,6 +13,8 @@ path = "src/main.rs"
 
 [dependencies]
 mirqab-core.workspace = true
+# Number formatting for `load` and `sensors`; it links no toolkit.
+mirqab-view.workspace = true
 serde_json.workspace = true
 
 [lints]

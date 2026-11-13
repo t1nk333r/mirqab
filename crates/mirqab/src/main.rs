@@ -84,7 +84,9 @@ fn main() -> ExitCode {
     let args = Args { socket, rest };
     match command.as_str() {
         "daemon" => daemon::run(args),
-        "status" | "open" | "toggle" | "close" | "history" => cli::run(&command, args),
+        "status" | "open" | "toggle" | "close" | "history" | "load" | "sensors" => {
+            cli::run(&command, args)
+        }
         other => usage_error(&strings::unknown_command(other)),
     }
 }

@@ -13,4 +13,5 @@ GPL projects are reference only and never appear in this table.
 | `tools/check-docs.sh` | haseen `tools/check-docs.sh` | MIT | (c) 2026 t1nk33r |
 | `.github/workflows/ci.yml` | haseen `.github/workflows/ci.yml` | MIT | (c) 2026 t1nk33r |
 | `crates/mirqab-proto/src/frame.rs` | haseen `core/internal/proto/proto.go`, from DankMaterialShell `core/internal/server` | MIT | (c) 2026 t1nk33r; (c) 2025 Avenge Media LLC |
+| `crates/mirqab-core/src/samplers/system/` | written new after haseen `core/internal/sysusage` (its suspended-GPU rule) | MIT | (c) 2026 t1nk33r |
 | `crates/mirqab-core/src/server.rs` | haseen `core/sidecar/src/server.rs` (PR #128), from DankMaterialShell `core/internal/server` | MIT | (c) 2026 t1nk33r; (c) 2025 Avenge Media LLC |

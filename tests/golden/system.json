@@ -1,4 +1,248 @@
 {
-  "cpu": {"percent": null},
-  "mem": {"totalBytes": 67108864000, "availableBytes": 50331648000}
+  "advice": [],
+  "bootTime": 1790000000,
+  "cpu": {
+    "cores": [
+      {
+        "id": 0,
+        "kind": null,
+        "mhz": 3500,
+        "percent": null
+      },
+      {
+        "id": 1,
+        "kind": null,
+        "mhz": 3750,
+        "percent": null
+      },
+      {
+        "id": 2,
+        "kind": null,
+        "mhz": 4000,
+        "percent": null
+      },
+      {
+        "id": 3,
+        "kind": null,
+        "mhz": 4250,
+        "percent": null
+      },
+      {
+        "id": 4,
+        "kind": null,
+        "mhz": 4500,
+        "percent": null
+      },
+      {
+        "id": 5,
+        "kind": null,
+        "mhz": 3500,
+        "percent": null
+      },
+      {
+        "id": 6,
+        "kind": null,
+        "mhz": 3750,
+        "percent": null
+      },
+      {
+        "id": 7,
+        "kind": null,
+        "mhz": 4000,
+        "percent": null
+      },
+      {
+        "id": 8,
+        "kind": null,
+        "mhz": 4250,
+        "percent": null
+      },
+      {
+        "id": 9,
+        "kind": null,
+        "mhz": 4500,
+        "percent": null
+      },
+      {
+        "id": 10,
+        "kind": null,
+        "mhz": 3500,
+        "percent": null
+      },
+      {
+        "id": 11,
+        "kind": null,
+        "mhz": 3750,
+        "percent": null
+      },
+      {
+        "id": 12,
+        "kind": null,
+        "mhz": 4000,
+        "percent": null
+      },
+      {
+        "id": 13,
+        "kind": null,
+        "mhz": 4250,
+        "percent": null
+      },
+      {
+        "id": 14,
+        "kind": null,
+        "mhz": 4500,
+        "percent": null
+      },
+      {
+        "id": 15,
+        "kind": null,
+        "mhz": 3500,
+        "percent": null
+      }
+    ],
+    "epp": "balance_performance",
+    "governor": "powersave",
+    "iowait": null,
+    "logical": 16,
+    "mhzAvg": 3968,
+    "mhzMax": 5050,
+    "model": "Example Desktop CPU 16-Core",
+    "percent": null,
+    "physical": 8,
+    "system": null,
+    "user": null
+  },
+  "gpus": [
+    {
+      "busyPercent": 0.0,
+      "celsius": 40.0,
+      "id": "card0",
+      "mhz": 600,
+      "name": "AMD GPU (card0)",
+      "suspended": false,
+      "vendor": "amd",
+      "vramTotalBytes": 536870912,
+      "vramUsedBytes": 134217728,
+      "watts": 5.0
+    },
+    {
+      "busyPercent": 3.0,
+      "celsius": 45.0,
+      "id": "card1",
+      "mhz": 500,
+      "name": "AMD GPU (card1)",
+      "suspended": false,
+      "vendor": "amd",
+      "vramTotalBytes": 17163091968,
+      "vramUsedBytes": 1073741824,
+      "watts": 18.0
+    }
+  ],
+  "load": {
+    "fifteen": 0.7,
+    "five": 0.9,
+    "one": 1.2,
+    "runnable": 2,
+    "tasks": 1400
+  },
+  "mem": {
+    "availableBytes": 50331648000,
+    "cacheBytes": 2252341248,
+    "oomKills": 0,
+    "pageInPerSec": null,
+    "pageOutPerSec": null,
+    "shmemBytes": 0,
+    "swapInPerSec": null,
+    "swapOutPerSec": null,
+    "swapTotalBytes": 8589934592,
+    "swapUsedBytes": 0,
+    "totalBytes": 67108864000,
+    "usedBytes": 16777216000,
+    "zram": {
+      "comprBytes": 1073741824,
+      "origBytes": 4294967296
+    }
+  },
+  "power": {
+    "batteryWatts": null,
+    "packageWatts": null,
+    "source": "rapl"
+  },
+  "pressure": {
+    "cpu": {
+      "full10": 0.0,
+      "full60": 0.0,
+      "some10": 1.0,
+      "some60": 0.5
+    },
+    "io": {
+      "full10": 1.0,
+      "full60": 0.8,
+      "some10": 2.0,
+      "some60": 1.5
+    },
+    "memory": {
+      "full10": 0.05,
+      "full60": 0.1,
+      "some10": 0.1,
+      "some60": 0.2
+    }
+  },
+  "temps": [
+    {
+      "celsius": 52.0,
+      "critical": null,
+      "id": "k10temp/temp1",
+      "kind": "cpu",
+      "label": "Tctl"
+    },
+    {
+      "celsius": 48.0,
+      "critical": null,
+      "id": "k10temp/temp3",
+      "kind": "cpu",
+      "label": "Tccd1"
+    },
+    {
+      "celsius": 41.0,
+      "critical": 84.85,
+      "id": "nvme/temp1",
+      "kind": "disk",
+      "label": "Composite"
+    },
+    {
+      "celsius": 45.0,
+      "critical": 100.0,
+      "id": "amdgpu/temp1",
+      "kind": "gpu",
+      "label": "edge"
+    },
+    {
+      "celsius": 38.0,
+      "critical": 85.0,
+      "id": "spd5118/temp1",
+      "kind": "memory",
+      "label": "Memory 1"
+    },
+    {
+      "celsius": 39.0,
+      "critical": null,
+      "id": "nvme.1/temp1",
+      "kind": "disk",
+      "label": "Composite"
+    },
+    {
+      "celsius": 40.0,
+      "critical": null,
+      "id": "amdgpu.1/temp1",
+      "kind": "gpu",
+      "label": "edge"
+    }
+  ],
+  "thermal": {
+    "hottest": "k10temp/temp1",
+    "state": "cool",
+    "throttling": false
+  },
+  "uptimeSec": 3600
 }
