@@ -2,7 +2,8 @@
 
 `mirqab bar <item> --watch` prints one line of Waybar's custom-module
 JSON (`text`, `alt`, `tooltip`, `class`, `percentage`) each time the
-reading changes, at most once per interval (5 s by default, at least 2 s).
+reading changes, at most once per interval (5 s by default, from 2 s to
+an hour).
 It holds one non-live subscription to the daemon, and ends when Waybar
 closes its output. The text carries no colour or markup: style the
 `class` in Waybar's CSS.
@@ -69,7 +70,7 @@ from being read as Pango markup.
 
 Classes: `cpu`, `mem` and `gpu` are `normal`, `high` (80 % or more) or
 `critical` (95 % or more); `temp` is the thermal word (`cool`, `warm`,
-`hot`, `critical`); `combo` is the worst of its parts; a reading with no
+`hot`, `critical`), or `normal` when the daemon has no thermal word; `combo` is the worst of its parts; a reading with no
 value yet is `unknown`. For example:
 
 ```css
