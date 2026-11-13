@@ -16,6 +16,12 @@ mirqab-core.workspace = true
 # Number formatting for `load` and `sensors`; it links no toolkit.
 mirqab-view.workspace = true
 serde_json.workspace = true
+ksni.workspace = true
+
+[dev-dependencies]
+# The stand-in tray host of tests/tray.rs and the bench (plan 004); the
+# same zbus ksni brings.
+zbus = { version = "=5.19.0", default-features = false, features = ["async-io", "blocking-api"] }
 
 [lints]
 workspace = true

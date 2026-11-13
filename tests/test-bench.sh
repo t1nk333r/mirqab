@@ -1,6 +1,7 @@
 # tests/test-bench.sh — tools/bench-idle.sh measures and judges (architecture
 # §9.1): a short idle run is within budget and prints its numbers; a live
-# subscription is measured; a budget it cannot meet fails with status 1; bad
+# subscription is measured; the tray on is measured; a budget it cannot meet
+# fails with status 1; bad
 # options are usage errors. The real 60 s runs are CI's and the owner's.
 # mirqab:covers tools/bench-idle.sh
 
@@ -18,6 +19,15 @@ if command -v socat >/dev/null 2>&1; then
     like "against its own budget" "$OUTPUT" "< 1%"
 else
     not_ok "socat is installed (bench-idle.sh --subscribe needs it)"
+fi
+
+# With the tray registered on a private bus (plan 004).
+if command -v dbus-daemon >/dev/null 2>&1; then
+    capture "$REPO/tools/bench-idle.sh" --bin "$BIN" --seconds 2 --tray
+    status_is "the tray on, the window closed: within budget" 0 "$STATUS"
+    like "it measured the idle row" "$OUTPUT" "within budget"
+else
+    not_ok "dbus-daemon is installed (bench-idle.sh --tray needs it)"
 fi
 
 capture "$REPO/tools/bench-idle.sh" --bin "$BIN" --seconds 1 --max-rss 0.5 --runs 2

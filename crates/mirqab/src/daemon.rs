@@ -84,6 +84,7 @@ pub fn run(args: Args) -> ExitCode {
         Some(dir) => (dir.join("config.json"), dir.join("history.db")),
         None => (Config::default_path(), History::default_path()),
     };
+    let config_path_for_tray = config_path.clone();
     let server = match server::listen(Options {
         socket: socket.clone(),
         root,
@@ -99,6 +100,14 @@ pub fn run(args: Args) -> ExitCode {
     };
     println!("{}", strings::ready(&server.socket().display().to_string()));
     notify_ready();
+    // Read once at start (plan 004).
+    if Config::load(&config_path_for_tray)
+        .get("tray.enabled")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(true)
+    {
+        crate::tray::start(&socket);
+    }
     let err = server.serve();
     fail(&format!("mirqab: accept: {err}"))
 }

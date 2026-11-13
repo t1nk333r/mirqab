@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # tools/bench-idle.sh — what the daemon costs (architecture §9.1).
 #
-#   tools/bench-idle.sh [--subscribe STREAM [--live]] [--seconds N] [--runs N]
-#                       [--max-cpu PCT] [--max-rss MIB] [--bin DIR]
+#   tools/bench-idle.sh [--subscribe STREAM [--live]] [--tray] [--seconds N]
+#                       [--runs N] [--max-cpu PCT] [--max-rss MIB] [--bin DIR]
 #
 # Starts `mirqab daemon --root tests/fixtures/root-desktop` on a private
 # socket with a temporary HOME, waits 5 s, reads utime and stime (fields 14
@@ -11,6 +11,10 @@
 # VmRSS, and the context switches of all its threads over the same time.
 # With --subscribe it holds one subscription to STREAM for the measurement
 # (with --live, a live one at 1000 ms) and applies that row's budget.
+# With --tray the daemon gets a private session bus with a stand-in tray
+# host (crates/mirqab/examples/sni_watcher.rs) and is measured once its
+# tray item has registered: the window closed, the tray on (plan 004).
+# Without it the daemon has no session bus, so no tray.
 #
 # Budgets: under 0.3 % and 15 MiB with no subscriber; under 1 % with a live
 # subscription. --max-cpu and --max-rss override them. With --runs N it
@@ -23,11 +27,12 @@ set -Eeuo pipefail
 shopt -s inherit_errexit
 cd "$(dirname "$0")/.."
 
-stream="" live=0 seconds=60 runs=1 max_cpu="" max_rss="" bin=""
+stream="" live=0 tray=0 seconds=60 runs=1 max_cpu="" max_rss="" bin=""
 while (($#)); do
     case $1 in
     --subscribe) stream=${2:?--subscribe needs a stream}; shift 2 ;;
     --live) live=1; shift ;;
+    --tray) tray=1; shift ;;
     --seconds) seconds=${2:?}; shift 2 ;;
     --runs) runs=${2:?}; shift 2 ;;
     --max-cpu) max_cpu=${2:?}; shift 2 ;;
@@ -54,6 +59,13 @@ if [[ -z $bin ]]; then
     cargo build --release --locked --quiet -p mirqab --bin mirqab
     bin=target/release
 fi
+watcher_bin=""
+if ((tray)); then
+    command -v dbus-daemon >/dev/null 2>&1 || { echo "bench-idle: --tray needs dbus-daemon" >&2; exit 2; }
+    # The stand-in host is a test helper: a debug build is enough.
+    cargo build --locked --quiet -p mirqab --example sni_watcher
+    watcher_bin="${CARGO_TARGET_DIR:-$PWD/target}/debug/examples/sni_watcher"
+fi
 tck=$(getconf CLK_TCK)
 
 # The socket path must stay under 108 bytes, so the scratch dir is in /tmp.
@@ -61,9 +73,11 @@ scratch="$(mktemp -d /tmp/mqbench.XXXXXX)"
 # The daemon and the socat holding the subscription are children of this
 # shell, never of a command substitution, so the trap below always knows
 # them (review of PR #6: both leaked on every early exit).
-daemon="" holder="" fd_open=0
+daemon="" holder="" bus="" watcher="" fd_open=0
 stop_children() {
     if ((fd_open)); then exec 3>&-; fd_open=0; fi
+    [[ -z $watcher ]] || { kill "$watcher" 2>/dev/null || true; wait "$watcher" 2>/dev/null || true; watcher=""; }
+    [[ -z $bus ]] || { kill "$bus" 2>/dev/null || true; wait "$bus" 2>/dev/null || true; bus=""; }
     [[ -z $holder ]] || { kill "$holder" 2>/dev/null || true; wait "$holder" 2>/dev/null || true; holder=""; }
     [[ -z $daemon ]] || { kill "$daemon" 2>/dev/null || true; wait "$daemon" 2>/dev/null || true; daemon=""; }
 }
@@ -97,11 +111,23 @@ measure() {
     local run="$scratch/run$1"
     mkdir -p "$run" && mkdir -m 700 "$run/xdg"
     local sock="$run/xdg/mirqab/daemon.sock"
+    local busenv=() i
+    if ((tray)); then
+        dbus-daemon --session --nofork --print-address=1 >"$run/bus" 2>"$run/bus.err" &
+        bus=$!
+        for ((i = 0; i < 100; i++)); do
+            [[ -s $run/bus ]] && break
+            sleep 0.05
+        done
+        [[ -s $run/bus ]] || { fail "the private bus did not start"; return; }
+        busenv=(DBUS_SESSION_BUS_ADDRESS="$(head -1 "$run/bus")")
+        env -i "${busenv[@]}" "$watcher_bin" >"$run/watcher" 2>&1 &
+        watcher=$!
+    fi
     env -i PATH=/usr/bin:/bin HOME="$run" XDG_RUNTIME_DIR="$run/xdg" \
-        XDG_CONFIG_HOME="$run/config" XDG_STATE_HOME="$run/state" \
+        XDG_CONFIG_HOME="$run/config" XDG_STATE_HOME="$run/state" "${busenv[@]}" \
         "$bin/mirqab" daemon --root tests/fixtures/root-desktop >"$run/out" 2>"$run/err" &
     daemon=$!
-    local i
     for ((i = 0; i < 100; i++)); do
         [[ -S $sock ]] && break
         kill -0 "$daemon" 2>/dev/null || { cat "$run/err" >&2; fail "the daemon exited at start"; return; }
@@ -132,6 +158,11 @@ measure() {
         printf '{"id":1,"method":"subscribe","stream":"%s","params":%s}\n' "$stream" "$params" >&3
     fi
     sleep 5
+    if ((tray)) && ! grep -q '^registered ' "$run/watcher"; then
+        cat "$run/err" >&2
+        fail "the tray did not register with the stand-in host"
+        return
+    fi
     if [[ -n $stream ]]; then
         # The subscription must have taken: socat alive, and a reply with a
         # result to request 1 (an unknown stream measures idle otherwise).

@@ -51,6 +51,12 @@
         "combo": {"type": "array", "items": {"enum": ["cpu", "mem", "temp", "gpu", "load"]}, "default": ["cpu", "mem", "temp"], "description": "The items `mirqab bar combo` shows, in order."}
       }
     },
+    "tray": {
+      "type": "object",
+      "properties": {
+        "enabled": {"type": "boolean", "default": true, "description": "Show the tray icon. Read when the daemon starts."}
+      }
+    },
     "tabs": {
       "type": "object",
       "properties": {

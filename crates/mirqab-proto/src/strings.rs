@@ -577,6 +577,25 @@ pub fn bar_tip_load(one: f64, five: f64, fifteen: f64) -> String {
     format!("Load {one:.2} {five:.2} {fifteen:.2}")
 }
 
+// --- The tray (plan 004) -----------------------------------------------------
+
+/// The tray's icon name in the icon theme (`dist/icons/`).
+pub const TRAY_ICON: &str = "mirqab-symbolic";
+pub const TRAY_OPEN: &str = "Open";
+pub const TRAY_QUIT: &str = "Quit daemon";
+
+pub fn tray_tooltip(cpu: &str, mem: &str, temp: &str) -> String {
+    format!("CPU {cpu} \u{b7} Mem {mem} \u{b7} {temp}")
+}
+
+pub fn tray_action_failed(what: &str, why: &str) -> String {
+    format!("tray: {what} failed ({why})")
+}
+
+pub fn tray_failed(why: &str) -> String {
+    format!("tray: not shown ({why})")
+}
+
 pub const PACKAGE_POWER_NEEDS_HELPER: &str = "package power needs the root helper (Fans tab)";
 pub const WATTS: &str = "W";
 

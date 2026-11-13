@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16">
+  <!-- mirqab: a watchtower (mirqab, "lookout post"). Original drawing,
+       plan 004. Symbolic: one colour, recoloured by the icon theme. -->
+  <path fill="#2e3436" d="M8 0.5 3 3.5h10z"/>
+  <path fill="#2e3436" d="M4 4.5h8v3H4zm1.5 1v1h1v-1zm3 0v1h1v-1z" fill-rule="evenodd"/>
+  <path fill="#2e3436" d="M5.2 8.5h1.6L6.2 15H4.6zm4 0h1.6l.6 6.5H9.8zM5.6 11h4.8v1.2H5.6z"/>
+  <path fill="#2e3436" d="M2.5 15h11v1h-11z"/>
+</svg>

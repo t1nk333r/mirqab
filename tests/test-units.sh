@@ -1,6 +1,6 @@
 # tests/test-units.sh — the systemd user units under dist/ pass
 # `systemd-analyze verify --user`, with ExecStart pointed at the built
-# binaries; and a unit with a broken ExecStart fails it.
+# binaries; and a unit with a broken ExecStart fails it; and the tray icon.
 # mirqab:covers dist/**
 
 sandbox
@@ -44,3 +44,9 @@ like "the launcher opens a window" "$desktop" "Exec=mirqab open --window"
 like "its window class is the application id" "$desktop" "StartupWMClass=io.github.t1nk333r.mirqab"
 like "its icon is the application id" "$desktop" "Icon=io.github.t1nk333r.mirqab"
 like "the unit starts the window hidden" "$(<"$REPO/dist/mirqab-ui.service")" "mirqab-ui --background"
+
+# The tray's icon (plan 004): a 16-pixel symbolic SVG named as the tray
+# item asks for it.
+icon="$REPO/dist/icons/mirqab-symbolic.svg"
+like "the tray icon is a 16-pixel SVG" "$(<"$icon")" 'viewBox="0 0 16 16"'
+is "the tray asks for that name" 1 "$(grep -c 'TRAY_ICON: &str = "mirqab-symbolic"' "$REPO/crates/mirqab-proto/src/strings.rs")"
