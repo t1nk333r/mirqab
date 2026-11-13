@@ -84,23 +84,34 @@ grep_rules() {
         done
 
         # §7.3: colour literals only in the token table and the token block.
-        # In Rust a colour is a value inside a string literal: a hash after a
-        # quote (not `{:#06b}`, not `// issue #123`), or rgb()/rgba() or
-        # RGBA::new anywhere.
+        # In Rust a colour is a value inside an open string literal (an even
+        # number of quotes before it, so `"x"; // plan #001` passes): a hash
+        # not after a format spec's `:<^>+-`, or `:#hex` that does not run
+        # straight into `}` (`"color:#abc;"` fails, `{n:#06b}` passes); or
+        # rgb()/rgba() or RGBA::new anywhere (review of PR #4).
         rs_files crates/mirqab-ui/src crates/mirqab-view/src | grep -v '^crates/mirqab-view/src/theme\.rs$' |
-            xargs -r grep -HnE '"([^"]*[^"{:])?#[0-9a-fA-F]{3,8}\b|\brgba?\(|RGBA::new' |
+            xargs -r grep -HnE '^([^"]*"[^"]*")*[^"]*"(([^"]*[^":<^>+-])?#[0-9a-fA-F]{3,8}\b|[^"]*:#[0-9a-fA-F]{3,8}([^0-9a-zA-Z_}]|$))|\brgba?\(|RGBA::new' |
             hits "colour literal outside the token table (§7.3)"
         local css=crates/mirqab-ui/resources/style.css
         if [[ -f $css ]]; then
-            # In CSS a colour is a value: after a colon, once everything up
-            # to the last `{` (the selector, with its pseudo-classes and
-            # `#id`s) is cut away.
+            # In CSS a colour is a value: what stands inside a rule's braces,
+            # counted across lines, with comments cut away. Selectors (`#cafe
+            # {`, `button:hover #id`) are outside every brace (review of
+            # PR #4: a value on the next line or before the last `{` passed).
             awk -v f="$css" '
                 /mirqab:tokens begin/ { tok = 1; next }
                 /mirqab:tokens end/ { tok = 0; next }
                 tok { next }
-                { v = $0; sub(/.*\{/, "", v) }
-                v ~ /:[^;]*#[0-9a-fA-F]{3,8}([^0-9a-zA-Z_-]|$)/ || v ~ /rgba?\(/ { print f ":" NR ":" $0 }
+                {
+                    v = ""; l = $0; gsub(/\/\*[^*]*\*\//, "", l)
+                    n = split(l, ch, "")
+                    for (i = 1; i <= n; i++) {
+                        if (ch[i] == "{") depth++
+                        else if (ch[i] == "}") depth--
+                        else if (depth > 0) v = v ch[i]
+                    }
+                }
+                v ~ /#[0-9a-fA-F]{3,8}([^0-9a-zA-Z_-]|$)/ || v ~ /rgba?\(/ { print f ":" NR ":" $0 }
             ' "$css" | hits "colour literal outside the token block (§7.3)"
         fi
 

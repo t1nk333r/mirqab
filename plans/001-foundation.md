@@ -770,19 +770,28 @@ above:
   `radius`, and `mode` for the scheme); `theme.json` wins over it.
 - `icons`: Material Design glyphs, their code points read from the
   installed font's own glyph names with fontTools.
-- `graph`: points are `(unix seconds, value)`; neighbours more than one
-  and a half steps apart break the line; a run of one point becomes a
-  flat segment one step wide; the fill is the line closed along the
-  baseline. `Window::for_range` holds §6.4's spans and steps.
+- `graph`: points are `(unix seconds, value)`, sorted by time;
+  neighbours more than one and a half steps apart, and more than one step
+  plus a second, break the line (live samples are stamped in whole
+  seconds, so two ticks 1.002 s apart can read 2 s apart); a run of one
+  point becomes a flat segment one step wide, cut at the window's edges;
+  the fill is the line closed along the baseline; an inverted or
+  non-finite `Fixed` scale is treated as `Auto`. `Window::for_range` holds
+  §6.4's spans and steps.
 - `shell`: each tab carries its stream, its plan and `built`. A tab is
   hidden for a missing stream only once `built` is true; Home is never
   hidden, even if `tabs.hidden` names it. `cost` adds daemon and
   interface; `machine_line` shortens the CPU model. Which stream carries
   the CPU model and the machine's uptime is part 2's (the `self` stream).
 - The colour rule (deferred from PR #1) now looks only at value
-  positions: a hash inside a string literal in Rust, not after `{:` or
-  `:` (`{n:#06b}`); in CSS, a hash after a colon once the selector up to
-  the last `{` is cut away (`#cafe {` and `button:hover #id` pass).
+  positions. In Rust: a hash inside an open string literal (an even
+  number of quotes before it), not after a format spec's `:<^>+-`, and
+  `:#hex` unless it runs straight into `}`, so `{n:#06b}` and `"x"; //
+  plan #001` pass and `"color:#abc;"` fails. One case stays ambiguous and
+  passes: `"a{color:#abcdef}"` with no `;`, which reads like a format
+  spec. In CSS: what stands inside a rule's braces, counted across lines
+  with comments cut away, so a value on the next line fails and `#cafe {`,
+  `button:hover #id` and `/* issue: #123 */` pass. (Review of PR #4.)
 
 ### Phase E — budget and handover (PR 5)
 

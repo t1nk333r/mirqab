@@ -93,16 +93,29 @@ t="$(tree hashes)"
 cat >"$t/crates/mirqab-ui/src/notes.rs" <<'EOF'
 // fixes issue #123, see plan #001
 fn bits(n: u8) -> String { format!("{n:#06b}") }
+fn wide(n: u8) -> String { format!("{n:>#06b} {:x>#06x}", n) }
+let a = "x"; // plan #001
 EOF
 cat >>"$t/crates/mirqab-ui/resources/style.css" <<'EOF'
 #cafe { color: var(--accent-color); }
 button:hover #bad { opacity: 0.5; }
+/* issue: #123 */
+button:hover,
+#bad,
+.x {
+  color: var(--accent-color);
+}
 EOF
 capture "$REPO/tools/lint.sh" --rules "$t"
 status_is "a hash that is not a colour value passes" 0 "$STATUS"
 is "and reports nothing" "" "$OUTPUT"
 plant "a hex value after a selector with an id" crates/mirqab-ui/resources/style.css '#cafe { color: #abcdef; }' "colour literal outside the token block"
 plant "a hex inside a longer string" crates/mirqab-ui/src/widgets/x.rs 'let css = "color: #abcdef;";' "colour literal outside the token table"
+plant "compact CSS in a string" crates/mirqab-ui/src/widgets/x.rs 'let css = "color:#abcdef;";' "colour literal outside the token table"
+plant "a compact value at the end of a string" crates/mirqab-ui/src/widgets/x.rs 'let css = "background:#fff";' "colour literal outside the token table"
+plant "a CSS value on the next line" crates/mirqab-ui/resources/style.css "$(printf '%s\n' '.x {' '  background:' '    #abcdef;' '}')" "colour literal outside the token block"
+plant "a multi-line gradient" crates/mirqab-ui/resources/style.css "$(printf '%s\n' '.x {' '  background: linear-gradient(' '    #abc, #def);' '}')" "colour literal outside the token block"
+plant "a value before the last brace" crates/mirqab-ui/resources/style.css '.a { color: #abcdef; } .b {' "colour literal outside the token block"
 
 # An empty string may be set; it carries no words to translate.
 t="$(tree empty)"
