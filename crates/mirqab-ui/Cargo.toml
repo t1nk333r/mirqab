@@ -1,0 +1,19 @@
+[package]
+name = "mirqab-ui"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "mirqab-ui"
+path = "src/main.rs"
+
+[dependencies]
+mirqab-proto.workspace = true
+mirqab-view.workspace = true
+
+[lints]
+workspace = true

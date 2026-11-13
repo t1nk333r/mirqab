@@ -1,0 +1,134 @@
+# mirqab CI: the four gates CLAUDE.md asks for before every commit and push,
+# as the four required checks of the protected main (architecture §16.1).
+#   lint    tools/lint.sh (fmt, clippy, cargo deny with advisories, the
+#           headless-crate rule, shellcheck, jq, the grep rules, coverage)
+#   test    on a pull request tests/run.sh --affected: only the tests its
+#           changes affect; on a push to main the full tests/run.sh
+#   docs    tools/check-docs.sh
+#   secrets tools/secrets.sh: gitleaks over every commit plus the privacy
+#           patterns (needs full history)
+# Every job runs in an Arch container, the distribution mirqab targets. lint
+# and test run the gates as an unprivileged user; docs and secrets only read
+# the checkout and run as the container's root. Actions are pinned by SHA.
+#
+# Adapted from haseen .github/workflows/ci.yml (MIT, (c) 2026 t1nk33r;
+# NOTICE.md).
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  # A newer push to a pull request cancels its older run; a run on main is
+  # never cancelled, because it is the full suite behind affected-only PRs.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  ARCH_PACKAGES: >-
+    base-devel rust pkgconf gtk4 libadwaita gtk4-layer-shell sqlite dbus
+    shellcheck jq git systemd cargo-deny gitleaks
+  CARGO_TERM_COLOR: never
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    container: archlinux:latest
+    steps:
+      - name: Tools
+        run: |
+          read -ra pkgs <<<"$ARCH_PACKAGES"
+          pacman -Syu --noconfirm --needed "${pkgs[@]}"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Unprivileged user
+        run: |
+          useradd -m ci
+          chown -R ci:ci "$GITHUB_WORKSPACE"
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: lint
+      - name: Versions
+        run: |
+          rustc --version; cargo clippy --version; cargo fmt --version
+          cargo-deny --version; shellcheck --version | sed -n 2p
+      - name: tools/lint.sh
+        # The cargo cache action restores ~/.cargo and target/ as root; hand
+        # both to ci, which runs the gate.
+        run: |
+          mkdir -p "$HOME/.cargo"
+          chown -R ci:ci "$HOME/.cargo" "$GITHUB_WORKSPACE"
+          runuser -u ci -- env CI=1 HOME=/home/ci CARGO_HOME="$HOME/.cargo" tools/lint.sh
+
+  test:
+    runs-on: ubuntu-latest
+    container: archlinux:latest
+    timeout-minutes: 60
+    steps:
+      - name: Tools
+        run: |
+          read -ra pkgs <<<"$ARCH_PACKAGES"
+          pacman -Syu --noconfirm --needed "${pkgs[@]}"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The pull request's merge base must be in the clone.
+          fetch-depth: 0
+      - name: Unprivileged user
+        run: |
+          useradd -m ci
+          chown -R ci:ci "$GITHUB_WORKSPACE"
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: test
+      - name: tests/run.sh
+        # A pull request runs the tests its changes affect, measured from the
+        # event's base commit to the checked-out head; a push to main and a
+        # manual run run the full suite. An empty selection passes, so the
+        # required check reports on a docs-only pull request too.
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          mkdir -p "$HOME/.cargo"
+          chown -R ci:ci "$HOME/.cargo" "$GITHUB_WORKSPACE"
+          args=()
+          if [[ $GITHUB_EVENT_NAME == pull_request ]]; then
+              args=(--affected --committed "$BASE_SHA")
+          fi
+          runuser -u ci -- env CI=1 HOME=/home/ci CARGO_HOME="$HOME/.cargo" tests/run.sh "${args[@]}"
+
+  docs:
+    runs-on: ubuntu-latest
+    container: archlinux:latest
+    steps:
+      - name: Tools
+        run: pacman -Syu --noconfirm --needed git gawk
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: tools/check-docs.sh
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          tools/check-docs.sh
+
+  secrets:
+    runs-on: ubuntu-latest
+    container: archlinux:latest
+    steps:
+      - name: Tools
+        run: pacman -Syu --noconfirm --needed git gitleaks
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: tools/secrets.sh
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          tools/secrets.sh

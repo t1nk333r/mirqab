@@ -1,0 +1,38 @@
+# cargo-deny: licences, bans and sources (architecture §13). The advisories
+# check runs only in CI (tools/lint.sh), because it downloads the database.
+
+[graph]
+all-features = true
+
+[advisories]
+version = 2
+
+[licenses]
+version = 2
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "Zlib",
+    "Unlicense",
+]
+confidence-threshold = 0.9
+
+[licenses.private]
+# The workspace's own crates are not published; their licence is LICENSE.
+ignore = true
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+allow-wildcard-paths = true
+# Two D-Bus stacks in one daemon: zbus stays on one version (architecture §5.6).
+deny = [{ name = "zbus", deny-multiple-versions = true }]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

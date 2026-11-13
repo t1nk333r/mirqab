@@ -4,14 +4,20 @@ A system monitor for Linux desktops: one window with a tab for each part
 of the machine, a tray icon, bar items, a command line and an MCP server
 for coding agents.
 
-**Status: planned, not built.** This repository holds the design
-(`docs/architecture.md`) and the plans (`plans/`). There is no code yet.
-It is developed and tested on an Arch-based system; other distributions
-are untested.
-
 It is modelled on the behaviour of the macOS app Stat Space and shares no
 code, text or artwork with it. Everything is free: there are no licences
 and no paid tier.
+
+## Status
+
+Only the first phase of the foundation exists (plan 001, phase A): the
+workspace skeleton and the development gates. The six crates are stubs.
+The three binaries print their version and exit; the three libraries
+hold no features yet. Nothing runs yet.
+
+The design is in `docs/architecture.md` and the plans are in `plans/`.
+The sections below describe the planned product. It is developed and
+tested on an Arch-based system; other distributions are untested.
 
 ## What it will do
 
@@ -63,6 +69,38 @@ mirqab why             # why is it slow?
 mirqab bar cpu --watch # JSON for Waybar and other bars
 mirqab --mcp           # MCP server on stdio
 ```
+
+## Development
+
+On Arch, install the toolchain and the gate tools:
+
+```sh
+pacman -S --needed base-devel git dbus rust pkgconf gtk4 libadwaita gtk4-layer-shell sqlite shellcheck jq cargo-deny gitleaks
+```
+
+Run the first three gates before every commit, and `tools/secrets.sh`
+before every push:
+
+```sh
+tools/lint.sh             # fmt, clippy, cargo deny, no-GTK link check, shellcheck, jq, grep rules, test coverage
+tests/run.sh --affected   # only the test files your change affects, compared with origin/main
+tools/check-docs.sh       # plan index, relative links, a golden file per stream
+tools/secrets.sh          # gitleaks over history, then privacy patterns (addresses, tokens, home paths)
+```
+
+Run one test file while you work with `tests/run.sh tests/test-<name>.sh`.
+
+A test declares what it covers in its leading comments, with
+`# mirqab:covers <glob>` lines. `tests/run.sh --affected` selects tests by
+those globs, and lint fails on a file that no test covers unless it is
+listed in `tools/coverage-exempt.txt`. `tools/affected-tests.sh` prints why
+each test was selected.
+
+`main` is protected. Every change lands through a pull request; direct
+pushes and force pushes to `main` are refused. CI runs the same gates as
+four required checks, `lint`, `test`, `docs` and `secrets`. The `test` job
+runs `tests/run.sh --affected` on a pull request and the full suite on
+`main`.
 
 ## Read next
 

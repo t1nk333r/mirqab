@@ -1,0 +1,5 @@
+# The stable channel; the gtk4 crate needs 1.92 or later (architecture §13).
+# Ignored where Rust comes from the distribution's package rather than rustup.
+[toolchain]
+channel = "stable"
+components = ["rustfmt", "clippy"]

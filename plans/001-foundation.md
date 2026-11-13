@@ -10,7 +10,9 @@
 - **Depends on**: —
 - **Category**: core
 - **Planned at**: 2026-11-13, from the owner
-- **State**: PLANNED
+- **State**: IN PROGRESS. Phase A (skeleton and gates) implemented
+  2026-11-13: `tools/lint.sh`, `tools/check-docs.sh`, `tools/secrets.sh`
+  pass on the branch, and `tests/run.sh` 93/93. Phases B to E open.
 
 ## Problem
 
@@ -437,6 +439,75 @@ sandbox, export `GDK_BACKEND=broadway`, `BROADWAY_DISPLAY=:N`,
     CI and branch protection". Do not merge this pull request before
     protection is on.
 11. `tests/test-lint-rules.sh`, `tests/test-affected.sh`.
+
+Phase A as built (2026-11-13), where it differs from the steps above:
+
+- `start_daemon` and `stop_daemon` (step 4) move to phase B, which adds
+  the daemon they start; phase A's `tests/lib.sh` has the sandbox, the
+  stubs and the assertions only.
+- `tests/test-rust.sh` (from the Tests table) lands in phase A, because
+  the crates exist from step 3 and their trivial tests need a runner.
+- Shared infrastructure is a `SHARED` glob list in
+  `tools/affected-tests.sh`; a test opts in with `# mirqab:covers-shared`.
+  The exempt list is `tools/coverage-exempt.txt` (step 7), read by the
+  selector, so `--check` is the coverage rule `tools/lint.sh` runs.
+- `tools/affected-tests.sh --paths` prints the changed paths;
+  `tests/test-rust.sh` narrows `cargo test` to the touched crates and
+  their dependents with it.
+- The Broadway check in CI (Unverified) moves to phase D: phase A has no
+  widget to run under it. `gtk4-broadwayd` is at `/usr/bin/gtk4-broadwayd`
+  on the development machine.
+- All four CI jobs run in the `archlinux:latest` container; `docs` and
+  `secrets` install only `git` (and `gawk`, `gitleaks`) and, since they
+  only read the checkout, run as the container's root.
+- Step 6's `--why` is not a flag: the selector prints its reasons to
+  stderr unless `--quiet`. `--paths-for TEST` prints the changed paths that
+  select one test (or `all`); `tests/test-rust.sh` uses it, so any path
+  outside a crate that selects it (a fixture, a golden file, the manifest,
+  the lock, the test itself) runs every crate.
+- `tools/` is not shared infrastructure as a whole (CLAUDE.md said it was;
+  review of PR #1): a change to `tools/lint.sh` runs the lint-rule test,
+  not every cargo test. The test machinery is global and the Rust
+  workspace files are shared; CLAUDE.md and architecture §16 now say so.
+
+Review of PR #1 (Sonnet, checked by Fable, 2026-11-13). Fixed in phase A:
+the Rust tests skipped when only a fixture changed; host addresses in CIDR
+form passing the secrets scan; a last deny-list or exempt line without a
+newline being ignored; lint exemptions matching a file name in any crate;
+`cargo tree` errors hidden; `TMPDIR` left pointing at `/tmp`; `--check`
+stopping silently. Each has a regression test (`tests/test-secrets.sh` is
+new). Deferred, each to the step that adds the code it guards:
+
+- Phase D, steps 25–26: the colour rule fires on `#123` in a comment and
+  on a CSS id selector (`#cafe {`); narrow it to value positions once
+  `theme.rs` and `style.css` exist.
+- Phase D, step 27: the `live` rule scans only `tabs/` and one line at a
+  time; widen it to all of `crates/mirqab-ui/src` but `widgets/graph.rs`,
+  multi-line, once `client.rs` fixes the subscribe call's shape. Widen
+  the toolkit list of the link rule (`glib-sys`, `gtk4-sys`, `pango`,
+  `gdk-pixbuf`) when GTK enters `Cargo.lock`, and make it see build and
+  dev dependencies and renamed (`package =`) ones: `-e normal` sees
+  neither today.
+- Phase D, step 28: the timer rule accepts `add_tick_callback` with a
+  `mirqab:sample` marker (§7.2 allows only `ui-timeout`), flags a `use`
+  line and a trailing same-line marker, and does not check the 1000 ms
+  minimum.
+- Plan 011: dash-separated MAC addresses in the secrets scan.
+- Plan 015: `mirqab-fand` needs literal `/sys` paths; the literal-path
+  rule needs its exemption then.
+- Plan 017: the coordinate rule is case-sensitive and key-based
+  (`Lat: 24.71361` passes).
+
+The first version of `tests/test-secrets.sh` wrote its sample addresses,
+MAC and coordinate out literally, and that commit (`e72bfef`) reached the
+pull request branch before the gate caught it: the push ran because the
+gate's status went through a pipe to `tail`. The values are synthetic.
+Rewriting the pushed branch was refused, so `tools/secrets.sh` gained
+`tools/secrets-allow.txt`: full hashes of reviewed commits whose history
+the scan skips, each with its reason. The test now builds its samples at
+run time, and the history is read once instead of once per pattern. The
+allow list is scanned like any other file; the entry becomes dead once the
+squash merge leaves `e72bfef` out of `main`, and is removed then.
 
 ### Phase B — daemon and protocol (PR 2)
 

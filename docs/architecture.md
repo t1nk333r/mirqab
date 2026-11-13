@@ -975,10 +975,15 @@ tools/secrets.sh          # gitleaks over history, plus the privacy patterns of 
   `XDG_RUNTIME_DIR`. The interface is tested as §7.5 describes: view
   models with no display, widgets and pages under Broadway.
 - `tests/run.sh --affected [BASE]` selects by `# mirqab:covers` globs
-  against paths changed since the merge base. A change under
-  `crates/mirqab-proto/`, `crates/mirqab-core/src/{root,exec,act,server}.rs`,
-  `tests/lib.sh`, `tools/`, `Cargo.toml`, `Cargo.lock` or `deny.toml` is
-  shared infrastructure and widens the selection by itself. The full
+  against paths changed since the merge base. A change to the test
+  machinery (`tests/lib.sh`, `tests/run.sh`, `tools/affected-tests.sh`,
+  `tools/coverage-exempt.txt`, `.github/workflows/`) runs every test; a
+  change under `crates/mirqab-proto/`,
+  `crates/mirqab-core/src/{root,exec,act,server}.rs`, `Cargo.toml`,
+  `Cargo.lock`, `deny.toml` or `rust-toolchain.toml` is shared
+  infrastructure and runs every test that declares
+  `# mirqab:covers-shared`. The other gates under `tools/` select only
+  the test that covers them (plan 001, "Phase A as built"). The full
   suite is CI's job on `main`.
 
 ### 16.1 The repository and CI
