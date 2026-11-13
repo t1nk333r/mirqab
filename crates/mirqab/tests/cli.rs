@@ -11,6 +11,15 @@ use std::time::Duration;
 
 const BIN: &str = env!("CARGO_BIN_EXE_mirqab");
 
+/// The binary with no session bus: a daemon started here must never show
+/// a tray on the developer's desktop (review of PR #11; tests/tray.rs has
+/// its own private bus).
+fn mirqab_cmd() -> Command {
+    let mut c = Command::new(BIN);
+    c.env("DBUS_SESSION_BUS_ADDRESS", "unix:path=/nonexistent");
+    c
+}
+
 struct Daemon {
     child: Child,
     dir: PathBuf,
@@ -54,7 +63,7 @@ fn start(name: &str) -> Daemon {
         bin.display(),
         std::env::var("PATH").unwrap_or_default()
     );
-    let mut child = Command::new(BIN)
+    let mut child = mirqab_cmd()
         .args(["daemon", "--root"])
         .arg(&fixture)
         .env("XDG_RUNTIME_DIR", &run)
@@ -68,8 +77,6 @@ fn start(name: &str) -> Daemon {
         .env("STUB_FAIL", dir.join("fail"))
         .env("MIRQAB_TEST", "1")
         .env("MIRQAB_UI_START_MS", "2000")
-        // No tray on the developer's desktop: tests/tray.rs has its own bus.
-        .env("DBUS_SESSION_BUS_ADDRESS", "unix:path=/nonexistent")
         .env_remove("MIRQAB_SOCKET")
         .env_remove("NOTIFY_SOCKET")
         .stdout(Stdio::piped())
@@ -105,7 +112,7 @@ fn output_within(cmd: &mut Command) -> std::process::Output {
 }
 
 fn mirqab(d: &Daemon, args: &[&str]) -> std::process::Output {
-    Command::new(BIN)
+    mirqab_cmd()
         .arg("--socket")
         .arg(&d.socket)
         .args(args)
@@ -169,7 +176,7 @@ fn stub_log(d: &Daemon) -> String {
 #[test]
 fn open_starts_the_interface_and_queues_the_event() {
     let d = start("start");
-    let mut open = Command::new(BIN)
+    let mut open = mirqab_cmd()
         .arg("--socket")
         .arg(&d.socket)
         .args(["open", "system"])
@@ -224,7 +231,7 @@ fn attach(d: &Daemon, timeout: Duration) -> std::io::Lines<BufReader<UnixStream>
 }
 
 fn spawn_cli(d: &Daemon, args: &[&str]) -> Child {
-    Command::new(BIN)
+    mirqab_cmd()
         .arg("--socket")
         .arg(&d.socket)
         .args(args)
@@ -262,7 +269,7 @@ fn close_while_starting_clears_the_queued_show() {
 #[test]
 fn a_new_open_after_a_timed_out_start_starts_again() {
     let d = start("restart");
-    let out = output_within(Command::new(BIN).arg("--socket").arg(&d.socket).arg("open"));
+    let out = output_within(mirqab_cmd().arg("--socket").arg(&d.socket).arg("open"));
     assert_eq!(out.status.code(), Some(1), "nothing attached");
     let mut open = spawn_cli(&d, &["open", "network"]);
     wait_for_starts(&d, 2);
@@ -293,7 +300,7 @@ fn open_without_an_interface_fails_cleanly() {
     // Nothing to hide: done, and no unit started.
     assert!(mirqab(&d, &["close"]).status.success());
     assert_eq!(stub_log(&d), "");
-    let out = output_within(Command::new(BIN).arg("--socket").arg(&d.socket).arg("open"));
+    let out = output_within(mirqab_cmd().arg("--socket").arg(&d.socket).arg("open"));
     assert_eq!(out.status.code(), Some(1));
     assert!(
         String::from_utf8_lossy(&out.stderr).contains("did not connect"),
@@ -307,12 +314,7 @@ fn open_without_an_interface_fails_cleanly() {
 fn a_unit_that_fails_to_start_is_reported() {
     let d = start("unitfail");
     std::fs::write(d.dir.join("fail"), "").unwrap();
-    let out = output_within(
-        Command::new(BIN)
-            .arg("--socket")
-            .arg(&d.socket)
-            .arg("toggle"),
-    );
+    let out = output_within(mirqab_cmd().arg("--socket").arg(&d.socket).arg("toggle"));
     assert_eq!(out.status.code(), Some(1));
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(err.contains("could not start mirqab-ui.service"), "{err}");
@@ -343,7 +345,7 @@ fn a_second_daemon_cannot_share_a_history_file() {
     std::fs::create_dir_all(&run).unwrap();
     std::fs::set_permissions(&run, std::fs::Permissions::from_mode(0o700)).unwrap();
     let daemon = |sock: &str| {
-        Command::new(BIN)
+        mirqab_cmd()
             .args(["daemon", "--socket"])
             .arg(run.join(sock))
             .env("XDG_RUNTIME_DIR", &run)
@@ -363,7 +365,7 @@ fn a_second_daemon_cannot_share_a_history_file() {
         .unwrap();
     assert!(ready.starts_with("ready "), "{ready}");
     let out = output_within(
-        Command::new(BIN)
+        mirqab_cmd()
             .args(["daemon", "--socket"])
             .arg(run.join("b.sock"))
             .env("XDG_RUNTIME_DIR", &run)
@@ -386,7 +388,7 @@ fn a_second_daemon_cannot_share_a_history_file() {
 #[test]
 fn a_second_daemon_refuses_the_socket() {
     let d = start("twice");
-    let out = Command::new(BIN)
+    let out = mirqab_cmd()
         .args(["daemon", "--socket"])
         .arg(&d.socket)
         .env("XDG_RUNTIME_DIR", d.dir.join("run"))
@@ -409,7 +411,7 @@ fn a_file_or_directory_at_the_socket_path_is_never_removed() {
     std::os::unix::fs::symlink(run.join("notes.txt"), run.join("link")).unwrap();
     for target in ["precious", "notes.txt", "link"] {
         let out = output_within(
-            Command::new(BIN)
+            mirqab_cmd()
                 .args(["daemon", "--socket"])
                 .arg(run.join(target))
                 .env("XDG_RUNTIME_DIR", &run)
@@ -446,7 +448,7 @@ fn a_second_daemon_refuses_even_when_the_socket_file_is_gone() {
     // the first daemon's socket file stands in for the race.
     let d = start("lock");
     std::fs::remove_file(&d.socket).unwrap();
-    let out = Command::new(BIN)
+    let out = mirqab_cmd()
         .args(["daemon", "--socket"])
         .arg(&d.socket)
         .env("XDG_RUNTIME_DIR", d.dir.join("run"))

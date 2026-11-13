@@ -588,6 +588,10 @@ pub fn tray_tooltip(cpu: &str, mem: &str, temp: &str) -> String {
     format!("CPU {cpu} \u{b7} Mem {mem} \u{b7} {temp}")
 }
 
+pub fn tray_action_failed(what: &str, why: &str) -> String {
+    format!("tray: {what} failed ({why})")
+}
+
 pub fn tray_failed(why: &str) -> String {
     format!("tray: not shown ({why})")
 }

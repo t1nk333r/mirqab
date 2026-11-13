@@ -260,7 +260,15 @@ Part 2 (2026-11-14), where it differs from the plan:
 - It starts on a thread of its own: ksni builds the menu while it
   registers, the menu asks the daemon for its tabs, and the daemon answers
   only once it serves. The menu reads the tabs (the sidebar's, with
-  `tabs.hidden`) each time the host builds it.
+  `tabs.hidden`) each time the host is about to show it
+  (`menu_about_to_show`; without it ksni served the menu built at start,
+  review of PR #11).
+- Clicks and Quit are sent from a short-lived thread and a failure is
+  logged (`tray: ui.toggle failed (…)`): ksni runs every D-Bus handler on
+  one thread, and a first click waits for the window to start (review of
+  PR #11). Tests cover a 2 s window start that fails, the menu after
+  `tabs.hidden` changes, and every other test's daemon has a dead bus
+  address.
 - `tray.enabled` is read when the daemon starts. "Pin window" is not in
   the menu: the protocol has no action for it.
 - `IconName` is `mirqab-symbolic` (`dist/icons/mirqab-symbolic.svg`, an
@@ -270,7 +278,7 @@ Part 2 (2026-11-14), where it differs from the plan:
   stand-in watcher (`tests/support/watcher.rs`, also
   `examples/sni_watcher.rs` for the bench). Fixture daemons in the other
   tests get a dead bus address, so no test shows a tray on the desktop.
-  Not automated: the menu's layout.
+  The menu's layout is read with `GetLayout` in the tests.
 
 ## Unverified
 

@@ -1,10 +1,9 @@
 //! The tray menu (plan 004): Open; one entry per tab the sidebar shows;
-//! Settings; Quit daemon. The tabs are read from the daemon when the host
-//! builds the menu, not when the tray starts: the daemon is not accepting
-//! yet then, and a hidden tab should leave the menu without a restart.
+//! Settings; Quit daemon. The tabs are read from the daemon each time the
+//! host is about to show the menu (`menu_about_to_show`), so a hidden tab
+//! leaves it without a restart.
 
-use super::item::{Item, capabilities, hidden};
-use crate::cli::call;
+use super::item::{Item, capabilities, hidden, send};
 use ksni::MenuItem;
 use ksni::menu::StandardItem;
 use mirqab_core::proto::{Request, strings};
@@ -42,7 +41,7 @@ pub(super) fn items(item: &Item) -> Vec<MenuItem<Item>> {
         |i: &mut Item| i.ui("ui.show", Some("settings")),
     ));
     out.push(entry(strings::TRAY_QUIT, |i: &mut Item| {
-        let _ = call(&i.socket, Request::new(1, "shutdown"));
+        send(&i.socket, "shutdown", Request::new(1, "shutdown"));
     }));
     out
 }

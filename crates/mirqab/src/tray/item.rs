@@ -1,9 +1,10 @@
 //! The StatusNotifierItem's properties and clicks (plan 004).
 
 use crate::bar::items;
-use crate::cli::call;
+use crate::cli::{CallError, call};
 use mirqab_core::proto::stream::{self, SystemData};
 use mirqab_core::proto::{Request, strings};
+use mirqab_core::server;
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -26,14 +27,14 @@ impl Item {
         }
     }
 
-    /// Sends `ui.*` as an action, as `mirqab open` does; a failure is the
-    /// daemon's to log.
-    pub(super) fn ui(&self, name: &str, tab: Option<&str>) {
-        let _ = call(
-            &self.socket,
-            Request::new(1, "action")
-                .with_params(json!({"name": name, "args": {"tab": tab}, "dryRun": false})),
-        );
+    /// Sends `ui.*` as an action, as `mirqab open` does, from a thread of
+    /// its own: a first click waits for the window to start (up to 5 s),
+    /// and ksni's one thread must keep answering the host meanwhile
+    /// (review of PR #11). A refusal is logged.
+    pub(super) fn ui(&self, name: &'static str, tab: Option<&'static str>) {
+        let req = Request::new(1, "action")
+            .with_params(json!({"name": name, "args": {"tab": tab}, "dryRun": false}));
+        send(&self.socket, name, req);
     }
 
     /// `CPU 12% · Mem 41% · 52°` from one `get system`.
@@ -103,6 +104,29 @@ impl ksni::Tray for Item {
 
     fn menu(&self) -> Vec<ksni::MenuItem<Self>> {
         super::menu::items(self)
+    }
+
+    /// Implemented, so ksni rebuilds the menu each time the host is about
+    /// to show it; without it ksni serves the menu built at start (review
+    /// of PR #11: a hidden tab stayed in the menu).
+    fn menu_about_to_show(&mut self) {}
+}
+
+/// Sends `req` on a short-lived thread and logs a failure as `what`'s.
+pub(super) fn send(socket: &Path, what: &'static str, req: Request) {
+    let socket = socket.to_path_buf();
+    let spawned = std::thread::Builder::new()
+        .name("tray-action".into())
+        .spawn(move || {
+            let why = match call(&socket, req) {
+                Ok(_) => return,
+                Err(CallError::NoDaemon(why)) => why,
+                Err(CallError::Daemon(code, message)) => format!("{code}: {message}"),
+            };
+            server::log(&strings::tray_action_failed(what, &why));
+        });
+    if let Err(e) = spawned {
+        server::log(&strings::tray_action_failed(what, &e.to_string()));
     }
 }
 

@@ -241,8 +241,8 @@ The daemon shows a tray icon (a StatusNotifierItem) on desktops with a
 tray host, such as Waybar's tray or KDE: a left click shows or hides the
 window, a middle click opens Home, and the menu opens each tab, Settings,
 or quits the daemon. The tooltip shows CPU, memory and temperature. The
-tray holds no subscription, so it costs nothing while the window is
-closed. Set `tray.enabled` to false to turn it off (read when the daemon
+tray holds no subscription and no timer: a tooltip the host reads costs
+one reading at most every 10 s. Set `tray.enabled` to false to turn it off (read when the daemon
 starts). Until a package installs the icon, copy it into your icon theme:
 
 ```sh
