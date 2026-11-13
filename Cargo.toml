@@ -1,0 +1,40 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/mirqab-proto",
+    "crates/mirqab-core",
+    "crates/mirqab",
+    "crates/mirqab-fand",
+    "crates/mirqab-view",
+    "crates/mirqab-ui",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.92"
+license = "MIT"
+repository = "https://github.com/t1nk333r/mirqab"
+publish = false
+
+# Versions of dependencies shared by more than one crate (architecture §13).
+[workspace.dependencies]
+mirqab-proto = { path = "crates/mirqab-proto" }
+mirqab-core = { path = "crates/mirqab-core" }
+mirqab-view = { path = "crates/mirqab-view" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1.0.154"
+
+# Architecture §14: small binaries, as in haseen's sidecar.
+[profile.release]
+opt-level = "s"
+lto = true
+panic = "abort"
+strip = true
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+
+[workspace.lints.clippy]
+dbg_macro = "deny"
+todo = "deny"

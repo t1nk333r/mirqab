@@ -1,0 +1,11 @@
+# Paths no test reads: a change here alone runs no test (tools/affected-tests.sh).
+# One glob per line; the reason follows `#`. A covers glob wins over this list.
+plans/**                  # the engineering record; tools/check-docs.sh checks it
+docs/**                   # architecture and guides; tools/check-docs.sh checks links
+*.md                      # README, CLAUDE.md (AGENTS.md links to it), NOTICE
+LICENSE                   # the licence text
+.gitignore                # git's ignore list
+tools/check-docs.sh       # the docs gate, run by CI's docs job
+tools/secrets.sh          # the secrets gate, run by CI's secrets job
+tools/secrets-deny.txt    # literal strings the secrets gate refuses, empty in the repository
+.shellcheckrc             # shellcheck settings, read by tools/lint.sh

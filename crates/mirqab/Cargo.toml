@@ -1,0 +1,18 @@
+[package]
+name = "mirqab"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "mirqab"
+path = "src/main.rs"
+
+[dependencies]
+mirqab-core.workspace = true
+
+[lints]
+workspace = true

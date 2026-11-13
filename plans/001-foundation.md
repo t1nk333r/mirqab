@@ -10,7 +10,9 @@
 - **Depends on**: —
 - **Category**: core
 - **Planned at**: 2026-11-13, from the owner
-- **State**: PLANNED
+- **State**: IN PROGRESS. Phase A (skeleton and gates) implemented
+  2026-11-13: `tools/lint.sh`, `tools/check-docs.sh`, `tools/secrets.sh`
+  pass on the branch, and `tests/run.sh` 93/93. Phases B to E open.
 
 ## Problem
 
@@ -437,6 +439,26 @@ sandbox, export `GDK_BACKEND=broadway`, `BROADWAY_DISPLAY=:N`,
     CI and branch protection". Do not merge this pull request before
     protection is on.
 11. `tests/test-lint-rules.sh`, `tests/test-affected.sh`.
+
+Phase A as built (2026-11-13), where it differs from the steps above:
+
+- `start_daemon` and `stop_daemon` (step 4) move to phase B, which adds
+  the daemon they start; phase A's `tests/lib.sh` has the sandbox, the
+  stubs and the assertions only.
+- `tests/test-rust.sh` (from the Tests table) lands in phase A, because
+  the crates exist from step 3 and their trivial tests need a runner.
+- Shared infrastructure is a `SHARED` glob list in
+  `tools/affected-tests.sh`; a test opts in with `# mirqab:covers-shared`.
+  The exempt list is `tools/coverage-exempt.txt` (step 7), read by the
+  selector, so `--check` is the coverage rule `tools/lint.sh` runs.
+- `tools/affected-tests.sh --paths` prints the changed paths;
+  `tests/test-rust.sh` narrows `cargo test` to the touched crates and
+  their dependents with it.
+- The Broadway check in CI (Unverified) moves to phase D: phase A has no
+  widget to run under it. `gtk4-broadwayd` is at `/usr/bin/gtk4-broadwayd`
+  on the development machine.
+- All four CI jobs run in the `archlinux:latest` container; `docs` and
+  `secrets` install only `git` (and `gawk`, `gitleaks`).
 
 ### Phase B — daemon and protocol (PR 2)
 
