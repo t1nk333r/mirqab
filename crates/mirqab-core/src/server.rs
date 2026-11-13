@@ -387,10 +387,10 @@ fn unix_now() -> i64 {
 
 /// The minute writer (architecture §6.3): wakes once a minute, aligned to the
 /// minute, asks every sampler for its minute values and writes them in one
-/// transaction; prunes once an hour. The only work done with no subscribers.
+/// transaction; prunes once an hour and compacts once a day. The only work
+/// done with no subscribers.
 fn history_loop(inner: Arc<Inner>) {
     let mut last_prune = 0;
-    let mut last_compact = 0;
     loop {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -404,7 +404,11 @@ fn history_loop(inner: Arc<Inner>) {
         }
         let Some(h) = &inner.history else { return };
         let mut h = lock(h);
-        if let Err(e) = h.write_minute(ts, &values) {
+        // Woken just after a boundary, the values cover the minute that just
+        // ended: label them with it (30 s back lands inside it, and a wake a
+        // little early or late lands in the same minute). The minute running
+        // now is then never half-written in a query (review of phase C).
+        if let Err(e) = h.write_minute(ts - 30, &values) {
             log(&format!("history write failed: {e}"));
         }
         if ts - last_prune >= 3600 {
@@ -413,14 +417,17 @@ fn history_loop(inner: Arc<Inner>) {
             }
             last_prune = ts;
         }
-        // Once a day, pack the pages the minute writes split (History::compact).
-        if ts - last_compact >= 86_400 {
-            if last_compact != 0
-                && let Err(e) = h.compact()
-            {
-                log(&format!("history compaction failed: {e}"));
+        // Once a day, pack the pages the minute writes split. The time of the
+        // last compaction is kept in the file, so a machine that is shut down
+        // every night still compacts (review of phase C).
+        match h.compaction_due(ts) {
+            Ok(true) => {
+                if let Err(e) = h.compact(ts) {
+                    log(&format!("history compaction failed: {e}"));
+                }
             }
-            last_compact = ts;
+            Ok(false) => {}
+            Err(e) => log(&format!("history compaction check failed: {e}")),
         }
     }
 }

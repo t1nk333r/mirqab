@@ -643,9 +643,11 @@ Phase C as built (2026-11-13), where it differs from the steps above:
     §6.1's mix (memory, swap, VRAM, network and disk bytes; the rest
     percentages, temperatures, speeds and counts). The test fills that mix.
   The two changes: the epoch, and `History::compact` (`VACUUM`) once a day
-  from the minute writer, which packs the split pages. A machine with many
-  network interfaces and disks fills more byte series and can pass 40 MB;
-  owner question: raise the budget to 48 MB, or store byte series in KiB.
+  from the minute writer, which packs the split pages.
+  **Budget: 40 MiB** for the file and its write-ahead log (owner,
+  2026-11-13, choosing it over 48 MB without compaction and over byte
+  series in KiB). Measured with the log and no manual checkpoint, the last
+  day written one transaction a minute: 40,017,920 bytes (38.2 MiB).
 - `history.query` returns unscaled values, `[unixSeconds, avg, max]` per
   bucket, and omits empty buckets. Buckets align to `EPOCH`, which is on a
   2-hour boundary, so every range's buckets start on the hour.
@@ -662,6 +664,52 @@ Phase C as built (2026-11-13), where it differs from the steps above:
 - `history.list` (the series history keeps) backs `mirqab history --list`;
   `mirqab history SERIES… [--range R] [--json]` prints one bucket a line.
   Plan 005 owns the rest of the read commands.
+
+Review of phase C (Sonnet, checked by Fable, 2026-11-13). Fixed before
+merge, each with a test:
+
+- The newest minute was missing from every range for 59 seconds of each
+  60: rows were labelled with the minute the writer woke in. They are now
+  labelled with the minute their values cover (wake time − 30 s), so `1h`
+  keeps 60 points and a slightly early wake lands in the same minute.
+- `VACUUM` in WAL mode left a log as large as the database (about 72 MB
+  on disk in all). `compact` now ends with a truncating checkpoint, the
+  log is checkpointed every 256 pages and cut back to 1 MiB, and the size
+  test measures without a manual checkpoint.
+- Compaction ran only after 24 h of uptime, so a machine shut down nightly
+  never compacted (43.3 MB). The last compaction's time is kept in `meta`.
+- A history file with a newer schema was moved aside as broken and
+  replaced by an empty one. Only a file SQLite calls not a database or
+  corrupt is moved aside now; a newer schema leaves history off with the
+  reason in `status`.
+- Architecture §5.2, §6.2, §6.3 and §9.1 now describe the epoch, the
+  label, the compaction, `history.list`, the reply shape and the budget.
+- From the phase B review: `status` no longer lists a config problem the
+  last `config.set` fixed, and the socket-path test fails after 5 s
+  instead of hanging if that bug returns.
+- The writer sleeps on the monotonic clock, recomputed from the wall clock
+  each minute (step 22 said `CLOCK_REALTIME`); after a suspend one write
+  lands mid-minute and the next realigns.
+
+Deferred:
+
+- Phase E, step 32: the lock is per socket, so a second daemon on another
+  socket shares `history.db`; key the lock on the history path when the
+  benchmark first runs a second daemon on purpose. Also there: `mirqab
+  daemon --root <fixture>` writes fixture values into the real history
+  unless `XDG_STATE_HOME` is set.
+- Plan 002: series outside `history::SERIES` are not reloaded at open
+  (a restart loses `net.rx` until it is registered again); the `system`
+  sampler's first minute has no CPU value, `swap.used` is a point sample,
+  `live_prev` never expires and `cpu_percent` is not clamped; prune scans
+  the whole table (37 ms an hour on a full file).
+- Plan 005: clamp `history.query`'s `from` and `to` (a debug daemon panics
+  the client thread on `i64::MIN`) and cap series and points; the CLI's
+  exit codes for an unknown series or range, and `--dry-run` on `history`.
+- The first plan that writes events: create `history.db`, its directory
+  and the lock file 0600/0700.
+- Plan 020: a socket-activated service that finds the lock held by a
+  hand-run daemon exits 1 and restarts until that daemon stops.
 
 ### Phase D — interface shell (PR 4)
 

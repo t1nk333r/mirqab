@@ -70,7 +70,16 @@ pub struct History {
 }
 
 #[derive(Debug)]
-pub struct HistoryError(pub String);
+pub struct HistoryError(
+    pub String,
+    /** SQLite says the file is not a database or is corrupt. */ pub bool,
+);
+
+impl HistoryError {
+    pub fn msg(m: impl Into<String>) -> Self {
+        HistoryError(m.into(), false)
+    }
+}
 
 impl std::fmt::Display for HistoryError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -80,7 +89,11 @@ impl std::fmt::Display for HistoryError {
 
 impl From<rusqlite::Error> for HistoryError {
     fn from(e: rusqlite::Error) -> Self {
-        HistoryError(e.to_string())
+        let corrupt = matches!(
+            e.sqlite_error_code(),
+            Some(rusqlite::ErrorCode::NotADatabase | rusqlite::ErrorCode::DatabaseCorrupt)
+        );
+        HistoryError(e.to_string(), corrupt)
     }
 }
 
@@ -88,6 +101,11 @@ fn open_conn(path: &Path) -> Result<Connection, HistoryError> {
     let conn = Connection::open(path)?;
     conn.pragma_update(None, "journal_mode", "WAL")?;
     conn.pragma_update(None, "synchronous", "NORMAL")?;
+    // Keep the write-ahead log small: checkpoint every 256 pages (1 MiB)
+    // instead of 1000, and cut the file back to 1 MiB after a checkpoint, so
+    // the log adds at most about a megabyte to the file's 30-day size.
+    conn.pragma_update(None, "wal_autocheckpoint", 256)?;
+    conn.pragma_update(None, "journal_size_limit", 1_048_576)?;
     conn.execute_batch(DDL)?;
     let schema: Option<String> = conn
         .query_row("SELECT value FROM meta WHERE key = 'schema'", [], |r| {
@@ -104,7 +122,7 @@ fn open_conn(path: &Path) -> Result<Connection, HistoryError> {
         Some(SCHEMA) => {}
         // A later schema written by a newer mirqab: do not guess at it.
         Some(other) => {
-            return Err(HistoryError(format!(
+            return Err(HistoryError::msg(format!(
                 "history schema {other} is newer than {SCHEMA}"
             )));
         }
@@ -129,11 +147,15 @@ impl History {
     pub fn open(path: &Path, now_unix: i64) -> Result<History, HistoryError> {
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir)
-                .map_err(|e| HistoryError(format!("{}: {e}", dir.display())))?;
+                .map_err(|e| HistoryError::msg(format!("{}: {e}", dir.display())))?;
         }
         let (conn, moved_aside) = match open_conn(path) {
             Ok(c) => (c, None),
-            Err(first) => {
+            // Only a file SQLite calls not a database, or corrupt, is moved
+            // aside. A newer schema, a permission error, a full disk or a
+            // lock leaves the file alone and history off (review of phase C:
+            // each of those hid thirty days of data).
+            Err(first) if first.1 => {
                 let aside = path.with_file_name(format!(
                     "{}.broken-{now_unix}",
                     path.file_name()
@@ -141,7 +163,7 @@ impl History {
                         .unwrap_or_default()
                 ));
                 std::fs::rename(path, &aside).map_err(|e| {
-                    HistoryError(format!("{first}; and moving it aside failed: {e}"))
+                    HistoryError::msg(format!("{first}; and moving it aside failed: {e}"))
                 })?;
                 for suffix in ["-wal", "-shm"] {
                     let side = PathBuf::from(format!("{}{suffix}", path.display()));
@@ -154,6 +176,7 @@ impl History {
                 }
                 (open_conn(path)?, Some(aside))
             }
+            Err(other) => return Err(other),
         };
         let mut h = History {
             conn,
@@ -189,7 +212,7 @@ impl History {
                     .conn
                     .query_row("SELECT count(*) FROM series", [], |r| r.get(0))?;
                 if count as usize >= MAX_SERIES {
-                    return Err(HistoryError(format!(
+                    return Err(HistoryError::msg(format!(
                         "history holds at most {MAX_SERIES} series"
                     )));
                 }
@@ -204,8 +227,8 @@ impl History {
         Ok(id)
     }
 
-    /// One minute's values in one transaction. `ts` is unix seconds; it is
-    /// stored as the minute. Unknown keys are skipped.
+    /// One minute's values in one transaction. `ts` is any second inside the
+    /// minute the values cover; the row is labelled with that minute. Unknown keys are skipped.
     pub fn write_minute(&mut self, ts: i64, values: &[(&str, i64)]) -> Result<usize, HistoryError> {
         let minute = minute(ts);
         let tx = self.conn.transaction()?;
@@ -245,7 +268,9 @@ impl History {
         let bucket_min = (bucket / 60).max(1);
         let mut out = serde_json::Map::new();
         let mut stmt = self.conn.prepare_cached(
-            "SELECT (ts / ?2) * ?2 AS b, avg(v), max(v) FROM sample
+            // Floor division, so a minute before the epoch (a clock set
+            // wrong) lands in its own bucket, not the one after it.
+            "SELECT ts - ((ts % ?2) + ?2) % ?2 AS b, avg(v), max(v) FROM sample
              WHERE series = ?1 AND ts >= ?3 AND ts < ?4 GROUP BY b ORDER BY b",
         )?;
         for key in series {
@@ -258,6 +283,8 @@ impl History {
                     .query_row("SELECT unit FROM series WHERE id = ?1", [id], |r| r.get(0))?;
             let s = scale.max(1) as f64;
             let points: Vec<Value> = stmt
+                // Rows are labelled with the minute their values cover, so
+                // the minute running at `to` holds nothing yet.
                 .query_map(params![id, bucket_min, minute(from), minute(to)], |r| {
                     let b: i64 = r.get(0)?;
                     let avg: f64 = r.get(1)?;
@@ -332,8 +359,37 @@ impl History {
     /// each series' run of rows grows in the middle of the table and its pages
     /// split half full; a daily rewrite packs them again (plan 001 phase C:
     /// 30 days × 64 series measured 43 MB unpacked, over the 40 MB budget).
-    pub fn compact(&self) -> Result<(), HistoryError> {
-        self.conn.execute_batch("VACUUM;")?;
+    /// Whether a day has passed since the last compaction. A new file counts
+    /// from its creation.
+    pub fn compaction_due(&self, now: i64) -> Result<bool, HistoryError> {
+        let last: Option<String> = self
+            .conn
+            .query_row("SELECT value FROM meta WHERE key = 'compacted'", [], |r| {
+                r.get(0)
+            })
+            .optional()?;
+        Ok(match last.and_then(|v| v.parse::<i64>().ok()) {
+            Some(t) => now - t >= 86_400,
+            None => {
+                self.conn.execute(
+                    "INSERT OR REPLACE INTO meta (key, value) VALUES ('compacted', ?1)",
+                    [now.to_string()],
+                )?;
+                false
+            }
+        })
+    }
+
+    pub fn compact(&self, now: i64) -> Result<(), HistoryError> {
+        self.conn.execute(
+            "INSERT OR REPLACE INTO meta (key, value) VALUES ('compacted', ?1)",
+            [now.to_string()],
+        )?;
+        // In WAL mode VACUUM writes the whole new file through the log; empty
+        // it at once, or the log stays as large as the database (review of
+        // phase C: 36 MB of database left a 36 MB log).
+        self.conn
+            .execute_batch("VACUUM; PRAGMA wal_checkpoint(TRUNCATE);")?;
         Ok(())
     }
 

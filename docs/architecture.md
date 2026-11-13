@@ -313,11 +313,12 @@ DankMaterialShell (MIT); `NOTICE.md` carries both notices.
 | `subscribe` | `stream`, `params.interval` (ms, optional), `params.live` (bool, optional; §5.3). Subscribing again to the same stream replaces the params | The effective interval; then events |
 | `unsubscribe` | `stream` | — |
 | `get` | `stream`, `params` | One snapshot, no subscription |
-| `history.query` | `series[]`, `range` (`1h`, `24h`, `7d`, `30d`) or `from`/`to` | Points per series |
+| `history.query` | `series[]`, `range` (`1h`, `24h`, `7d`, `30d`) or `from`/`to` (unix seconds) | Per series its `unit` and `points`, each `[unixSeconds, avg, max]` unscaled; empty buckets omitted |
 | `history.events` | `kind`, `from`, `to` | Event rows |
+| `history.list` | — | The series history keeps: key, unit, scale |
 | `action` | `name`, `args`, `dryRun` | What was done, or `wouldDo` |
 | `config.get` / `config.set` | key paths | The config; the daemon is the only writer |
-| `capabilities` | — | The list from `hello` |
+| `capabilities` | — | The list from `hello`: the streams this machine serves, plus `history` when the history file is open (a capability, not a stream) |
 | `status` | — | Version, uptime, subscribers, self-cost |
 | `shutdown` | — | — |
 
@@ -456,7 +457,7 @@ sessions starting and ending, spikes, alerts fired.
 ```sql
 CREATE TABLE series (id INTEGER PRIMARY KEY, key TEXT UNIQUE NOT NULL, unit TEXT NOT NULL, scale INTEGER NOT NULL);
 CREATE TABLE sample (series INTEGER NOT NULL, ts INTEGER NOT NULL, v INTEGER NOT NULL,
-                     PRIMARY KEY (series, ts)) WITHOUT ROWID;      -- ts = unix minute
+                     PRIMARY KEY (series, ts)) WITHOUT ROWID;      -- ts = minutes since 2026-01-01 UTC
 CREATE TABLE daily  (key TEXT NOT NULL, day INTEGER NOT NULL, v INTEGER NOT NULL,
                      PRIMARY KEY (key, day)) WITHOUT ROWID;        -- day = unix day, local
 CREATE TABLE event  (id INTEGER PRIMARY KEY, ts INTEGER NOT NULL, kind TEXT NOT NULL, data TEXT NOT NULL);
@@ -465,9 +466,18 @@ CREATE TABLE meta   (key TEXT PRIMARY KEY, value TEXT NOT NULL);   -- schema ver
 ```
 
 Values are integers scaled by `series.scale` (percent ×100, °C ×10, bytes
-×1). 64 series × 43,200 minutes = 2.76 M rows; at about 12 bytes a row in a
-`WITHOUT ROWID` table that is roughly 35 MB. The budget is **40 MB**, and a
-test fills 30 days of synthetic data and checks the file size.
+×1). A row's `ts` counts minutes from 2026-01-01 00:00 UTC
+(`history::EPOCH`), which fits SQLite's 3-byte integer for 15 years where a
+unix minute needs 4; the epoch is on a 2-hour boundary, so range buckets
+align as they would to unix time. A row is labelled with the minute its
+values cover.
+
+64 series × 43,200 minutes = 2.76 M rows. The budget is **40 MiB** (owner,
+2026-11-13) for the file and its write-ahead log together. Measured
+(plan 001, "Phase C as built"): 38.2 MiB with one series in four holding
+byte counts, packed by the daily compaction (§6.3); 43.3 MB never
+compacted. A test fills 30 days the way the writer does and checks the
+size without a manual checkpoint.
 
 Rejected: one wide row per minute (every new series is a migration), a
 round-robin file format (a second storage engine for no gain), keeping
@@ -476,7 +486,9 @@ history in the interface (gone when the window closes).
 ### 6.3 The minute writer
 
 One wakeup a minute, aligned to the minute, one transaction. This is the
-only work the daemon does with no subscribers.
+only work the daemon does with no subscribers. Woken just after a minute
+boundary, it labels the values with the minute that just ended, so the
+minute running now is never half-written in a query.
 
 - **Counters** (CPU jiffies, network and disk bytes, paging counts, energy)
   are read once a minute and differenced, so the stored value is the true
@@ -490,6 +502,12 @@ only work the daemon does with no subscribers.
 - A gap (suspend, daemon stopped) stores nothing; graphs draw a break.
 - Pruning runs once an hour: `DELETE … WHERE ts < now − 30 d` for `sample`
   and `event`, 90 d for `daily`.
+- Compaction runs once a day (`VACUUM`, then a truncating checkpoint):
+  rows arrive series by series, so each series' run grows in the middle of
+  the key and its pages split half full. The time of the last compaction is
+  kept in the file's `meta`, so a machine shut down every night still
+  compacts. The write-ahead log is checkpointed every 256 pages and cut
+  back to 1 MiB, so it adds at most about a megabyte.
 
 ### 6.4 Ranges
 
@@ -735,7 +753,7 @@ signalled; the interface shows them read-only.
 | Daemon CPU, System tab open with its live graph at 1 s | < 1 % of one core | Same script with `--subscribe system --live` |
 | Interface process, window closed for 60 s | does not exist | `pgrep -x mirqab-ui` |
 | Interface RSS, open | reported, not gated; plan 001 measures it with the default renderer and with `GSK_RENDERER=cairo` and records both | footer |
-| `history.db` at 30 days | < 40 MB | synthetic fill test |
+| `history.db` at 30 days, with its log | < 40 MiB | synthetic fill test |
 | Wakeups, no subscribers | ≤ 2 per minute (minute writer, D-Bus keepalive) | `/proc/<pid>/status` context switches over 60 s |
 
 **The idle target is unchanged by the 1 s decision**: under 0.3 % of one

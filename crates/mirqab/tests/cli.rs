@@ -57,6 +57,26 @@ fn start(name: &str) -> Daemon {
     Daemon { child, dir, socket }
 }
 
+/// Runs a command that must exit by itself; a daemon that wrongly starts and
+/// serves is killed after 5 s and fails the test instead of hanging it.
+fn output_within(cmd: &mut Command) -> std::process::Output {
+    let mut child = cmd
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while child.try_wait().unwrap().is_none() {
+        if std::time::Instant::now() > deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("still running after 5 s");
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    child.wait_with_output().unwrap()
+}
+
 fn mirqab(d: &Daemon, args: &[&str]) -> std::process::Output {
     Command::new(BIN)
         .arg("--socket")
@@ -148,13 +168,15 @@ fn a_file_or_directory_at_the_socket_path_is_never_removed() {
     std::fs::write(run.join("notes.txt"), "keep").unwrap();
     std::os::unix::fs::symlink(run.join("notes.txt"), run.join("link")).unwrap();
     for target in ["precious", "notes.txt", "link"] {
-        let out = Command::new(BIN)
-            .args(["daemon", "--socket"])
-            .arg(run.join(target))
-            .env("XDG_RUNTIME_DIR", &run)
-            .env("XDG_CONFIG_HOME", dir.join("config"))
-            .output()
-            .unwrap();
+        let out = output_within(
+            Command::new(BIN)
+                .args(["daemon", "--socket"])
+                .arg(run.join(target))
+                .env("XDG_RUNTIME_DIR", &run)
+                .env("XDG_CONFIG_HOME", dir.join("config"))
+                .env("XDG_STATE_HOME", dir.join("state"))
+                .env("HOME", &dir),
+        );
         assert_eq!(out.status.code(), Some(1), "{target}");
         assert!(
             String::from_utf8_lossy(&out.stderr).contains("is not a socket"),

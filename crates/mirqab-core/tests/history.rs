@@ -158,6 +158,67 @@ fn each_range_returns_its_bucket_count() {
 }
 
 #[test]
+fn the_minute_just_written_is_in_a_range_that_ends_now() {
+    let d = scratch("newest");
+    let mut h = History::open(&d.0.join("history.db"), NOW).unwrap();
+    // The writer wakes just after a boundary and labels the values with the
+    // minute that just ended (wake - 30 s); the daemon queries to now + 1.
+    let boundary = NOW + 17 * 60 + 7_200 * 3 + 120;
+    h.write_minute(boundary + 1 - 30, &[("cpu.total", 4200)])
+        .unwrap();
+    for into in [1, 2, 30, 58, 59] {
+        let now = boundary + into;
+        let v = h.query(&["cpu.total"], now - 3600, now + 1, 60).unwrap();
+        assert_eq!(
+            v["series"]["cpu.total"]["points"],
+            serde_json::json!([[boundary - 60, 42.0, 42.0]]),
+            "{into} s into the minute"
+        );
+    }
+    // A wake a little early still labels the same minute.
+    h.write_minute(boundary - 1 - 30, &[("cpu.total", 4300)])
+        .unwrap();
+    let v = h
+        .query(&["cpu.total"], boundary - 3600, boundary + 1, 60)
+        .unwrap();
+    assert_eq!(
+        v["series"]["cpu.total"]["points"].as_array().unwrap().len(),
+        1
+    );
+}
+
+#[test]
+fn compaction_is_due_a_day_after_the_last_one_even_across_restarts() {
+    let d = scratch("due");
+    let path = d.0.join("history.db");
+    {
+        let h = History::open(&path, NOW).unwrap();
+        assert!(
+            !h.compaction_due(NOW).unwrap(),
+            "a new file starts the clock"
+        );
+        assert!(!h.compaction_due(NOW + 3600).unwrap());
+    }
+    // Restarted the next day: the clock survived.
+    let h = History::open(&path, NOW).unwrap();
+    assert!(h.compaction_due(NOW + 86_400).unwrap());
+    h.compact(NOW + 86_400).unwrap();
+    assert!(!h.compaction_due(NOW + 86_401).unwrap());
+}
+
+#[test]
+fn compaction_leaves_no_large_log() {
+    let d = scratch("wal");
+    let h = History::open(&d.0.join("history.db"), NOW).unwrap();
+    fill(&h, &[1, 2, 3, 4], 7 * 1440);
+    h.compact(NOW).unwrap();
+    let wal = std::fs::metadata(d.0.join("history.db-wal"))
+        .map(|m| m.len())
+        .unwrap_or(0);
+    assert!(wal <= 1_048_576, "the log is {wal} bytes after compaction");
+}
+
+#[test]
 fn writes_and_prunes() {
     let d = scratch("prune");
     let mut h = History::open(&d.0.join("history.db"), NOW).unwrap();
@@ -205,6 +266,26 @@ fn a_broken_file_is_moved_aside() {
 }
 
 #[test]
+fn a_newer_schema_is_left_alone_and_refused() {
+    let d = scratch("newer");
+    let path = d.0.join("history.db");
+    {
+        let mut h = History::open(&path, NOW).unwrap();
+        h.write_minute(NOW, &[("cpu.total", 1)]).unwrap();
+        h.conn()
+            .execute("UPDATE meta SET value = '2' WHERE key = 'schema'", [])
+            .unwrap();
+    }
+    let err = History::open(&path, NOW).err().expect("refused");
+    assert!(err.0.contains("newer"), "{}", err.0);
+    let names: Vec<String> = std::fs::read_dir(&d.0)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    assert!(names.iter().all(|n| !n.contains("broken")), "{names:?}");
+}
+
+#[test]
 fn sixty_four_series_for_thirty_days_fit_in_forty_megabytes() {
     let d = scratch("size");
     let mut h = History::open(&d.0.join("history.db"), NOW).unwrap();
@@ -223,9 +304,15 @@ fn sixty_four_series_for_thirty_days_fit_in_forty_megabytes() {
     // The steady state: 29 days packed by the daily rewrite, then a day of
     // minutes written since.
     fill_range(&h, &ids, 29 * 1440, 1440);
-    h.compact().unwrap();
-    fill_range(&h, &ids, 1440, 0);
-    h.checkpoint().unwrap();
+    h.compact(NOW).unwrap();
+    // The last day as the writer does it: one transaction a minute, so the
+    // write-ahead log behaves as it does in a running daemon.
+    for m in 0..1440 {
+        fill_range(&h, &ids, 1, 1439 - m);
+    }
+    // The file and its write-ahead log as they stand, no manual checkpoint:
+    // what `status` reports and what the disk holds. The budget is 40 MiB
+    // (owner, 2026-11-13).
     let size = h.size_bytes();
     eprintln!("history: 64 series x 30 days = {size} bytes");
     assert!(size < 40 * 1024 * 1024, "{size} bytes");

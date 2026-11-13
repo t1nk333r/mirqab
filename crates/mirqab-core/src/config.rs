@@ -243,6 +243,8 @@ impl Config {
         if !dry_run {
             self.file = file;
             set_path(&mut self.effective, key, value);
+            // A key the user had set to a bad value may be the one just fixed.
+            self.problems = merge(&self.file).1;
             self.stamp = stamp(&self.path);
         }
         Ok(done)
@@ -279,10 +281,13 @@ mod tests {
             r#"{"live":{"intervalMs":200},"units":{"temperature":"f"},"mine":1}"#,
         )
         .unwrap();
-        let c = Config::load(&p);
+        let mut c = Config::load(&p);
         assert_eq!(c.live_interval_ms(), 1000);
         assert_eq!(c.get("units.temperature"), Some(&json!("f")));
         assert_eq!(c.problems().len(), 1);
+        // Setting that key to a good value clears the problem.
+        c.set("live.intervalMs", json!(1500), false).unwrap();
+        assert!(c.problems().is_empty());
         act::remove_path(&d, false).unwrap();
     }
 
