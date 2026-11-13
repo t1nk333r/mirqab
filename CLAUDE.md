@@ -107,10 +107,15 @@ Widget and page tests need a headless GTK display: `tests/lib.sh` starts
 `tests/run.sh --affected [BASE]`: it runs the test files whose
 `# mirqab:covers` globs match a path changed since the merge base with
 BASE (default `origin/main`), staged, unstaged and untracked included;
-`tools/affected-tests.sh` prints why. A change to shared infrastructure
-(`crates/mirqab-proto/`, `crates/mirqab-core/src/{root,exec,act,server}.rs`,
-`tests/lib.sh`, `tools/`, `Cargo.toml`, `Cargo.lock`, `deny.toml`) widens the selection by itself: say so, and do
-not fall back to the whole suite by hand. The full run is CI's job on
+`tools/affected-tests.sh` prints why. A change to the test machinery
+(`tests/lib.sh`, `tests/run.sh`, `tools/affected-tests.sh`,
+`tools/coverage-exempt.txt`, `.github/workflows/`) runs every test, and a
+change to shared infrastructure (`crates/mirqab-proto/`,
+`crates/mirqab-core/src/{root,exec,act,server}.rs`, `Cargo.toml`,
+`Cargo.lock`, `deny.toml`, `rust-toolchain.toml`) runs every test that
+declares `# mirqab:covers-shared`: say so, and do not fall back to the
+whole suite by hand. The other gates under `tools/` select only the test
+that covers them. The full run is CI's job on
 `main` and on a release tag. A new test declares what it covers in its
 leading comments; lint fails on a file no test covers.
 

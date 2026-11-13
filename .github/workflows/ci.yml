@@ -7,8 +7,9 @@
 #   docs    tools/check-docs.sh
 #   secrets tools/secrets.sh: gitleaks over every commit plus the privacy
 #           patterns (needs full history)
-# Every job runs in an Arch container, the distribution mirqab targets, and
-# runs the gates as an unprivileged user. Actions are pinned by commit SHA.
+# Every job runs in an Arch container, the distribution mirqab targets. lint
+# and test run the gates as an unprivileged user; docs and secrets only read
+# the checkout and run as the container's root. Actions are pinned by SHA.
 #
 # Adapted from haseen .github/workflows/ci.yml (MIT, (c) 2026 t1nk33r;
 # NOTICE.md).

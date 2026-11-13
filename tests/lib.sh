@@ -7,8 +7,9 @@
 # Every test runs hermetically:
 #   - fixture trees under tests/fixtures/ stand for `/` (architecture §5.3),
 #     so nothing reads the live machine;
-#   - HOME, XDG_* and XDG_RUNTIME_DIR point into a scratch directory under
-#     ${TMPDIR:-/tmp}, never inside the checkout, removed when the file ends;
+#   - HOME, XDG_*, XDG_RUNTIME_DIR and TMPDIR point into a scratch directory
+#     under the caller's ${TMPDIR:-/tmp}, never inside the checkout, removed
+#     when the file ends;
 #   - PATH starts with a stub directory where every state-changing binary
 #     prints STUB-CALLED and exits 97, so a dry run's purity is "the output
 #     never contains STUB-CALLED";
@@ -32,6 +33,10 @@ STUBBED_CMDS=(sudo pkexec systemctl systemd-run systemd-inhibit loginctl
 export CARGO_HOME RUSTUP_HOME
 export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$REPO/target}"
 
+# Scratch trees go under the caller's TMPDIR, captured once: sandbox points
+# TMPDIR into the sandbox, and a second sandbox call must not nest in it.
+MIRQAB_SCRATCH_PARENT="${TMPDIR:-/tmp}"
+
 SCRATCH=""
 _cleanup_scratch() {
     [[ -z $SCRATCH || ! -d $SCRATCH ]] || rm -rf -- "$SCRATCH"
@@ -42,9 +47,11 @@ trap _cleanup_scratch EXIT
 # Call it once per test file, before anything that could read the session.
 sandbox() {
     _cleanup_scratch
-    SCRATCH="$(mktemp -d "${TMPDIR:-/tmp}/mirqab-test.XXXXXX")"
+    SCRATCH="$(mktemp -d "$MIRQAB_SCRATCH_PARENT/mirqab-test.XXXXXX")"
     SANDBOX="$SCRATCH"
-    mkdir -p "$SANDBOX/home" "$SANDBOX/stubs" "$SANDBOX/run"
+    mkdir -p "$SANDBOX/home" "$SANDBOX/stubs" "$SANDBOX/run" "$SANDBOX/tmp"
+    # What runs under a test writes its temporary files here, not to /tmp.
+    export TMPDIR="$SANDBOX/tmp"
     chmod 0700 "$SANDBOX/run"
     local c
     for c in "${STUBBED_CMDS[@]}"; do

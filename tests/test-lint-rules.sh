@@ -92,3 +92,14 @@ t="$(tree empty)"
 printf '%s\n' 'label.set_text("");' >"$t/crates/mirqab-ui/src/clear.rs"
 capture "$REPO/tools/lint.sh" --rules "$t"
 status_is "an empty string in a widget call is allowed" 0 "$STATUS"
+
+# The exemptions are exact paths: the same file name elsewhere is not exempt.
+plant "Command::new in another crate's exec.rs" crates/mirqab-ui/src/exec.rs 'fn x() { Command::new("ls"); }' "mutation or command"
+plant "kill in another crate's act.rs" crates/mirqab-view/src/act.rs 'fn x() { libc::kill(1, 9); }' "mutation or command"
+plant "a /proc path in another crate's root.rs" crates/mirqab-ui/src/tabs/root.rs 'fn x() { read("/proc/stat"); }' "literal system path"
+plant "sudo beside a mention of elevate.rs" crates/mirqab-core/src/note.rs '// see crates/mirqab/src/elevate.rs: it runs sudo' "sudo or pkexec"
+
+# A cargo tree that fails is a lint failure, not an empty answer.
+capture "$REPO/tools/lint.sh" --tree mirqab-no-such-crate
+status_is "cargo tree failing fails the link rule" 1 "$STATUS"
+like "and says so" "$OUTPUT" "cargo tree -p mirqab-no-such-crate failed"

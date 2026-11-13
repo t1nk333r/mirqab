@@ -9,8 +9,12 @@
 #       untracked (not ignored) files count too; CI passes --committed. Why each
 #       path selects what it does goes to stderr unless --quiet.
 #   tools/affected-tests.sh --paths [--committed] [BASE]
-#       Prints the changed paths themselves, one per line (tests/test-rust.sh
-#       narrows cargo with them).
+#       Prints the changed paths themselves, one per line.
+#   tools/affected-tests.sh --paths-for TEST [--committed] [BASE]
+#       Prints the changed paths that select TEST, one per line, or `all`
+#       when the selection is every test (tests/test-rust.sh narrows cargo
+#       with it). Why each path selects what it does is printed unless
+#       --quiet; there is no separate --why.
 #   tools/affected-tests.sh --check
 #       Fails, listing them, on a file that is neither global, exempt nor
 #       covered by a test, on a covers glob or a GLOBAL/EXEMPT entry that matches
@@ -77,7 +81,7 @@ SHARED=(
 # over this list. One glob per line in tools/coverage-exempt.txt, each with a
 # reason after `#`.
 EXEMPT=()
-while IFS= read -r line; do
+while IFS= read -r line || [[ -n $line ]]; do
     line=${line%%#*}
     line=${line//[[:space:]]/}
     [[ -z $line ]] || EXEMPT+=("$line")
@@ -87,7 +91,7 @@ done <tools/coverage-exempt.txt
 # for now; the mechanism is kept from haseen for a version file.
 NOWIDEN=()
 
-usage() { sed -n '2,20s/^# \{0,1\}//p' "$0"; }
+usage() { sed -n '2,25s/^# \{0,1\}//p' "$0"; }
 
 # glob_regex GLOB — sets REGEX to the anchored POSIX ERE for GLOB; fails on
 # bad syntax. (A variable, not output: no subshell per glob.)
@@ -259,7 +263,7 @@ check() {
         { echo "affected-tests: git ls-files failed" >&2; return 2; }
     : >"$tmp/unsafe"
     nul_paths "$tmp/ls" | while IFS= read -r f; do
-        [[ -e $f || -L $f ]] && printf '%s\n' "$f"
+        if [[ -e $f || -L $f ]]; then printf '%s\n' "$f"; fi
     done | sort -u >"$tmp/paths"
     if [[ ! -s $tmp/paths ]]; then
         echo "affected-tests: git listed no files; an empty tree is not a covered one" >&2
@@ -344,7 +348,7 @@ select_tests() {
     ' "$tmp/changed" - >"$tmp/classified"
 
     local -A selected=()
-    local all=0 why=() t global exempt cov nowiden tests
+    local all=0 why=() t global exempt cov nowiden tests for_paths=()
     while IFS= read -r f; do
         all=1
         why+=("$f: a control character in the name, which no glob can be matched against, every test")
@@ -363,7 +367,10 @@ select_tests() {
         [[ $cov == - ]] || read -ra tests <<<"$cov"
         [[ $f =~ ^tests/test-[^/]*\.sh$ && -f $f ]] && tests+=("$f")
         if ((${#tests[@]} > 0)); then
-            for t in "${tests[@]}"; do selected[$t]=1; done
+            for t in "${tests[@]}"; do
+                selected[$t]=1
+                [[ $t != "$paths_for" ]] || for_paths+=("$f")
+            done
             why+=("$f: $(printf '%s\n' "${tests[@]}" | sort -u | sed 's#^tests/##' | paste -sd' ')")
         elif [[ $exempt == E ]]; then
             why+=("$f: exempt, no test")
@@ -385,18 +392,25 @@ select_tests() {
     fi
     if ((all)); then
         echo all
+    elif [[ -n $paths_for ]]; then
+        ((${#for_paths[@]} == 0)) || printf '%s\n' "${for_paths[@]}" | sort -u
     elif ((${#selected[@]} > 0)); then
         printf '%s\n' "${!selected[@]}" | sort
     fi
 }
 
-committed=0 quiet=0 base="" paths_only=0
+committed=0 quiet=0 base="" paths_only=0 paths_for=""
 while (($# > 0)); do
     case $1 in
     -h | --help) usage; exit 0 ;;
     --check) check; exit ;;
     --committed) committed=1 ;;
     --paths) paths_only=1 ;;
+    --paths-for)
+        shift
+        [[ -n ${1:-} ]] || { echo "affected-tests: --paths-for needs a test file" >&2; exit 2; }
+        paths_for=$1
+        ;;
     -q | --quiet) quiet=1 ;;
     -*) echo "affected-tests: unknown option $1 (see --help)" >&2; exit 2 ;;
     *)

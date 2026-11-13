@@ -48,8 +48,6 @@ scan() {
 }
 
 patterns=(
-    # A CIDR (100.64.0.0/10) names the range, not a host: allowed.
-    'CGNAT (tailnet) address|\b100\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])\.[0-9]{1,3}\.[0-9]{1,3}([^/0-9.]|$)'
     'MAC address|\b[0-9a-fA-F]{2}(:[0-9a-fA-F]{2}){5}\b'
     'coordinates finer than a city|(lat|lon|lng|latitude|longitude)"?[[:space:]]*[:=][[:space:]]*-?[0-9]{1,3}\.[0-9]{3,}'
     'token shape|\b(sk-[A-Za-z0-9_-]{20,}|ghp_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{30,}|xox[abp]-[A-Za-z0-9-]{10,})'
@@ -62,8 +60,10 @@ for entry in "${patterns[@]}"; do
 done
 
 # IPv4 addresses outside the documentation ranges (RFC 5737), loopback,
-# 0.0.0.0 and the 255.x masks. A CIDR network (a.b.c.d/N) names a range, not a
-# host, so it is allowed; 1.1.1.1 is the latency target architecture §10 names.
+# 0.0.0.0 and the 255.x masks; private, CGNAT (tailnet) and public hosts alike.
+# A CIDR is allowed only when its host bits are zero (100.64.0.0/10 names a
+# range); `inet 10.20.30.40/24`, as `ip addr` prints it, is a host. 1.1.1.1 is
+# the latency target architecture §10 names.
 ipv4='\b([0-9]{1,3}\.){3}[0-9]{1,3}\b'
 allowed='^(192\.0\.2\.|198\.51\.100\.|203\.0\.113\.|127\.|0\.0\.0\.0$|255\.|1\.1\.1\.1$)'
 {
@@ -71,8 +71,17 @@ allowed='^(192\.0\.2\.|198\.51\.100\.|203\.0\.113\.|127\.|0\.0\.0\.0$|255\.|1\.1
     git log -p "${REFS[@]}" -- . ':!tools/secrets.sh' | grep -E '^\+' | grep -oE -e "$ipv4(/[0-9]+)?" || true
 } | while IFS= read -r hit; do
     addr="${hit##*:}"
-    [[ $addr == */* ]] && continue
-    grep -qE "$allowed" <<<"$addr" || printf '%s\n' "$hit"
+    host="${addr%/*}"
+    grep -qE "$allowed" <<<"$host" && continue
+    if [[ $addr == */* ]]; then
+        bits="${addr#*/}"
+        IFS=. read -r a b c d <<<"$host"
+        if ((bits < 32 && a <= 255 && b <= 255 && c <= 255 && d <= 255)); then
+            n=$(((a << 24) | (b << 16) | (c << 8) | d))
+            ((n & ((1 << (32 - bits)) - 1))) || continue
+        fi
+    fi
+    printf '%s\n' "$hit"
 done | report "IPv4 address outside the documentation ranges"
 
 # Literal strings: the repository's list and the machine's local one.
@@ -80,7 +89,7 @@ deny_files=(tools/secrets-deny.txt)
 [[ -z ${MIRQAB_SECRETS_DENY:-} ]] || deny_files+=("$MIRQAB_SECRETS_DENY")
 for f in "${deny_files[@]}"; do
     [[ -f $f ]] || { echo "secrets: deny list $f not found" >&2; fail=1; continue; }
-    while IFS= read -r word; do
+    while IFS= read -r word || [[ -n $word ]]; do
         [[ -n $word && $word != '#'* ]] || continue
         {
             git grep -nIF -e "$word" -- . ':!tools/secrets-deny.txt' || true

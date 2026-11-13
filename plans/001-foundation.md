@@ -458,7 +458,43 @@ Phase A as built (2026-11-13), where it differs from the steps above:
   widget to run under it. `gtk4-broadwayd` is at `/usr/bin/gtk4-broadwayd`
   on the development machine.
 - All four CI jobs run in the `archlinux:latest` container; `docs` and
-  `secrets` install only `git` (and `gawk`, `gitleaks`).
+  `secrets` install only `git` (and `gawk`, `gitleaks`) and, since they
+  only read the checkout, run as the container's root.
+- Step 6's `--why` is not a flag: the selector prints its reasons to
+  stderr unless `--quiet`. `--paths-for TEST` prints the changed paths that
+  select one test (or `all`); `tests/test-rust.sh` uses it, so any path
+  outside a crate that selects it (a fixture, a golden file, the manifest,
+  the lock, the test itself) runs every crate.
+- `tools/` is not shared infrastructure as a whole (CLAUDE.md said it was;
+  review of PR #1): a change to `tools/lint.sh` runs the lint-rule test,
+  not every cargo test. The test machinery is global and the Rust
+  workspace files are shared; CLAUDE.md and architecture §16 now say so.
+
+Review of PR #1 (Sonnet, checked by Fable, 2026-11-13). Fixed in phase A:
+the Rust tests skipped when only a fixture changed; host addresses in CIDR
+form passing the secrets scan; a last deny-list or exempt line without a
+newline being ignored; lint exemptions matching a file name in any crate;
+`cargo tree` errors hidden; `TMPDIR` left pointing at `/tmp`; `--check`
+stopping silently. Each has a regression test (`tests/test-secrets.sh` is
+new). Deferred, each to the step that adds the code it guards:
+
+- Phase D, steps 25–26: the colour rule fires on `#123` in a comment and
+  on a CSS id selector (`#cafe {`); narrow it to value positions once
+  `theme.rs` and `style.css` exist.
+- Phase D, step 27: the `live` rule scans only `tabs/` and one line at a
+  time; widen it to all of `crates/mirqab-ui/src` but `widgets/graph.rs`,
+  multi-line, once `client.rs` fixes the subscribe call's shape. Widen
+  the toolkit list of the link rule (`glib-sys`, `gtk4-sys`, `pango`,
+  `gdk-pixbuf`) when GTK enters `Cargo.lock`.
+- Phase D, step 28: the timer rule accepts `add_tick_callback` with a
+  `mirqab:sample` marker (§7.2 allows only `ui-timeout`), flags a `use`
+  line and a trailing same-line marker, and does not check the 1000 ms
+  minimum.
+- Plan 011: dash-separated MAC addresses in the secrets scan.
+- Plan 015: `mirqab-fand` needs literal `/sys` paths; the literal-path
+  rule needs its exemption then.
+- Plan 017: the coordinate rule is case-sensitive and key-based
+  (`Lat: 24.71361` passes).
 
 ### Phase B — daemon and protocol (PR 2)
 

@@ -4,6 +4,8 @@
 #   tools/lint.sh              every check below, on this checkout
 #   tools/lint.sh --rules DIR  only the grep rules, on the tree at DIR
 #                              (tests/test-lint-rules.sh plants violations)
+#   tools/lint.sh --tree CRATE...
+#                              only the headless-crate link rule, for CRATEs
 #
 # Checks: cargo fmt; cargo clippy -D warnings; cargo deny (licences, bans,
 # sources; advisories too when CI is set, because it downloads a database);
@@ -20,7 +22,8 @@ err() { printf 'lint: %s\n' "$*" >&2; fail=1; }
 # The crates that must never name or link the toolkit (architecture §3).
 HEADLESS=(mirqab-proto mirqab-core mirqab mirqab-fand mirqab-view)
 # The one file allowed to say sudo or pkexec, and the fixed helper scripts
-# under dist/ that architecture §8 lists (none yet).
+# under dist/ that architecture §8 lists (none yet). Exact paths: the same
+# file name in another crate is not exempt.
 PRIV_ALLOWED=(crates/mirqab/src/elevate.rs)
 
 # hits RULE — report grep's file:line output on stdin as violations of RULE.
@@ -53,18 +56,18 @@ grep_rules() {
         for f in crates dist; do [[ -d $f ]] && priv+=("$f"); done
         if ((${#priv[@]})); then
             grep -rnwE 'sudo|pkexec' "${priv[@]}" 2>/dev/null |
-                grep -vF -f <(printf '%s:\n' "${PRIV_ALLOWED[@]}") |
+                grep -vE "^($(printf '%s|' "${PRIV_ALLOWED[@]}" | sed 's/[.]/\\./g; s/|$//')):" |
                 hits "sudo or pkexec outside elevate.rs (§5.4)"
         fi
 
         # §5.3: no literal system path outside root.rs; everything goes
         # through Root so tests can pass a fixture tree.
-        rs_files crates/*/src | grep -v '/root\.rs$' |
+        rs_files crates/*/src | grep -vx 'crates/mirqab-core/src/root\.rs' |
             xargs -r grep -HnE '"/(proc|sys|etc|run|dev)(/|")' |
             hits "literal system path outside root.rs (§5.3)"
 
         # §5.4: mutation and process spawning only in act.rs and exec.rs.
-        rs_files crates/*/src | grep -vE '/(act|exec)\.rs$' |
+        rs_files crates/*/src | grep -vxE 'crates/mirqab-core/src/(act|exec)\.rs' |
             xargs -r grep -HnE '\bkill\(|\bremove_file\b|\bremove_dir(_all)?\b|Command::new' |
             hits "mutation or command outside act.rs/exec.rs (§5.4)"
 
@@ -138,12 +141,28 @@ else
     err "cargo-deny not found (set CARGO_DENY or install cargo-deny)"
 fi
 
-# §3: the headless crates link no toolkit, whatever their sources say.
-for c in "${HEADLESS[@]}"; do
-    linked="$(cargo tree --locked -p "$c" -e normal --prefix none 2>/dev/null |
-        awk '{ print $1 }' | grep -xE 'gtk4|gdk4|gsk4|glib|gio|libadwaita|cairo-rs|gtk4-layer-shell' | sort -u || true)"
-    [[ -z $linked ]] || err "$c links the toolkit: $(paste -sd' ' <<<"$linked") (§3)"
-done
+# §3: the headless crates link no toolkit, whatever their sources say. A
+# cargo tree that fails is a failure, not an empty answer.
+tree_rule() {
+    local c out
+    for c in "$@"; do
+        if ! out="$(cargo tree --locked -p "$c" -e normal --prefix none 2>&1)"; then
+            err "cargo tree -p $c failed: $(tail -n1 <<<"$out") (§3)"
+            continue
+        fi
+        linked="$(awk '{ print $1 }' <<<"$out" |
+            grep -xE 'gtk4|gdk4|gsk4|glib|gio|libadwaita|cairo-rs|gtk4-layer-shell' | sort -u || true)"
+        [[ -z $linked ]] || err "$c links the toolkit: $(paste -sd' ' <<<"$linked") (§3)"
+    done
+}
+
+if [[ ${1:-} == --tree ]]; then
+    shift
+    tree_rule "$@"
+    exit "$fail"
+fi
+
+tree_rule "${HEADLESS[@]}"
 
 # Shell: syntax and shellcheck on every tracked or new shell file.
 mapfile -t shell_files < <(

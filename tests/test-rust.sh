@@ -27,18 +27,24 @@ dependents() {
 
 crates=()
 if [[ -n ${MIRQAB_AFFECTED:-} ]]; then
-    # The same BASE and flags tests/run.sh --affected was given.
+    # The same BASE and flags tests/run.sh --affected was given. The selector
+    # names the changed paths that select this file, or `all`. A crate's own
+    # path narrows cargo to it and its dependents; anything else that selects
+    # this file (a fixture, a golden file, the workspace manifest, the lock,
+    # this file) runs every crate.
     read -ra affected_args <<<"$MIRQAB_AFFECTED"
-    changed="$(cd "$REPO" && tools/affected-tests.sh --paths "${affected_args[@]}")"
+    mine="$(cd "$REPO" && tools/affected-tests.sh --quiet --paths-for tests/test-rust.sh "${affected_args[@]}")"
     touched=()
-    shared=0
+    every=0
     while IFS= read -r p; do
         case $p in
-        crates/mirqab-proto/* | Cargo.toml | Cargo.lock | deny.toml | rust-toolchain.toml) shared=1 ;;
+        "") ;;
+        all) every=1 ;;
         crates/*/*) touched+=("$(cut -d/ -f2 <<<"$p")") ;;
+        *) every=1 ;;
         esac
-    done <<<"$changed"
-    if ((shared)); then
+    done <<<"$mine"
+    if ((every)); then
         mapfile -t crates < <(members)
     elif ((${#touched[@]})); then
         mapfile -t crates < <(dependents "${touched[@]}" | sort -u)

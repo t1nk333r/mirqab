@@ -6,6 +6,4 @@ docs/**                   # architecture and guides; tools/check-docs.sh checks 
 LICENSE                   # the licence text
 .gitignore                # git's ignore list
 tools/check-docs.sh       # the docs gate, run by CI's docs job
-tools/secrets.sh          # the secrets gate, run by CI's secrets job
-tools/secrets-deny.txt    # literal strings the secrets gate refuses, empty in the repository
 .shellcheckrc             # shellcheck settings, read by tools/lint.sh
