@@ -26,7 +26,7 @@ pub struct Args {
 }
 
 fn usage_error(msg: &str) -> ExitCode {
-    eprintln!("{msg}");
+    crate::out::err(msg);
     ExitCode::from(EXIT_USAGE)
 }
 
@@ -88,6 +88,7 @@ fn main() -> ExitCode {
                 out::print(&text);
                 ExitCode::SUCCESS
             }
+            None if topic.starts_with('-') => usage_error(&strings::unknown_option(&topic)),
             None => usage_error(&strings::unknown_command(&topic)),
         };
     }

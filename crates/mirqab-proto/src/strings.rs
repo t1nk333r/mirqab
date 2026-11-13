@@ -5,98 +5,102 @@
 pub const APP_NAME: &str = "mirqab";
 
 /// One command of the CLI: its name, its usage lines (after `mirqab `),
-/// a one-line summary for the usage list, the paragraph `--help` adds, and
-/// the flags completion offers. The usage text, each command's help,
-/// `docs/cli.md` and the shell completions are all made from this table
-/// (plan 005).
+/// each with a one-line summary for the usage list, and the paragraph
+/// `--help` adds. The usage text, each command's help, `docs/cli.md` and the
+/// shell completions are all made from this table (plan 005); the flags and
+/// the values completion offers are read from the usage lines, so the two
+/// cannot disagree.
 pub struct CliCommand {
     pub name: &'static str,
-    pub usage: &'static [&'static str],
-    pub summary: &'static str,
+    pub usage: &'static [(&'static str, &'static str)],
     pub help: &'static str,
-    pub flags: &'static [&'static str],
 }
 
 pub const CLI_COMMANDS: &[CliCommand] = &[
     CliCommand {
         name: "daemon",
-        usage: &["daemon [--root DIR] [--socket PATH]"],
-        summary: "run the daemon (systemd starts it from mirqab.socket)",
+        usage: &[(
+            "daemon [--root DIR] [--socket PATH]",
+            "run the daemon (systemd starts it from mirqab.socket)",
+        )],
         help: "Serves the socket. --root reads system state from DIR instead of / (tests use fixture trees). Run by hand, it prints `ready <socket>` once it listens.",
-        flags: &["--root"],
     },
     CliCommand {
         name: "status",
-        usage: &["status [--json]"],
-        summary: "version, socket, subscribers and the daemon's cost",
+        usage: &[(
+            "status [--json]",
+            "version, socket, subscribers and the daemon's cost",
+        )],
         help: "Prints the version, the socket, each stream's subscribers and interval, and what the daemon costs.",
-        flags: &["--json"],
     },
     CliCommand {
         name: "open",
-        usage: &["open [TAB] [--window]"],
-        summary: "show the window, on TAB",
-        help: "Shows the window, on TAB if given. --window opens a normal window instead of the popover.",
-        flags: &["--window", "--dry-run"],
+        usage: &[(
+            "open [TAB] [--window] [--dry-run]",
+            "show the window, on TAB",
+        )],
+        help: "Shows the window, on TAB if given. --window opens a normal window instead of the popover. --dry-run prints what the daemon would do and changes nothing.",
     },
     CliCommand {
         name: "toggle",
-        usage: &["toggle [TAB]"],
-        summary: "show the window, or hide it if it is shown",
-        help: "Shows the window, or hides it if it is shown.",
-        flags: &["--dry-run"],
+        usage: &[(
+            "toggle [TAB] [--dry-run]",
+            "show the window, or hide it if it is shown",
+        )],
+        help: "Shows the window, or hides it if it is shown. --dry-run prints what the daemon would do and changes nothing.",
     },
     CliCommand {
         name: "close",
-        usage: &["close"],
-        summary: "hide the window",
-        help: "Hides the window.",
-        flags: &["--dry-run"],
+        usage: &[("close [--dry-run]", "hide the window")],
+        help: "Hides the window. --dry-run prints what the daemon would do and changes nothing.",
     },
     CliCommand {
         name: "history",
-        usage: &["history SERIES... [--range R] [--json]", "history --list"],
-        summary: "stored minutes (R: 1h, 24h, 7d, 30d; default 1h)",
-        help: "Prints the average and peak of each bucket of stored minutes. R is 1h (default), 24h, 7d or 30d. --list names the series history keeps.",
-        flags: &["--range", "--json", "--list"],
+        usage: &[
+            (
+                "history SERIES... [--range 1h|24h|7d|30d] [--json]",
+                "stored minutes (default range 1h)",
+            ),
+            ("history --list", "the series history keeps"),
+        ],
+        help: "Prints the average and peak of each bucket of stored minutes. The range is 1h (default), 24h, 7d or 30d. --list names the series history keeps.",
     },
     CliCommand {
         name: "load",
-        usage: &["load [--json]"],
-        summary: "CPU, load, memory, pressure and the thermal word",
+        usage: &[(
+            "load [--json]",
+            "CPU, load, memory, pressure and the thermal word",
+        )],
         help: "CPU (over the last seconds), load averages, memory, swap, pressure and the thermal word.",
-        flags: &["--json"],
     },
     CliCommand {
         name: "sensors",
-        usage: &["sensors [--json]"],
-        summary: "temperatures, GPUs and power",
+        usage: &[("sensors [--json]", "temperatures, GPUs and power")],
         help: "Every temperature sensor, each GPU, and package and battery power.",
-        flags: &["--json"],
     },
     CliCommand {
         name: "bar",
         usage: &[
-            "bar ITEM [--watch] [--interval SEC] [--format waybar|plain|json]",
-            "bar --list",
+            (
+                "bar ITEM [--watch] [--interval SEC] [--format waybar|plain|json]",
+                "a reading for a status bar",
+            ),
+            ("bar --list", "the items a bar can show"),
         ],
-        summary: "a reading for a status bar (mirqab bar --list names the items)",
         help: "Prints one reading of ITEM for a status bar and exits. With --watch it prints a line each time the reading changes, at most once per interval (default 5 s, from 2 s to an hour), until its output is closed. --format waybar (default) prints Waybar's JSON; plain the text only; json every field.",
-        flags: &["--watch", "--interval", "--format", "--list"],
     },
     CliCommand {
         name: "completions",
-        usage: &["completions bash|zsh|fish"],
-        summary: "a shell completion script",
-        help: "Prints a completion script for the shell. For bash: mirqab completions bash > ~/.local/share/bash-completion/completions/mirqab",
-        flags: &[],
+        usage: &[("completions bash|zsh|fish", "a shell completion script")],
+        help: "Prints a completion script for the shell. For bash: `mirqab completions bash > ~/.local/share/bash-completion/completions/mirqab`. For zsh, write it to a file named `_mirqab` in a directory on `$fpath`, such as `~/.zfunc/_mirqab` with `fpath+=(~/.zfunc)` before `compinit`. For fish: `mirqab completions fish > ~/.config/fish/completions/mirqab.fish`.",
     },
     CliCommand {
         name: "help",
-        usage: &["help [COMMAND]", "help --markdown"],
-        summary: "this text, or one command's",
+        usage: &[
+            ("help [COMMAND]", "this text, or one command's"),
+            ("help --markdown", "every command as Markdown"),
+        ],
         help: "Prints this text, or one command's. --markdown prints every command as Markdown (docs/cli.md is made from it).",
-        flags: &["--markdown"],
     },
 ];
 
@@ -104,36 +108,173 @@ pub const CLI_COMMANDS: &[CliCommand] = &[
 pub const CLI_GLOBAL: &[(&str, &str)] = &[
     (
         "--socket PATH",
-        "the daemon's socket (default $XDG_RUNTIME_DIR/mirqab/daemon.sock, or $MIRQAB_SOCKET)",
+        "the socket (default $MIRQAB_SOCKET, else $XDG_RUNTIME_DIR/mirqab/daemon.sock)",
     ),
-    ("--help", "help for the command"),
-    ("--version", "print the version"),
+    ("-h, --help", "help for the command"),
+    ("-V, --version", "print the version"),
 ];
 
 /// Exit codes, for the usage text and `docs/cli.md`.
 pub const CLI_EXITS: &str = "Exit codes: 0 done, 1 refused or failed, 2 no daemon, 64 usage error.";
 
+/// The column the usage list's summaries start at, and the widest a usage
+/// line may be and still share its row with its summary.
+const USAGE_COLUMN: usize = 40;
+const USAGE_INDENT: usize = 2;
+const USAGE_FITS: usize = USAGE_COLUMN - USAGE_INDENT - 1;
+
 pub fn cli_command(name: &str) -> Option<&'static CliCommand> {
     CLI_COMMANDS.iter().find(|c| c.name == name)
+}
+
+/// What a flag's argument completes to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CliArg {
+    /// A word from a fixed list (`--range 1h|24h|7d|30d`).
+    Words(&'static str),
+    /// A file (`PATH`).
+    File,
+    /// A directory (`DIR`).
+    Dir,
+    /// Anything; nothing to offer (`SEC`).
+    Free,
+}
+
+/// A flag read from the usage lines, and its argument if it takes one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CliFlag {
+    pub name: &'static str,
+    pub arg: Option<CliArg>,
+}
+
+fn arg_of(word: &'static str) -> CliArg {
+    match word {
+        "PATH" => CliArg::File,
+        "DIR" => CliArg::Dir,
+        w if w.contains('|') => CliArg::Words(w),
+        _ => CliArg::Free,
+    }
+}
+
+/// The flags of a command's usage lines, each once. A flag's argument is
+/// the word after it inside the same brackets: `[--range 1h|24h]` takes one,
+/// `[--json]` does not.
+pub fn cli_flags(c: &CliCommand) -> Vec<CliFlag> {
+    let mut out: Vec<CliFlag> = Vec::new();
+    for (line, _) in c.usage {
+        let words: Vec<&'static str> = line.split_whitespace().collect();
+        for (i, w) in words.iter().enumerate() {
+            let bare = w.trim_start_matches('[').trim_end_matches(']');
+            if !bare.starts_with("--") || out.iter().any(|f| f.name == bare) {
+                continue;
+            }
+            let arg = match words.get(i + 1) {
+                Some(next) if !w.ends_with(']') && !next.starts_with('[') => {
+                    Some(arg_of(next.trim_end_matches(']')))
+                }
+                _ => None,
+            };
+            out.push(CliFlag { name: bare, arg });
+        }
+    }
+    out
+}
+
+/// The flags every command takes, as completion offers them.
+pub fn cli_global_flags() -> [CliFlag; 3] {
+    [
+        CliFlag {
+            name: "--socket",
+            arg: Some(CliArg::File),
+        },
+        CliFlag {
+            name: "--help",
+            arg: None,
+        },
+        CliFlag {
+            name: "--version",
+            arg: None,
+        },
+    ]
+}
+
+/// The words a command's positional argument completes to: a fixed list
+/// (`bash|zsh|fish`), the commands for `help`, and the items for `bar`.
+pub fn cli_positionals(c: &CliCommand) -> Vec<&'static str> {
+    let mut out = Vec::new();
+    for (line, _) in c.usage {
+        let Some(w) = line.split_whitespace().nth(1) else {
+            continue;
+        };
+        let bare = w
+            .trim_start_matches('[')
+            .trim_end_matches(']')
+            .trim_end_matches("...");
+        match bare {
+            "COMMAND" => out.extend(CLI_COMMANDS.iter().map(|c| c.name)),
+            "ITEM" => out.extend(BAR_ITEMS.iter().map(|(name, _)| *name)),
+            b if b.contains('|') && !b.starts_with('-') => out.extend(b.split('|')),
+            _ => {}
+        }
+    }
+    out
+}
+
+/// Every flag that takes an argument, from every command and the global
+/// ones, each once. A test checks no two commands give one flag different
+/// arguments.
+fn flags_with_args() -> Vec<(&'static str, CliArg)> {
+    let mut out: Vec<(&'static str, CliArg)> = Vec::new();
+    let all = CLI_COMMANDS
+        .iter()
+        .flat_map(cli_flags)
+        .chain(cli_global_flags());
+    for f in all {
+        if let Some(arg) = f.arg
+            && !out.iter().any(|(n, _)| *n == f.name)
+        {
+            out.push((f.name, arg));
+        }
+    }
+    out
+}
+
+/// The words completion offers after `mirqab COMMAND`: its positionals,
+/// its flags and the global flags.
+fn command_words(c: &CliCommand) -> String {
+    let mut words = cli_positionals(c);
+    words.extend(cli_flags(c).iter().map(|f| f.name));
+    words.extend(cli_global_flags().iter().map(|f| f.name));
+    words.join(" ")
+}
+
+fn global_words() -> String {
+    cli_global_flags()
+        .iter()
+        .map(|f| f.name)
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// `mirqab --help`.
 pub fn cli_usage() -> String {
     let mut out = String::from("usage: mirqab <command> [options]\n\ncommands:\n");
+    let indent = " ".repeat(USAGE_INDENT);
     for c in CLI_COMMANDS {
-        for (i, u) in c.usage.iter().enumerate() {
-            let summary = if i == 0 { c.summary } else { "" };
-            if u.len() < 37 {
-                out.push_str(format!("  {u:<37} {summary}").trim_end());
+        for (u, summary) in c.usage {
+            if u.len() <= USAGE_FITS {
+                out.push_str(&format!("{indent}{u:<USAGE_FITS$} {summary}\n"));
             } else {
-                out.push_str(format!("  {u}  {summary}").trim_end());
+                // Too wide to share a row: the summary goes under it, at the
+                // summaries' column.
+                let pad = " ".repeat(USAGE_COLUMN);
+                out.push_str(&format!("{indent}{u}\n{pad}{summary}\n"));
             }
-            out.push('\n');
         }
     }
     out.push_str("\noptions for every command:\n");
     for (o, what) in CLI_GLOBAL {
-        out.push_str(&format!("  {o:<15} {what}\n"));
+        out.push_str(&format!("{indent}{o:<15} {what}\n"));
     }
     out.push('\n');
     out.push_str(CLI_EXITS);
@@ -145,7 +286,7 @@ pub fn cli_usage() -> String {
 pub fn command_help(name: &str) -> Option<String> {
     let c = cli_command(name)?;
     let mut out = String::new();
-    for (i, u) in c.usage.iter().enumerate() {
+    for (i, (u, _)) in c.usage.iter().enumerate() {
         out.push_str(if i == 0 {
             "usage: mirqab "
         } else {
@@ -168,7 +309,7 @@ pub fn cli_markdown() -> String {
     );
     for c in CLI_COMMANDS {
         out.push_str(&format!("\n## {}\n\n```\n", c.name));
-        for u in c.usage {
+        for (u, _) in c.usage {
             out.push_str(&format!("mirqab {u}\n"));
         }
         out.push_str("```\n\n");
@@ -185,71 +326,198 @@ pub fn cli_markdown() -> String {
     out
 }
 
-/// `mirqab completions SHELL`: commands, and each command's flags.
+/// `mirqab completions SHELL`. Each script finds the command as the first
+/// word that is not a flag or a flag's argument (`mirqab --socket /x load`),
+/// completes a flag's argument from its usage line, and otherwise offers the
+/// command's positionals and flags.
 pub fn cli_completions(shell: &str) -> Option<String> {
-    let names: Vec<&str> = CLI_COMMANDS.iter().map(|c| c.name).collect();
-    let globals = "--socket --help --version";
+    let names = CLI_COMMANDS
+        .iter()
+        .map(|c| c.name)
+        .collect::<Vec<_>>()
+        .join(" ");
+    let globals = global_words();
+    let with_args = flags_with_args();
+    let arg_flags = with_args
+        .iter()
+        .map(|(n, _)| *n)
+        .collect::<Vec<_>>()
+        .join("|");
     Some(match shell {
         "bash" => {
+            let mut args = String::new();
+            for (flag, arg) in &with_args {
+                let reply = match arg {
+                    CliArg::Words(w) => {
+                        format!(
+                            "COMPREPLY=($(compgen -W \"{}\" -- \"$cur\"))",
+                            w.replace('|', " ")
+                        )
+                    }
+                    CliArg::File => {
+                        "compopt -o filenames 2>/dev/null; COMPREPLY=($(compgen -f -- \"$cur\"))"
+                            .into()
+                    }
+                    CliArg::Dir => {
+                        "compopt -o filenames 2>/dev/null; COMPREPLY=($(compgen -d -- \"$cur\"))"
+                            .into()
+                    }
+                    CliArg::Free => "COMPREPLY=()".into(),
+                };
+                args.push_str(&format!("        {flag}) {reply}; return ;;\n"));
+            }
             let mut cases = String::new();
             for c in CLI_COMMANDS {
                 cases.push_str(&format!(
-                    "        {}) opts=\"{} {globals}\" ;;\n",
+                    "        {}) opts=\"{}\" ;;\n",
                     c.name,
-                    c.flags.join(" ")
+                    command_words(c)
                 ));
             }
             format!(
                 "# mirqab bash completion (mirqab completions bash)\n\
-                 _mirqab() {{\n    local cur=${{COMP_WORDS[COMP_CWORD]}} opts\n    \
-                 if [[ $COMP_CWORD -eq 1 ]]; then\n        \
-                 COMPREPLY=($(compgen -W \"{} {globals}\" -- \"$cur\"))\n        return\n    fi\n    \
-                 case ${{COMP_WORDS[1]}} in\n{cases}        *) opts=\"{globals}\" ;;\n    esac\n    \
-                 COMPREPLY=($(compgen -W \"$opts\" -- \"$cur\"))\n}}\ncomplete -F _mirqab mirqab\n",
-                names.join(" ")
+                 _mirqab() {{\n    \
+                 local cur=${{COMP_WORDS[COMP_CWORD]}} prev=${{COMP_WORDS[COMP_CWORD-1]}} cmd= opts i\n    \
+                 for ((i = 1; i < COMP_CWORD; i++)); do\n        \
+                 case ${{COMP_WORDS[i]}} in\n            \
+                 {arg_flags}) ((i++)) ;;\n            \
+                 -*) ;;\n            \
+                 *) cmd=${{COMP_WORDS[i]}}; break ;;\n        \
+                 esac\n    \
+                 done\n    \
+                 case $prev in\n{args}    esac\n    \
+                 case $cmd in\n        \
+                 '') opts=\"{names} {globals}\" ;;\n{cases}        \
+                 *) opts=\"{globals}\" ;;\n    \
+                 esac\n    \
+                 COMPREPLY=($(compgen -W \"$opts\" -- \"$cur\"))\n}}\n\
+                 complete -F _mirqab mirqab\n"
             )
         }
         "zsh" => {
+            let mut args = String::new();
+            for (flag, arg) in &with_args {
+                let reply = match arg {
+                    CliArg::Words(w) => format!("compadd -- {}", w.replace('|', " ")),
+                    CliArg::File => "_files".into(),
+                    CliArg::Dir => "_files -/".into(),
+                    CliArg::Free => ":".into(),
+                };
+                args.push_str(&format!("  ({flag}) {reply}; return ;;\n"));
+            }
             let mut cases = String::new();
             for c in CLI_COMMANDS {
                 cases.push_str(&format!(
-                    "    ({}) compadd -- {} {globals} ;;\n",
+                    "  ({}) compadd -- {} ;;\n",
                     c.name,
-                    c.flags.join(" ")
+                    command_words(c)
                 ));
             }
             format!(
                 "#compdef mirqab\n# mirqab zsh completion (mirqab completions zsh)\n\
-                 if (( CURRENT == 2 )); then\n  compadd -- {} {globals}\n  return\nfi\n\
-                 case $words[2] in\n{cases}    (*) compadd -- {globals} ;;\nesac\n",
-                names.join(" ")
+                 local cmd= i\n\
+                 for (( i = 2; i < CURRENT; i++ )); do\n  \
+                 case $words[i] in\n    \
+                 ({arg_flags}) (( i++ )) ;;\n    \
+                 (-*) ;;\n    \
+                 (*) cmd=$words[i]; break ;;\n  \
+                 esac\n\
+                 done\n\
+                 case $words[CURRENT-1] in\n{args}esac\n\
+                 case $cmd in\n  \
+                 ('') compadd -- {names} {globals} ;;\n{cases}  \
+                 (*) compadd -- {globals} ;;\n\
+                 esac\n"
             )
         }
         "fish" => {
-            let mut out = String::from(
-                "# mirqab fish completion (mirqab completions fish)\ncomplete -c mirqab -f\n",
+            let skip = with_args
+                .iter()
+                .map(|(n, _)| *n)
+                .collect::<Vec<_>>()
+                .join(" ");
+            let mut out = format!(
+                "# mirqab fish completion (mirqab completions fish)\n\
+                 function __mirqab_command\n    \
+                 set -l skip 0\n    \
+                 for w in (commandline -opc)[2..-1]\n        \
+                 if test $skip = 1\n            set skip 0\n            continue\n        end\n        \
+                 switch $w\n            \
+                 case {skip}\n                set skip 1\n            \
+                 case '-*'\n            \
+                 case '*'\n                echo $w\n                return\n        \
+                 end\n    \
+                 end\n\
+                 end\n\
+                 function __mirqab_on\n    \
+                 test \"$(__mirqab_command)\" = \"$argv[1]\"\n\
+                 end\n\
+                 complete -c mirqab -f\n"
             );
             for c in CLI_COMMANDS {
                 out.push_str(&format!(
-                    "complete -c mirqab -n '__fish_use_subcommand' -a {} -d '{}'\n",
+                    "complete -c mirqab -n \"__mirqab_on ''\" -a {} -d '{}'\n",
                     c.name,
-                    c.summary.replace('\'', "")
+                    fish_quote(c.usage[0].1)
                 ));
-                for f in c.flags {
+                let positionals = cli_positionals(c);
+                if !positionals.is_empty() {
                     out.push_str(&format!(
-                        "complete -c mirqab -n '__fish_seen_subcommand_from {}' -l {}\n",
+                        "complete -c mirqab -n '__mirqab_on {}' -a '{}'\n",
                         c.name,
-                        f.trim_start_matches("--")
+                        positionals.join(" ")
+                    ));
+                }
+                for f in cli_flags(c) {
+                    out.push_str(&format!(
+                        "complete -c mirqab -n '__mirqab_on {}' -l {}{}\n",
+                        c.name,
+                        f.name.trim_start_matches("--"),
+                        fish_arg(f.arg)
                     ));
                 }
             }
-            for g in ["socket", "help", "version"] {
-                out.push_str(&format!("complete -c mirqab -l {g}\n"));
+            for f in cli_global_flags() {
+                let short = match f.name {
+                    "--help" => "-s h ",
+                    "--version" => "-s V ",
+                    _ => "",
+                };
+                out.push_str(&format!(
+                    "complete -c mirqab {short}-l {}{}\n",
+                    f.name.trim_start_matches("--"),
+                    fish_arg(f.arg)
+                ));
             }
             out
         }
         _ => return None,
     })
+}
+
+/// Text for a fish single-quoted string: a backslash first, then a quote.
+fn fish_quote(s: &str) -> String {
+    s.replace('\\', "\\\\").replace('\'', "\\'")
+}
+
+fn fish_arg(arg: Option<CliArg>) -> String {
+    // `-x` is `-r -f`: a plain `-r` also offers file names after the flag
+    // (`mirqab bar --format <TAB>` listed the directory).
+    match arg {
+        None => String::new(),
+        Some(CliArg::Words(w)) => format!(" -x -a '{}'", w.replace('|', " ")),
+        Some(CliArg::File) => " -r -F".into(),
+        Some(CliArg::Dir) => " -x -a '(__fish_complete_directories)'".into(),
+        Some(CliArg::Free) => " -x".into(),
+    }
+}
+
+pub fn no_such_series(key: &str) -> String {
+    format!("mirqab: history keeps no series named {key}")
+}
+
+pub fn output_failed(why: &str) -> String {
+    format!("mirqab: could not write the output: {why}")
 }
 
 pub fn bad_shell(shell: &str) -> String {
@@ -876,8 +1144,12 @@ mod tests {
             let script = cli_completions(shell).unwrap();
             for c in CLI_COMMANDS {
                 assert!(script.contains(c.name), "{shell}: {}", c.name);
-                for f in c.flags {
-                    assert!(script.contains(f.trim_start_matches("--")), "{shell}: {f}");
+                for f in cli_flags(c) {
+                    assert!(
+                        script.contains(f.name.trim_start_matches("--")),
+                        "{shell}: {}",
+                        f.name
+                    );
                 }
             }
         }
@@ -885,25 +1157,86 @@ mod tests {
     }
 
     #[test]
-    fn every_command_in_the_usage_has_help() {
-        for c in [
-            "daemon",
-            "status",
-            "open",
-            "toggle",
-            "close",
-            "history",
-            "load",
-            "sensors",
-            "bar",
-            "completions",
-            "help",
-        ] {
+    fn flags_and_their_arguments_come_from_the_usage_lines() {
+        let flags = cli_flags(cli_command("history").unwrap());
+        assert_eq!(
+            flags,
+            [
+                CliFlag {
+                    name: "--range",
+                    arg: Some(CliArg::Words("1h|24h|7d|30d"))
+                },
+                CliFlag {
+                    name: "--json",
+                    arg: None
+                },
+                CliFlag {
+                    name: "--list",
+                    arg: None
+                },
+            ]
+        );
+        let daemon = cli_flags(cli_command("daemon").unwrap());
+        assert_eq!(daemon[0].arg, Some(CliArg::Dir));
+        assert_eq!(daemon[1].arg, Some(CliArg::File));
+        let bar = cli_flags(cli_command("bar").unwrap());
+        assert!(bar.contains(&CliFlag {
+            name: "--interval",
+            arg: Some(CliArg::Free)
+        }));
+        for c in ["open", "toggle", "close"] {
             assert!(
-                cli_usage().contains(&format!("  {c}")),
-                "{c} missing from usage"
+                cli_flags(cli_command(c).unwrap())
+                    .iter()
+                    .any(|f| f.name == "--dry-run"),
+                "{c} takes --dry-run"
             );
-            assert!(command_help(c).is_some(), "{c} has no help");
+        }
+        assert_eq!(
+            cli_positionals(cli_command("completions").unwrap()),
+            ["bash", "zsh", "fish"]
+        );
+        assert!(cli_positionals(cli_command("help").unwrap()).contains(&"sensors"));
+        assert!(cli_positionals(cli_command("bar").unwrap()).contains(&BAR_ITEMS[0].0));
+    }
+
+    #[test]
+    fn one_flag_completes_the_same_way_for_every_command() {
+        let mut seen: Vec<CliFlag> = cli_global_flags().to_vec();
+        for f in CLI_COMMANDS.iter().flat_map(cli_flags) {
+            if let Some(other) = seen.iter().find(|s| s.name == f.name) {
+                assert_eq!(other.arg, f.arg, "{} differs between commands", f.name);
+            } else {
+                seen.push(f);
+            }
+        }
+    }
+
+    #[test]
+    fn the_usage_fits_and_every_line_has_a_summary() {
+        let usage = cli_usage();
+        for line in usage.lines() {
+            assert!(line.len() <= 100, "too wide: {line}");
+        }
+        for c in CLI_COMMANDS {
+            for (u, summary) in c.usage {
+                assert!(!summary.is_empty(), "{u} has no summary");
+                assert!(usage.contains(summary), "{summary} missing");
+            }
+        }
+    }
+
+    #[test]
+    fn every_command_in_the_usage_has_help() {
+        // main.rs dispatching each of these is tests/test-cli.sh's job.
+        for c in CLI_COMMANDS {
+            assert!(
+                cli_usage().contains(&format!("  {} ", c.name))
+                    || cli_usage().contains(&format!("  {}\n", c.name)),
+                "{} missing from usage",
+                c.name
+            );
+            assert!(command_help(c.name).is_some(), "{} has no help", c.name);
         }
         assert!(command_help("nope").is_none());
     }

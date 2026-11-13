@@ -74,6 +74,13 @@ grep_rules() {
             xargs -r grep -HnE '\bkill\(|\bremove_file\b|\bremove_dir(_all)?\b|Command::new' |
             hits "mutation or command outside act.rs/exec.rs (§5.4)"
 
+        # Plan 005: the CLI prints through out.rs, which survives a reader
+        # that went away; println! and eprintln! panic there (review of
+        # PR #12).
+        rs_files crates/mirqab/src | grep -vx 'crates/mirqab/src/out\.rs' |
+            xargs -r grep -HnE '\be?print(ln)?!' |
+            hits "print macro outside out.rs; use crate::out (plan 005)"
+
         # §3, §7.2: the headless crates never name the toolkit.
         local c dirs=()
         for c in "${HEADLESS[@]}"; do dirs+=("crates/$c"); done

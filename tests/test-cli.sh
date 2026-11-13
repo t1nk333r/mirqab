@@ -109,6 +109,33 @@ for shell in bash zsh fish; do
     like "the $shell script names bar" "$OUTPUT" "bar"
 done
 bash -n <("$BIN/mirqab" completions bash) && ok || not_ok "the bash script parses"
+# The bash script completes the command after a global flag's argument,
+# each flag's values from its usage line, and paths after --socket.
+"$BIN/mirqab" completions bash >"$SANDBOX/c.bash"
+complete_bash() {
+    # shellcheck disable=SC1091
+    bash -c 'source "$1"; shift; COMP_WORDS=("$@"); COMP_CWORD=$(($# - 1)); _mirqab; printf "%s\n" "${COMPREPLY[@]}"' \
+        _ "$SANDBOX/c.bash" "$@" | sort | tr '\n' ' '
+}
+like "commands after --socket PATH" "$(complete_bash mirqab --socket /x "")" "load "
+like "completions offers the shells" "$(complete_bash mirqab completions "")" "bash fish"
+like "help offers the commands" "$(complete_bash mirqab help "")" "--markdown"
+like "help offers sensors" "$(complete_bash mirqab help "")" "sensors"
+is "bar --format offers the formats" "$(complete_bash mirqab bar --format "")" "json plain waybar "
+is "history --range offers the ranges" "$(complete_bash mirqab history --range "")" "1h 24h 30d 7d "
+like "bar offers the items" "$(complete_bash mirqab bar "")" "combo"
+mkdir -p "$SANDBOX/sockdir"
+is "--socket completes a path" "$(complete_bash mirqab --socket "$SANDBOX/sockd")" "$SANDBOX/sockdir "
+zsh -n <("$BIN/mirqab" completions zsh) && ok || not_ok "the zsh script parses"
+fish -n <("$BIN/mirqab" completions fish) && ok || not_ok "the fish script parses"
+
+# Every command in the table reaches its own parser: an unknown flag is
+# that command's usage error, never "unknown command" (review of PR #12).
+while IFS= read -r name; do
+    capture "$BIN/mirqab" "$name" --no-such-flag
+    status_is "mirqab $name --no-such-flag is a usage error" 64 "$STATUS"
+    unlike "mirqab $name is dispatched" "$OUTPUT" "unknown command"
+done < <("$BIN/mirqab" help --markdown | sed -n 's/^## \([a-z]*\)$/\1/p')
 capture "$BIN/mirqab" completions tcsh
 status_is "an unknown shell is a usage error" 64 "$STATUS"
 capture "$BIN/mirqab" bar --help
@@ -126,3 +153,13 @@ for cmd in "bar --list" "help --markdown" "completions bash"; do
     is "mirqab $cmd into a broken pipe exits 0" 0 "$code"
     is "mirqab $cmd prints no panic" "" "$(<"$SANDBOX/pipe.err")"
 done
+# A failed write that is not a broken pipe (a full disk) is an error, so a
+# truncated file never looks like success.
+code=0
+"$BIN/mirqab" help --markdown >/dev/full 2>"$SANDBOX/full.err" || code=$?
+is "a full disk exits 1" 1 "$code"
+like "a full disk says so" "$(<"$SANDBOX/full.err")" "could not write the output"
+# With stderr gone too, a usage error still exits 64, not with a panic.
+code=0
+perl -e 'pipe(my $r, my $w) or die; close $r; open(STDERR, ">&", $w) or die; exec @ARGV' "$BIN/mirqab" nonsense >/dev/null || code=$?
+is "a usage error into a broken stderr exits 64" 64 "$code"

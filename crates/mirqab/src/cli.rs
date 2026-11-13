@@ -53,7 +53,7 @@ pub(crate) fn call(socket: &Path, req: Request) -> Result<Value, CallError> {
 }
 
 fn usage(msg: &str) -> ExitCode {
-    eprintln!("{msg}");
+    crate::out::err(msg);
     ExitCode::from(EXIT_USAGE)
 }
 
@@ -81,17 +81,14 @@ fn print_status(v: &Value) {
             notes.push(format!("unavailable {k}: {}", why.as_str().unwrap_or("")));
         }
     }
-    crate::out::print(
-        &strings::status_lines(
-            v["version"].as_str().unwrap_or("?"),
-            v["socket"].as_str().unwrap_or("?"),
-            v["uptimeSec"].as_u64().unwrap_or(0),
-            v["daemon"]["rssBytes"].as_u64().unwrap_or(0),
-            &streams,
-            &notes,
-        )
-        .to_string(),
-    );
+    crate::out::print(&strings::status_lines(
+        v["version"].as_str().unwrap_or("?"),
+        v["socket"].as_str().unwrap_or("?"),
+        v["uptimeSec"].as_u64().unwrap_or(0),
+        v["daemon"]["rssBytes"].as_u64().unwrap_or(0),
+        &streams,
+        &notes,
+    ));
 }
 
 /// One line per bucket: unix time, series, average and peak; or, with
@@ -109,7 +106,7 @@ fn print_history(v: &Value, list: bool) {
     }
     for (key, s) in v["series"].as_object().into_iter().flatten() {
         if s.is_null() {
-            eprintln!("mirqab: history keeps no series named {key}");
+            crate::out::err(&strings::no_such_series(key));
             continue;
         }
         let unit = s["unit"].as_str().unwrap_or("");
@@ -135,7 +132,7 @@ fn pct(v: Option<f64>) -> String {
 /// `mirqab load`: CPU, load, memory, swap, pressure, thermal word.
 fn print_load(v: &Value) {
     let d = system(v);
-    let line = |k: &str, val: String| crate::out::line(&strings::load_line(k, &val).to_string());
+    let line = |k: &str, val: String| crate::out::line(&strings::load_line(k, &val));
     if let Some(c) = &d.cpu {
         line(
             strings::LOAD_CPU,
@@ -195,20 +192,17 @@ fn print_sensors(v: &Value) {
     let c = format::TempUnit::Celsius;
     for t in &d.temps {
         let crit = t.critical.map(|x| format::temperature(x, c));
-        crate::out::line(
-            &strings::sensor_line(
-                strings::temp_kind(&t.kind),
-                &t.label,
-                &format::temperature(t.celsius, c),
-                crit.as_deref(),
-            )
-            .to_string(),
-        );
+        crate::out::line(&strings::sensor_line(
+            strings::temp_kind(&t.kind),
+            &t.label,
+            &format::temperature(t.celsius, c),
+            crit.as_deref(),
+        ));
     }
     let watts = |w: f64| format!("{w:.1} {}", strings::WATTS);
     for g in &d.gpus {
         if g.suspended {
-            crate::out::line(&strings::gpu_suspended(&g.name).to_string());
+            crate::out::line(&strings::gpu_suspended(&g.name));
             continue;
         }
         let mut parts = Vec::new();
@@ -216,14 +210,16 @@ fn print_sensors(v: &Value) {
         parts.extend(g.watts.map(watts));
         parts.extend(g.busy_percent.map(|b| strings::busy(&format::percent(b))));
         parts.extend(g.mhz.map(strings::mhz));
-        crate::out::line(&strings::gpu_line(&g.name, &parts).to_string());
+        crate::out::line(&strings::gpu_line(&g.name, &parts));
     }
     if let Some(p) = &d.power {
         let pk = p.package_watts.map(watts);
         let bt = p.battery_watts.map(watts);
-        crate::out::line(
-            &strings::power_line(pk.as_deref(), bt.as_deref(), p.needs_helper).to_string(),
-        );
+        crate::out::line(&strings::power_line(
+            pk.as_deref(),
+            bt.as_deref(),
+            p.needs_helper,
+        ));
     }
 }
 
@@ -233,19 +229,16 @@ pub(crate) fn socket_or_exit(args: &Args) -> Result<PathBuf, ExitCode> {
         .clone()
         .or_else(server::default_socket)
         .ok_or_else(|| {
-            eprintln!(
-                "{}",
-                strings::no_daemon(
-                    "$XDG_RUNTIME_DIR/mirqab/daemon.sock",
-                    "XDG_RUNTIME_DIR is not set"
-                )
-            );
+            crate::out::err(&strings::no_daemon(
+                "$XDG_RUNTIME_DIR/mirqab/daemon.sock",
+                "XDG_RUNTIME_DIR is not set",
+            ));
             ExitCode::from(EXIT_NO_DAEMON)
         })
 }
 
 pub(crate) fn no_daemon(socket: &Path, why: &str) {
-    eprintln!("{}", strings::no_daemon(&socket.display().to_string(), why));
+    crate::out::err(&strings::no_daemon(&socket.display().to_string(), why));
 }
 
 /// The message and exit code for a failed call.
@@ -256,7 +249,7 @@ pub(crate) fn exit_for(socket: &Path, e: CallError) -> ExitCode {
             ExitCode::from(EXIT_NO_DAEMON)
         }
         CallError::Daemon(code, message) => {
-            eprintln!("{}", strings::daemon_error(&code, &message));
+            crate::out::err(&strings::daemon_error(&code, &message));
             ExitCode::from(EXIT_FAILED)
         }
     }
