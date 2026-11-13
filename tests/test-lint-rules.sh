@@ -87,6 +87,23 @@ printf '%s\n' '// mirqab:sample' 'let x = 1;' 'glib::timeout_add_local(d, f);' >
 capture "$REPO/tools/lint.sh" --rules "$t"
 status_is "a marker two statements up does not count" 1 "$STATUS"
 
+# A hash that is not a colour value passes: an issue number in a comment,
+# a format string, a CSS id selector, a pseudo-class before an id.
+t="$(tree hashes)"
+cat >"$t/crates/mirqab-ui/src/notes.rs" <<'EOF'
+// fixes issue #123, see plan #001
+fn bits(n: u8) -> String { format!("{n:#06b}") }
+EOF
+cat >>"$t/crates/mirqab-ui/resources/style.css" <<'EOF'
+#cafe { color: var(--accent-color); }
+button:hover #bad { opacity: 0.5; }
+EOF
+capture "$REPO/tools/lint.sh" --rules "$t"
+status_is "a hash that is not a colour value passes" 0 "$STATUS"
+is "and reports nothing" "" "$OUTPUT"
+plant "a hex value after a selector with an id" crates/mirqab-ui/resources/style.css '#cafe { color: #abcdef; }' "colour literal outside the token block"
+plant "a hex inside a longer string" crates/mirqab-ui/src/widgets/x.rs 'let css = "color: #abcdef;";' "colour literal outside the token table"
+
 # An empty string may be set; it carries no words to translate.
 t="$(tree empty)"
 printf '%s\n' 'label.set_text("");' >"$t/crates/mirqab-ui/src/clear.rs"

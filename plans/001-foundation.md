@@ -14,7 +14,9 @@
   2026-11-13: `tools/lint.sh`, `tools/check-docs.sh`, `tools/secrets.sh`
   pass on the branch, and `tests/run.sh` 93/93. Phase B (daemon and
   protocol) implemented 2026-11-13: `tests/run.sh --affected` 140/140.
-  Phase C (history) implemented 2026-11-13: 152/152. Phases D and E open.
+  Phase C (history) implemented 2026-11-13: 152/152. Phase D part 1 (the
+  view crate) implemented 2026-11-13: 154/154. Phase D part 2 and phase E
+  open.
 
 ## Problem
 
@@ -744,6 +746,43 @@ Deferred:
     here, and set the renderer in `mirqab-ui.service` only if the
     difference is large enough to matter (state the numbers). The owner
     looks at one page on a monitor at scale 1.25.
+
+Phase D as built, part 1 (2026-11-13), where it differs from the steps
+above:
+
+- **Phase D is two pull requests.** Part 1 is step 25 and the colour-rule
+  deferral, with no toolkit; part 2 is steps 26 to 31. Phase D in one
+  pull request would be the largest of the plan, and part 1 can be
+  reviewed without a display.
+- `mirqab-view` depends on `serde_json` as well as `mirqab-proto`: theme
+  files and stream data are JSON, and `mirqab-proto` links it already.
+  The headless rule is unchanged.
+- `format` uses SI byte units (1 kB = 1000 B), as GNOME shows sizes; one
+  decimal under 10 and none above, for bytes and percentages alike. Unit
+  words come from `strings.rs`.
+- `theme`: a token is named by its CSS variable without the `--`, which is
+  also its key in `theme.json`. An override is checked against its kind
+  (colour, length in `em` or `px`, font family) and written back in a
+  canonical form, so a value cannot carry CSS of its own; an unknown key
+  or a bad value is skipped and listed in `Theme::problems`. `follow`
+  maps haseen's shell token file (`background`, `surfaceAlt`,
+  `foreground`, `accent`, `accentFg`, `urgent`, `warning`, `success`,
+  `radius`, and `mode` for the scheme); `theme.json` wins over it.
+- `icons`: Material Design glyphs, their code points read from the
+  installed font's own glyph names with fontTools.
+- `graph`: points are `(unix seconds, value)`; neighbours more than one
+  and a half steps apart break the line; a run of one point becomes a
+  flat segment one step wide; the fill is the line closed along the
+  baseline. `Window::for_range` holds §6.4's spans and steps.
+- `shell`: each tab carries its stream, its plan and `built`. A tab is
+  hidden for a missing stream only once `built` is true; Home is never
+  hidden, even if `tabs.hidden` names it. `cost` adds daemon and
+  interface; `machine_line` shortens the CPU model. Which stream carries
+  the CPU model and the machine's uptime is part 2's (the `self` stream).
+- The colour rule (deferred from PR #1) now looks only at value
+  positions: a hash inside a string literal in Rust, not after `{:` or
+  `:` (`{n:#06b}`); in CSS, a hash after a colon once the selector up to
+  the last `{` is cut away (`#cafe {` and `button:hover #id` pass).
 
 ### Phase E — budget and handover (PR 5)
 

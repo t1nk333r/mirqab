@@ -9,6 +9,8 @@ publish.workspace = true
 
 [dependencies]
 mirqab-proto.workspace = true
+# Theme files and stream data are JSON; mirqab-proto links it already.
+serde_json.workspace = true
 
 [lints]
 workspace = true
