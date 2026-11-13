@@ -222,7 +222,7 @@ on one line, whose parts are the setting `bar.combo` (default `cpu`, `mem`
 and `temp`). A percentage is `normal`, `high` (80 % or more) or `critical`
 (95 % or more); `temp` takes the thermal word (`cool`, `warm`, `hot` or
 `critical`, and `normal` when there is none); `combo` takes the worst of
-its parts (`hot` counts as `high`); `load` is always `normal`. A reading
+its parts (`hot` counts as `high`); `load` is `normal` once it has a value. A reading
 with no value yet is `—`, class `unknown`. `--watch` prints a line when the
 reading changes, at most once per interval (5 s by default, with 250 ms of
 jitter allowed), even when another client has the daemon sampling faster.

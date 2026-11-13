@@ -243,9 +243,14 @@ mod tests {
         t.emitted(t0, false);
         assert!(!t.allow(t0 + Duration::from_secs(1), 5), "held back at 1 s");
         assert!(
+            !t.allow(t0 + Duration::from_millis(4700), 5),
+            "still held at 4.7 s"
+        );
+        assert!(
             t.allow(t0 + Duration::from_millis(4800), 5),
             "jitter allowed"
         );
+        // After a value, a reading with no value is held like any change.
         t.emitted(t0, true);
         assert!(
             t.allow(t0 + Duration::from_secs(1), 5),

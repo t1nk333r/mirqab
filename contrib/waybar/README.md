@@ -70,8 +70,11 @@ from being read as Pango markup.
 
 Classes: `cpu`, `mem` and `gpu` are `normal`, `high` (80 % or more) or
 `critical` (95 % or more); `temp` is the thermal word (`cool`, `warm`,
-`hot`, `critical`), or `normal` when the daemon has no thermal word; `combo` is the worst of its parts; a reading with no
-value yet is `unknown`. For example:
+`hot`, `critical`), or `normal` when the daemon has no thermal word;
+`combo` is the worst of its parts; a reading with no value yet is
+`unknown`.
+
+For example:
 
 ```css
 #custom-mirqab.high, #custom-mirqab-cpu.high { color: @warning_color; }

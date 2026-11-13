@@ -25,26 +25,30 @@ BarButton {
     implicitWidth: visible ? contentWidth : 0
     color: level === "critical" ? Theme.urgent : (level === "high" || level === "hot") ? Theme.warning : Theme.barForeground
 
-    // The item and interval the running command was started with.
+    // The item and interval the reading runs with, set once the widget is
+    // built: haseen assigns the settings right after creation, and that
+    // must not restart anything.
     property string started: ""
+    property bool ready: false
 
     function key() {
         return String(settings.item || "combo") + " " + String(settings.interval || 5);
     }
 
-    // A changed item or interval restarts the reading: the command is
-    // bound once per run. The first assignment at creation changes nothing.
+    Component.onCompleted: {
+        started = key();
+        ready = true;
+    }
+
+    // A changed item or interval restarts the reading, by the timer, so it
+    // does not depend on an exit being delivered.
     onSettingsChanged: {
-        if (key() === started)
+        if (!ready || key() === started)
             return;
         started = key();
-        if (watcher.running) {
-            restart.settingsChange = true;
-            watcher.running = false;
-        } else {
-            restart.stop();
-            watcher.running = true;
-        }
+        watcher.running = false;
+        restart.interval = 100;
+        restart.restart();
     }
 
     onClicked: button => {
@@ -57,7 +61,6 @@ BarButton {
 
         command: ["mirqab", "bar", String(root.settings.item || "combo"), "--watch", "--interval", String(root.settings.interval || 5), "--format", "json"]
         running: true
-        onStarted: root.started = root.key()
         stdout: SplitParser {
             onRead: line => {
                 try {
@@ -70,20 +73,19 @@ BarButton {
             }
         }
         // The daemon stopped or is not up yet: no stale number, and try
-        // again shortly; a settings change restarts at once.
+        // again in 10 s, unless a settings restart is already due.
         onExited: {
             root.reading = "\u2014";
             root.level = "unknown";
-            restart.interval = restart.settingsChange ? 100 : 10000;
-            restart.settingsChange = false;
-            restart.start();
+            if (!restart.running) {
+                restart.interval = 10000;
+                restart.start();
+            }
         }
     }
 
     Timer {
         id: restart
-
-        property bool settingsChange: false
 
         interval: 10000
         onTriggered: watcher.running = true
