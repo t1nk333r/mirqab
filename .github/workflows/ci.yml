@@ -111,10 +111,14 @@ jobs:
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
-          if [[ $GITHUB_EVENT_NAME == pull_request ]] &&
-              ! git diff --name-only "$BASE_SHA" HEAD -- crates/ | grep -q .; then
-              echo "no change under crates/: skipped"
-              exit 0
+          if [[ $GITHUB_EVENT_NAME == pull_request ]]; then
+              # Its own statement, so a git error fails the step instead of
+              # skipping the gate.
+              changed="$(git diff --name-only "$BASE_SHA" HEAD -- crates/)"
+              if [[ -z $changed ]]; then
+                  echo "no change under crates/: skipped"
+                  exit 0
+              fi
           fi
           bench() { runuser -u ci -- env HOME=/home/ci CARGO_HOME="$HOME/.cargo" tools/bench-idle.sh --runs 3 "$@"; }
           bench

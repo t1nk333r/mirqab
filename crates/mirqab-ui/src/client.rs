@@ -70,8 +70,10 @@ struct State {
     next_handle: u64,
     connected: bool,
     capabilities: Vec<String>,
-    /// Seconds until the next reconnect attempt, doubled each failure.
+    /// Seconds the next failed connection waits, doubled each failure.
     backoff: u64,
+    /// Seconds the current wait before reconnecting lasts.
+    retry_in: u64,
     /// Bumped on every disconnect, so a stale read loop knows to stop.
     generation: u64,
     listeners: Vec<StateFn>,
@@ -98,9 +100,15 @@ impl Drop for Subscription {
     fn drop(&mut self) {
         if let Some(inner) = self.client.upgrade() {
             let c = Client(inner);
-            if let Some(s) = c.0.state.borrow_mut().subs.get_mut(&self.stream) {
-                s.handles.remove(&self.id);
-            }
+            // The handle is dropped after the borrow ends: its closure may
+            // own another Subscription, whose drop borrows again.
+            let removed =
+                c.0.state
+                    .borrow_mut()
+                    .subs
+                    .get_mut(&self.stream)
+                    .and_then(|s| s.handles.remove(&self.id));
+            drop(removed);
             c.sync(&self.stream);
         }
     }
@@ -160,7 +168,7 @@ impl Client {
 
     /// Seconds until the next reconnect, while disconnected.
     pub fn retry_in(&self) -> u64 {
-        self.0.state.borrow().backoff
+        self.0.state.borrow().retry_in
     }
 
     /// Called on every connect and disconnect.
@@ -173,6 +181,7 @@ impl Client {
         let conn = {
             let mut st = self.0.state.borrow_mut();
             st.closed = true;
+            st.connected = false;
             st.generation += 1;
             st.out = None;
             st.conn.take()
@@ -182,9 +191,21 @@ impl Client {
         }
     }
 
-    /// A subscription with explicit params; `extra` is merged into them
-    /// (the `ui` stream's `role` and `pid`).
-    pub fn subscribe_with(
+    /// A subscription without `live`, with extra params merged in (the `ui`
+    /// stream's `role` and `pid`).
+    pub fn subscribe_params(
+        &self,
+        stream: &str,
+        interval_ms: u64,
+        extra: Value,
+        on_event: EventFn,
+    ) -> Subscription {
+        self.subscribe_with(stream, interval_ms, false, extra, on_event)
+    }
+
+    /// Private, so `live` is reachable only through `Source::subscribe_live`
+    /// (review of PR #5: a page could pass `true` here past the lint rule).
+    fn subscribe_with(
         &self,
         stream: &str,
         interval_ms: u64,
@@ -426,6 +447,7 @@ impl Client {
                 s.sent = None;
             }
             let delay = st.backoff;
+            st.retry_in = delay;
             st.backoff = (st.backoff * 2).min(30);
             (std::mem::take(&mut st.pending), delay)
         };

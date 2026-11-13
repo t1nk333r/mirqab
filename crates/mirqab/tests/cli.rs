@@ -139,7 +139,7 @@ fn open_reaches_the_interface_as_a_ui_event() {
     let event: serde_json::Value = serde_json::from_str(&lines.next().unwrap().unwrap()).unwrap();
     assert_eq!(
         event,
-        serde_json::json!({"type": "event", "stream": "ui", "data": {"event": "show", "tab": "system", "mode": "popover"}})
+        serde_json::json!({"type": "event", "stream": "ui", "data": {"event": "show", "tab": "system", "mode": null}})
     );
 
     assert!(mirqab(&d, &["toggle"]).status.success());
@@ -197,13 +197,92 @@ fn open_starts_the_interface_and_queues_the_event() {
     let event: serde_json::Value = serde_json::from_str(&lines.next().unwrap().unwrap()).unwrap();
     assert_eq!(
         event["data"],
-        serde_json::json!({"event": "show", "tab": "system", "mode": "popover"})
+        serde_json::json!({"event": "show", "tab": "system", "mode": null})
     );
     let status = open.wait().unwrap();
     assert!(status.success());
     // With the interface attached, no second start.
     assert!(mirqab(&d, &["open"]).status.success());
     assert_eq!(stub_log(&d).lines().count(), 1);
+}
+
+/// Connects as the interface; returns the line reader after the subscribe
+/// reply.
+fn attach(d: &Daemon, timeout: Duration) -> std::io::Lines<BufReader<UnixStream>> {
+    let ui = UnixStream::connect(&d.socket).unwrap();
+    ui.set_read_timeout(Some(timeout)).unwrap();
+    let mut lines = BufReader::new(ui.try_clone().unwrap()).lines();
+    lines.next().unwrap().unwrap();
+    (&ui)
+        .write_all(b"{\"id\":7,\"method\":\"subscribe\",\"stream\":\"ui\",\"params\":{\"role\":\"ui\",\"pid\":4321}}\n")
+        .unwrap();
+    let reply = lines.next().unwrap().unwrap();
+    assert!(reply.contains("\"id\":7"), "{reply}");
+    lines
+}
+
+fn spawn_cli(d: &Daemon, args: &[&str]) -> Child {
+    Command::new(BIN)
+        .arg("--socket")
+        .arg(&d.socket)
+        .args(args)
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap()
+}
+
+fn wait_for_starts(d: &Daemon, n: usize) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(3);
+    while stub_log(d).lines().count() < n {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "systemctl ran {} times",
+            stub_log(d).lines().count()
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+#[test]
+fn close_while_starting_clears_the_queued_show() {
+    let d = start("closestart");
+    let mut open = spawn_cli(&d, &["open", "system"]);
+    wait_for_starts(&d, 1);
+    assert!(mirqab(&d, &["close"]).status.success());
+    let mut lines = attach(&d, Duration::from_millis(500));
+    assert!(
+        lines.next().is_none_or(|l| l.is_err()),
+        "no show after close"
+    );
+    assert!(open.wait().unwrap().success(), "the interface attached");
+}
+
+#[test]
+fn a_new_open_after_a_timed_out_start_starts_again() {
+    let d = start("restart");
+    let out = output_within(Command::new(BIN).arg("--socket").arg(&d.socket).arg("open"));
+    assert_eq!(out.status.code(), Some(1), "nothing attached");
+    let mut open = spawn_cli(&d, &["open", "network"]);
+    wait_for_starts(&d, 2);
+    let mut lines = attach(&d, Duration::from_secs(5));
+    let event: serde_json::Value = serde_json::from_str(&lines.next().unwrap().unwrap()).unwrap();
+    assert_eq!(event["data"]["tab"], "network");
+    assert!(open.wait().unwrap().success());
+}
+
+#[test]
+fn an_open_joining_a_timed_out_start_does_not_report_success() {
+    // Review of PR #5: B joined A's start; A timed out and cleared the
+    // event; an interface attached later; B said done with nothing sent.
+    let d = start("joined");
+    let mut a = spawn_cli(&d, &["open", "system"]);
+    wait_for_starts(&d, 1);
+    let mut b = spawn_cli(&d, &["open", "settings"]);
+    let a_status = a.wait().unwrap();
+    let b_status = b.wait().unwrap();
+    assert_eq!(a_status.code(), Some(1));
+    assert_eq!(b_status.code(), Some(1), "one attempt, one outcome");
+    assert_eq!(stub_log(&d).lines().count(), 1, "started once");
 }
 
 #[test]

@@ -168,6 +168,33 @@ fn a_series_is_one_stroke_and_one_fill_and_a_gap_is_a_second_contour() {
     let peaks: Vec<(i64, f64)> = pts.iter().map(|&(t, v)| (t, v * 2.0)).collect();
     g.set_points(pts, peaks);
     assert_eq!(count(&all(&g), gsk::RenderNodeType::StrokeNode), 2);
+
+    // A spike far above the averages stays visible: peaks set the shared
+    // scale, so the averages' line sits low and the peaks' line is not
+    // flattened onto the top edge.
+    let avg: Vec<(i64, f64)> = (0..10).map(|i| (3000 + i * 60, 10.0)).collect();
+    let mut spikes: Vec<(i64, f64)> = avg.iter().map(|&(t, _)| (t, 12.0)).collect();
+    spikes[5].1 = 95.0;
+    g.set_points(avg, spikes);
+    let strokes: Vec<gsk::StrokeNode> = all(&g)
+        .iter()
+        .filter_map(|n| n.downcast_ref::<gsk::StrokeNode>().cloned())
+        .collect();
+    // (top, bottom) of a stroke's path, in widget coordinates.
+    let span = |s: &gsk::StrokeNode| {
+        let r = s.path().bounds().expect("a non-empty path");
+        (r.y(), r.y() + r.height())
+    };
+    let (avg_top, _) = span(&strokes[0]);
+    let (peak_top, peak_low) = span(&strokes[1]);
+    assert!(
+        avg_top > 50.0,
+        "averages sit low on a 0–100 scale: {avg_top}"
+    );
+    assert!(
+        peak_low - peak_top > 50.0,
+        "the spike stands out from the other peaks"
+    );
     drop(win);
 }
 
@@ -224,6 +251,11 @@ fn live_only_while_mapped_at_two_minutes() {
     cb(&json!({"cpu": {"percent": 40.0}}));
     cb(&json!({"cpu": {"percent": 60.0}}));
     assert_eq!(count(&all(&g), gsk::RenderNodeType::StrokeNode), 1);
+    // Two samples in the same second: the second replaces the first.
+    g.push_live(100, 1.0);
+    g.push_live(100, 2.0);
+    g.push_live(101, 3.0);
+    assert_eq!(g.ring_len(), 2);
 
     g.set_range("1h");
     assert_eq!(fake.live.get(), 0, "a stored range drops live");

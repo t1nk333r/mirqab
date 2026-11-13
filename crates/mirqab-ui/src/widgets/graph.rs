@@ -131,7 +131,19 @@ mod imp {
             } else {
                 st.points.clone()
             };
-            let g = graph::geometry(&main, window, st.scale, w, h);
+            // Peaks sit at or above the averages, so when there are peaks
+            // they set the scale both share; otherwise every spike above the
+            // averages' ceiling would be clipped (review of PR #4).
+            let peaks = (st.range != "2m" && !st.peaks.is_empty())
+                .then(|| graph::geometry(&st.peaks, window, st.scale, w, h));
+            let scale = match &peaks {
+                Some(p) => Scale::Fixed {
+                    min: p.bottom,
+                    max: p.top,
+                },
+                None => st.scale,
+            };
+            let g = graph::geometry(&main, window, scale, w, h);
             let color = style::series(st.series);
             if let Some(fill) = path(g.runs.iter().map(|r| r.fill(h)), true) {
                 let mut faint = color;
@@ -141,23 +153,12 @@ mod imp {
             if let Some(line) = path(g.runs.iter().map(|r| r.line.clone()), false) {
                 snapshot.append_stroke(&line, &gsk::Stroke::new(line_width), &color);
             }
-            if st.range != "2m" && !st.peaks.is_empty() {
-                // Peaks share the main series' scale, so they sit above it.
-                let pg = graph::geometry(
-                    &st.peaks,
-                    window,
-                    Scale::Fixed {
-                        min: g.bottom,
-                        max: g.top,
-                    },
-                    w,
-                    h,
-                );
-                if let Some(line) = path(pg.runs.iter().map(|r| r.line.clone()), false) {
-                    let mut faint = color;
-                    faint.set_alpha(color.alpha() * 0.5);
-                    snapshot.append_stroke(&line, &gsk::Stroke::new(line_width * 0.6), &faint);
-                }
+            if let Some(pg) = peaks
+                && let Some(line) = path(pg.runs.iter().map(|r| r.line.clone()), false)
+            {
+                let mut faint = color;
+                faint.set_alpha(color.alpha() * 0.5);
+                snapshot.append_stroke(&line, &gsk::Stroke::new(line_width * 0.6), &faint);
             }
         }
     }
@@ -215,9 +216,11 @@ impl Graph {
         let g: Graph = glib::Object::new();
         let weak = g.downgrade();
         style::on_change(move || {
-            if let Some(g) = weak.upgrade() {
-                g.queue_draw();
-            }
+            let Some(g) = weak.upgrade() else {
+                return false;
+            };
+            g.queue_draw();
+            true
         });
         g
     }
@@ -285,6 +288,11 @@ impl Graph {
         self.queue_draw();
     }
 
+    /// Samples in the live ring (tests).
+    pub fn ring_len(&self) -> usize {
+        self.imp().state.borrow().ring.len()
+    }
+
     /// Whether a live subscription is held (tests).
     pub fn is_live(&self) -> bool {
         self.imp().state.borrow().handle.is_some()
@@ -325,10 +333,15 @@ impl Graph {
         self.imp().state.borrow_mut().handle = Some(handle);
     }
 
-    /// Adds a live sample and keeps the ring to two minutes.
+    /// Adds a live sample and keeps the ring to two minutes. Samples are
+    /// stamped in whole seconds, so a second arrival in the same second
+    /// replaces the first rather than drawing a vertical step.
     pub fn push_live(&self, t: i64, v: f64) {
         {
             let mut st = self.imp().state.borrow_mut();
+            if st.ring.back().is_some_and(|&(last, _)| last >= t) {
+                st.ring.pop_back();
+            }
             st.ring.push_back((t, v));
             while st.ring.front().is_some_and(|&(t0, _)| t - t0 > 120) {
                 st.ring.pop_front();

@@ -172,10 +172,10 @@ pub fn run(command: &str, args: Args) -> ExitCode {
         }
         _ => {
             let (name, args) = match command {
-                "open" => (
-                    "ui.show",
-                    json!({"tab": tab, "mode": if window { "window" } else { "popover" }}),
-                ),
+                // A mode only with --window: a plain `open` uses the mode
+                // the user chose in Settings (architecture §4).
+                "open" if window => ("ui.show", json!({"tab": tab, "mode": "window"})),
+                "open" => ("ui.show", json!({"tab": tab})),
                 "toggle" => ("ui.toggle", json!({"tab": tab})),
                 _ => ("ui.hide", json!({})),
             };

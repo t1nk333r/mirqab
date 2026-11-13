@@ -5,7 +5,8 @@
 //!
 //! Points are `(unix seconds, value)`, as `history.query` returns buckets
 //! and as the live ring keeps samples. Buckets with no data are absent, so
-//! two neighbours more than one and a half steps apart break the line.
+//! two neighbours more than one and a half steps apart (and more than one
+//! step plus a second) break the line.
 
 /// The vertical scale.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -80,10 +81,12 @@ impl Window {
 /// The ranges a graph's picker offers, in order.
 pub const RANGES: &[&str] = &["2m", "1h", "24h", "7d", "30d"];
 
-/// The geometry of `points` in `window` at `width` × `height`. Points
-/// outside the window are dropped, values are clamped to the scale, and a
-/// run of one point becomes a short flat segment one step wide so it is
-/// visible.
+/// The geometry of `points`, sorted by time, in `window` at `width` ×
+/// `height`. Points outside the window are dropped, values are clamped to
+/// the scale, and a run of one point becomes a short flat segment one step
+/// wide (cut at the window's edges) so it is visible. A `Fixed` scale that
+/// is inverted or not finite is treated as `Auto` (review of PR #4: it
+/// panicked in `clamp`).
 pub fn geometry(
     points: &[(i64, f64)],
     window: Window,
@@ -97,7 +100,11 @@ pub fn geometry(
         .filter(|&(t, v)| t >= window.from && t <= window.to && v.is_finite())
         .collect();
     let (bottom, top) = match scale {
-        Scale::Fixed { min, max } => (min, max),
+        Scale::Fixed { min, max } if min.is_finite() && max.is_finite() && max > min => (min, max),
+        Scale::Fixed { .. } => {
+            let peak = visible.iter().map(|&(_, v)| v).fold(0.0, f64::max);
+            (0.0, nice_ceiling(peak).max(1.0))
+        }
         Scale::Auto { floor } => {
             let peak = visible.iter().map(|&(_, v)| v).fold(floor, f64::max);
             (0.0, nice_ceiling(peak))
@@ -113,7 +120,9 @@ pub fn geometry(
 
     let mut runs = Vec::new();
     let mut current: Vec<(i64, f64)> = Vec::new();
-    let gap = window.step * 3 / 2;
+    // One and a half steps, and always more than one: live samples are
+    // stamped in whole seconds, so ticks 1.002 s apart can read 2 s apart.
+    let gap = (window.step * 3 / 2).max(window.step + 1);
     for p in visible {
         if let Some(&(last, _)) = current.last()
             && p.0 - last > gap

@@ -17,11 +17,20 @@ use gtk::{gdk, gio, glib};
 use gtk4_layer_shell::{Edge, KeyboardMode, Layer, LayerShell};
 use mirqab_proto::stream::{self, SelfData};
 use mirqab_proto::strings;
-use mirqab_view::config::{Anchor, Mode};
+use mirqab_view::config::{Anchor, Mode, UiConfig};
 use mirqab_view::icons;
 use mirqab_view::shell;
 use std::cell::{Cell, RefCell};
 use std::rc::{Rc, Weak};
+
+/// Whether popovers can be layer surfaces: a Wayland display whose
+/// compositor offers wlr-layer-shell. Asked only on Wayland, where
+/// `gtk4_layer_shell::is_supported` is defined (elsewhere it logs a GLib
+/// critical).
+pub fn layer_shell() -> bool {
+    gdk::Display::default().is_some_and(|d| d.type_().name() == "GdkWaylandDisplay")
+        && gtk4_layer_shell::is_supported()
+}
 
 /// What a keyboard shortcut does.
 type Command = Box<dyn Fn(&Rc<Ctx>)>;
@@ -43,7 +52,7 @@ impl Window {
     /// Builds a window of `mode`. A popover where the compositor has no
     /// layer shell becomes a window, and the footer says so once.
     pub fn new(ctx: &Rc<Ctx>, asked: Mode) -> Rc<Window> {
-        let layer = asked == Mode::Popover && gtk4_layer_shell::is_supported();
+        let layer = asked == Mode::Popover && layer_shell();
         let mode = if layer { Mode::Popover } else { Mode::Window };
         let win = adw::ApplicationWindow::builder()
             .application(&ctx.app)
@@ -130,10 +139,22 @@ impl Window {
         w
     }
 
-    /// Size in em of the base font, clamped to the monitor; in popover mode
-    /// also the layer surface's role, anchors and margins.
+    /// Makes a popover a layer surface; once, before it is first shown.
     fn size_and_place(&self, ctx: &Rc<Ctx>) {
-        let cfg = ctx.config.borrow();
+        if self.mode == Mode::Popover {
+            self.win.add_css_class("popover");
+            self.win.init_layer_shell();
+            self.win.set_layer(Layer::Top);
+            self.win.set_namespace(Some("mirqab"));
+            self.win.set_keyboard_mode(KeyboardMode::OnDemand);
+        }
+        self.place(&ctx.config.borrow());
+    }
+
+    /// Size in em of the base font, clamped to the monitor; for a popover
+    /// also its anchors and margins. Run again when the config changes: a
+    /// layer surface takes new anchors while it exists.
+    pub fn place(&self, cfg: &UiConfig) {
         let e = f64::from(em(&self.win));
         let (mut w, mut h) = (cfg.width_em * e, cfg.height_em * e);
         if let Some(geo) = gdk::Display::default()
@@ -148,11 +169,6 @@ impl Window {
         if self.mode != Mode::Popover {
             return;
         }
-        self.win.add_css_class("popover");
-        self.win.init_layer_shell();
-        self.win.set_layer(Layer::Top);
-        self.win.set_namespace(Some("mirqab"));
-        self.win.set_keyboard_mode(KeyboardMode::OnDemand);
         let a = Anchor::parse(&cfg.anchor);
         let margin = (cfg.margin_em * e) as i32;
         for (edge, on) in [
@@ -254,7 +270,11 @@ impl Window {
         let weak = Rc::downgrade(ctx);
         self.win.connect_is_active_notify(move |win| {
             let Some(ctx) = weak.upgrade() else { return };
-            let Some(w) = ctx.window() else { return };
+            // A window being replaced is no longer ctx's, and its losing
+            // focus closes nothing.
+            let Some(w) = ctx.window().filter(|w| w.win == *win) else {
+                return;
+            };
             let active = win.is_active();
             let was = w.was_active.replace(active);
             if was && !active && !w.pinned.is_active() {
@@ -284,10 +304,9 @@ impl Window {
     pub fn present(&self, ctx: &Rc<Ctx>) {
         if self.self_sub.borrow().is_none() {
             let footer = self.footer.clone();
-            let sub = ctx.client.subscribe_with(
+            let sub = ctx.client.subscribe_params(
                 stream::SELF,
                 2000,
-                false,
                 serde_json::Value::Null,
                 Rc::new(move |data| {
                     if let Ok(d) = serde_json::from_value::<SelfData>(data.clone()) {

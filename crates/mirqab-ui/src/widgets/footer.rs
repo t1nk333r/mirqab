@@ -43,7 +43,7 @@ impl Footer {
         let text = gtk::Box::new(gtk::Orientation::Vertical, 0);
         text.set_hexpand(true);
         let line = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-        line.add_css_class("mirqab-footer");
+        line.add_css_class("mirqab-footer-line");
         line.append(&cost);
         line.append(&machine);
         cost.set_xalign(0.0);

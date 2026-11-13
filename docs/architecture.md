@@ -412,6 +412,12 @@ and every subscriber to `ui` gets a `config-changed` event. A config the
 daemon cannot parse is left untouched, reported in `status`, and defaults
 are used: the app never rewrites a file the user broke by hand.
 
+With `mirqab daemon --root DIR` (fixture trees, used by the tests) the
+daemon keeps `history.db` and `config.json` beside its socket instead, so
+fixture numbers never reach the user's files. Only one daemon may use a
+history file: a second lock, `history.db.lock`, refuses a second daemon on
+another socket.
+
 ### 5.6 D-Bus and HTTP
 
 - D-Bus through the `zbus` crate's blocking API, **pinned to the 5.x line
@@ -634,6 +640,20 @@ em of the base font so the fractional-scale case works.
 - **Sizes** follow the font: spacing and widget sizes in the stylesheet
   are in `em`, and custom widgets measure in multiples of the font size
   they get from Pango. No pixel size literal outside `style.css`.
+
+A key in `theme.json` is the token's CSS variable name without the leading
+`--`: `{"accent-bg-color": "#3584e4"}` sets `--accent-bg-color`. Each value
+is checked against the token's kind (colour, length in `em` or `px`, or font
+family) and written back in canonical form, so no CSS passes through. An
+unknown key or bad value is skipped and listed in `Theme::problems`; the
+rest still applies. `theme.follow` may name haseen's shell token file:
+`background` sets the window, view, headerbar and sidebar backgrounds;
+`surfaceAlt` the card, popover and dialog backgrounds; `foreground` the text
+colours; `accent` the accent background, accent colour and series 1;
+`accentFg`, `urgent`, `warning` and `success` the accent text, error, warning
+and success colours; `radius` (px) the card radius. Missing keys are left
+alone, `mode` picks dark or light when `theme.scheme` is `system`, and
+`theme.json` is applied after the followed file, so it wins.
 
 Rejected: a stylesheet that restyles every widget from scratch (it breaks
 with each libadwaita release); `@define-color` (deprecated in favour of

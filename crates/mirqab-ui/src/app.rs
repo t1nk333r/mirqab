@@ -67,6 +67,9 @@ pub struct Ctx {
     exit_timer: RefCell<Option<glib::SourceId>>,
     hold: RefCell<Option<gtk::gio::ApplicationHoldGuard>>,
     ui_sub: RefCell<Option<Subscription>>,
+    /// A show asked for before the first config arrived (a hand-run
+    /// `mirqab-ui`), run once it has, or on the first failed connection.
+    parked: RefCell<Option<(Option<String>, Option<Mode>)>>,
     config_listeners: RefCell<Vec<Box<dyn Fn() -> bool>>>,
 }
 
@@ -96,6 +99,7 @@ impl Ctx {
             exit_timer: RefCell::new(None),
             hold: RefCell::new(Some(app.hold())),
             ui_sub: RefCell::new(None),
+            parked: RefCell::new(None),
             config_listeners: RefCell::new(Vec::new()),
         });
         let weak = Rc::downgrade(&ctx);
@@ -104,6 +108,10 @@ impl Ctx {
             if client.connected() {
                 ctx.refresh_config();
                 ctx.refresh_status();
+            } else {
+                // No daemon: show what was asked for, with defaults and the
+                // reconnect notice.
+                ctx.unpark();
             }
             if let Some(w) = ctx.window() {
                 w.footer.set_notice(&if client.connected() {
@@ -114,11 +122,21 @@ impl Ctx {
                 w.refresh_tiles(&ctx);
             }
         });
-        let weak = Rc::downgrade(&ctx);
-        let sub = ctx.client.subscribe_with(
+        ctx
+    }
+
+    /// Subscribes to `ui` as the interface. Called once the first config
+    /// reply is in: the daemon sends a queued `show` right after this
+    /// subscription, so the first window is built with the user's config
+    /// (review of PR #5: it was built with the defaults).
+    fn attach_ui(self: &Rc<Self>) {
+        if self.ui_sub.borrow().is_some() {
+            return;
+        }
+        let weak = Rc::downgrade(self);
+        let sub = self.client.subscribe_params(
             stream::UI,
             0,
-            false,
             json!({"role": "ui", "pid": std::process::id()}),
             Rc::new(move |data: &Value| {
                 let Some(ctx) = weak.upgrade() else { return };
@@ -127,8 +145,23 @@ impl Ctx {
                 }
             }),
         );
-        *ctx.ui_sub.borrow_mut() = Some(sub);
-        ctx
+        *self.ui_sub.borrow_mut() = Some(sub);
+    }
+
+    /// Shows the window once the config is known; at once if it already is.
+    pub fn show_when_ready(self: &Rc<Self>, tab: Option<&str>, mode: Option<Mode>) {
+        if self.ui_sub.borrow().is_some() {
+            self.show(tab, mode);
+        } else {
+            *self.parked.borrow_mut() = Some((tab.map(str::to_string), mode));
+        }
+    }
+
+    fn unpark(self: &Rc<Self>) {
+        let parked = self.parked.borrow_mut().take();
+        if let Some((tab, mode)) = parked {
+            self.show(tab.as_deref(), mode);
+        }
     }
 
     fn event(self: &Rc<Self>, ev: UiEvent) {
@@ -170,21 +203,29 @@ impl Ctx {
     /// Shows the window on `tab` (or where it was), in `mode` (or the
     /// configured one). A different mode builds a new window.
     pub fn show(self: &Rc<Self>, tab: Option<&str>, mode: Option<Mode>) {
-        if let Some(id) = self.exit_timer.borrow_mut().take() {
-            id.remove();
-        }
-        let mode = mode.unwrap_or(self.config.borrow().mode);
+        // Without an explicit mode the open window keeps its own: a tile
+        // click must not turn `--window` back into the configured popover
+        // (review of PR #5).
+        // The window's own mode only while it is shown: a hidden window must
+        // not pin the mode for the life of the process.
+        let mode = mode
+            .or_else(|| self.window().filter(|w| w.is_visible()).map(|w| w.mode))
+            .unwrap_or(self.config.borrow().mode);
         let tab = tab
             .filter(|t| *t == "settings" || shell::find(t).is_some())
             .map(str::to_string)
             .unwrap_or_else(|| self.current_tab());
-        let reuse = self.window().filter(|w| {
-            w.mode == mode || (mode == Mode::Popover && !gtk4_layer_shell::is_supported())
-        });
+        let reuse = self
+            .window()
+            .filter(|w| w.mode == mode || (mode == Mode::Popover && !crate::window::layer_shell()));
         let w = match reuse {
             Some(w) => w,
             None => {
-                if let Some(old) = self.window.borrow_mut().take() {
+                // Taken out first: hiding fires `is-active` at once, and its
+                // handler reads `self.window` (review of PR #5: a borrow
+                // held across `hide` aborted the process).
+                let old = self.window.borrow_mut().take();
+                if let Some(old) = old {
                     old.hide();
                     old.win.destroy();
                 }
@@ -202,6 +243,10 @@ impl Ctx {
         };
         w.show_tab(self, &tab);
         w.present(self);
+        // Last: replacing a window may have started the exit timer.
+        if let Some(id) = self.exit_timer.borrow_mut().take() {
+            id.remove();
+        }
     }
 
     /// Hides the window, drops its pages, and starts the exit timer.
@@ -257,10 +302,13 @@ impl Ctx {
     pub fn refresh_config(self: &Rc<Self>) {
         let weak = Rc::downgrade(self);
         self.client.request("config.get", Value::Null, move |r| {
-            let (Some(ctx), Ok(v)) = (weak.upgrade(), r) else {
-                return;
-            };
-            ctx.set_config(UiConfig::from_json(&v));
+            let Some(ctx) = weak.upgrade() else { return };
+            if let Ok(v) = r {
+                ctx.set_config(UiConfig::from_json(&v));
+            }
+            // Even when config.get failed: attach with the defaults.
+            ctx.attach_ui();
+            ctx.unpark();
         });
     }
 
@@ -277,6 +325,12 @@ impl Ctx {
         }
         if let Some(w) = self.window() {
             w.refresh_tiles(self);
+            // A reused popover follows a new corner, margin or size. A
+            // window keeps the size the user dragged it to (review of
+            // PR #5: set_default_size resized it on every config change).
+            if w.mode == Mode::Popover {
+                w.place(&cfg);
+            }
         }
         self.config_changed();
     }

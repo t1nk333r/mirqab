@@ -30,8 +30,8 @@ capture timeout 20 "$BIN/mirqab-ui" --socket "$MIRQAB_SOCKET" --selftest nonsens
 status_is "an unknown tab still shows the window" 0 "$STATUS"
 
 # A started interface waits hidden, opens on `open`, hides on `close`, and
-# quits after its exit delay (2 s here, honoured only under MIRQAB_TEST).
-MIRQAB_UI_EXIT_MS=2000 "$BIN/mirqab-ui" --socket "$MIRQAB_SOCKET" --background >"$SANDBOX/ui.out" 2>&1 &
+# quits after its exit delay (5 s here, honoured only under MIRQAB_TEST).
+MIRQAB_UI_EXIT_MS=5000 "$BIN/mirqab-ui" --socket "$MIRQAB_SOCKET" --background >"$SANDBOX/ui.out" 2>&1 &
 ui=$!
 attached=""
 for ((i = 0; i < 100; i++)); do
@@ -43,12 +43,13 @@ done
 is "the interface attached as the ui client" "$ui" "$attached"
 capture "$BIN/mirqab" open system --window
 status_is "open reaches it" 0 "$STATUS"
-sleep 1
-kill -0 "$ui" 2>/dev/null && ok || not_ok "it stays while shown"
+# Past the exit delay of its hidden start: `open` cancelled that timer.
+sleep 6
+kill -0 "$ui" 2>/dev/null && ok || not_ok "it stays while shown, past the delay"
 capture "$BIN/mirqab" close
 status_is "close reaches it" 0 "$STATUS"
 gone=""
-for ((i = 0; i < 120; i++)); do
+for ((i = 0; i < 160; i++)); do
     kill -0 "$ui" 2>/dev/null || { gone=1; break; }
     sleep 0.05
 done

@@ -87,9 +87,11 @@ impl Meter {
         let m: Meter = glib::Object::new();
         let weak = m.downgrade();
         style::on_change(move || {
-            if let Some(m) = weak.upgrade() {
-                m.queue_draw();
-            }
+            let Some(m) = weak.upgrade() else {
+                return false;
+            };
+            m.queue_draw();
+            true
         });
         m
     }
