@@ -9,42 +9,58 @@ closes its output. The text carries no colour or markup: style the
 
 Add any of these modules to your Waybar config and name them in a
 `modules-*` list. `on-click` toggles mirqab's window on the matching tab.
+`restart-interval` matters: Waybar does not restart a continuous `exec`
+that ended, so without it a daemon restart leaves the module blank until
+Waybar reloads. `escape` keeps a sensor label or GPU name with `&` or `<`
+from being read as Pango markup.
 
 ```json
 {
   "custom/mirqab-cpu": {
     "exec": "mirqab bar cpu --watch",
     "return-type": "json",
+    "restart-interval": 10,
+    "escape": true,
     "format": "CPU {}",
     "on-click": "mirqab toggle system"
   },
   "custom/mirqab-mem": {
     "exec": "mirqab bar mem --watch",
     "return-type": "json",
+    "restart-interval": 10,
+    "escape": true,
     "format": "MEM {}",
     "on-click": "mirqab toggle system"
   },
   "custom/mirqab-temp": {
     "exec": "mirqab bar temp --watch",
     "return-type": "json",
+    "restart-interval": 10,
+    "escape": true,
     "format": "{}",
     "on-click": "mirqab toggle system"
   },
   "custom/mirqab-gpu": {
     "exec": "mirqab bar gpu --watch",
     "return-type": "json",
+    "restart-interval": 10,
+    "escape": true,
     "format": "GPU {}",
     "on-click": "mirqab toggle system"
   },
   "custom/mirqab-load": {
     "exec": "mirqab bar load --watch",
     "return-type": "json",
+    "restart-interval": 10,
+    "escape": true,
     "format": "{}",
     "on-click": "mirqab toggle system"
   },
   "custom/mirqab": {
     "exec": "mirqab bar combo --watch --interval 5",
     "return-type": "json",
+    "restart-interval": 10,
+    "escape": true,
     "format": "{}",
     "on-click": "mirqab toggle"
   }

@@ -213,6 +213,19 @@ Part 1 (2026-11-13), where it differs from the plan:
   reading that never changes cannot keep a dead bar's process alive.
 - Temperatures print in Celsius; `units.temperature` reaches the CLI with
   plan 005.
+- From the review of PR #10: the daemon sends events at the shortest
+  interval any subscriber asked for, so `--watch` holds a changed reading
+  back until its own interval has passed (less 250 ms for jitter), except
+  the first real value after `—`. `--interval` is capped at an hour. The
+  class follows the rounded value (79.6 reads `80%`, `high`); `combo` is
+  `unknown` while no part has a value; `temp` without the thermal word is
+  `normal`. The Waybar modules set `restart-interval` (Waybar never
+  restarts a continuous `exec` otherwise) and `escape`. The haseen widget
+  shows `—` when the daemon is gone and restarts its reading when its
+  settings change; it installs with `--path contrib/haseen/mirqab.bar`.
+  Deferred: output that survives a closed pipe for every command
+  (`println!` aborts on EPIPE) to plan 005; `bar.combo` end to end to
+  part 2.
 - The haseen widget validates with `haseen plugin validate` against
   haseen's schema on the development machine; its one unmet requirement
   there was `mirqab` not on `PATH` (not installed). `Widget.qml` passes
@@ -229,8 +242,7 @@ Part 1 (2026-11-13), where it differs from the plan:
 - **The watcher's behaviour in Quickshell-based hosts** (haseen's bar):
   whether it reads `ToolTip` on a timer. Measure with `busctl monitor` for
   a minute and adjust the cache time.
-- **haseen's bar-widget manifest fields**: read
-  `share/haseen/shell/plugin.schema.json` in the haseen repository at the
-  time of writing; it is that project's contract and may have moved.
-- **Waybar's JSON fields**: confirm against the wiki page above; Waybar is
-  not installed here.
+- ~~haseen's bar-widget manifest fields~~: checked against haseen's
+  `plugin.schema.json` and `haseen plugin validate` (As built, part 1).
+- ~~Waybar's JSON fields~~: checked against Waybar's wiki and its
+  `custom.cpp` (review of PR #10); Waybar is still not installed here.

@@ -61,7 +61,9 @@ fn percent_reading(p: Option<f64>, tooltip: String) -> Reading {
         Some(p) => Reading {
             text: strings::bar_percent(p),
             tooltip,
-            class: level(p),
+            // From the rounded value, so the class agrees with the text
+            // (79.6 reads 80%, and is high).
+            class: level(p.round()),
             percentage: Some(p.round().clamp(0.0, 100.0) as u32),
         },
         None => none(tooltip),
@@ -114,7 +116,8 @@ fn temp(d: &SystemData) -> Reading {
         "warm" => "warm",
         "hot" => "hot",
         "critical" => "critical",
-        _ => "unknown",
+        // A temperature without the thermal word is still a value.
+        _ => "normal",
     };
     Reading {
         text: strings::bar_degrees(t.celsius),
@@ -190,6 +193,12 @@ pub fn read(item: &str, d: &SystemData, combo: &[String]) -> Option<Reading> {
                     .collect();
             }
             let worst = parts.iter().map(|r| severity(r.class)).max().unwrap_or(0);
+            // No part has a value yet: unknown, as each part says.
+            let class = if parts.iter().all(|r| r.class == "unknown") {
+                "unknown"
+            } else {
+                ["normal", "high", "critical"][usize::from(worst)]
+            };
             Reading {
                 text: parts
                     .iter()
@@ -202,7 +211,7 @@ pub fn read(item: &str, d: &SystemData, combo: &[String]) -> Option<Reading> {
                     .filter(|t| !t.is_empty())
                     .collect::<Vec<_>>()
                     .join("\n"),
-                class: ["normal", "high", "critical"][usize::from(worst)],
+                class,
                 percentage: None,
             }
         }
@@ -239,6 +248,8 @@ mod tests {
         );
         assert_eq!(read("cpu", &data(80.0, 0), &[]).unwrap().class, "high");
         assert_eq!(read("cpu", &data(95.0, 0), &[]).unwrap().class, "critical");
+        let edge = read("cpu", &data(79.6, 0), &[]).unwrap();
+        assert_eq!((edge.text.as_str(), edge.class), ("80%", "high"));
         let m = read("mem", &data(0.0, 41), &[]).unwrap();
         assert_eq!((m.text.as_str(), m.percentage), ("41%", Some(41)));
     }
@@ -251,6 +262,9 @@ mod tests {
         assert_eq!((r.text.as_str(), r.class), (strings::NO_VALUE, "unknown"));
         assert_eq!(read("temp", &d, &[]).unwrap().class, "unknown");
         assert!(read("nope", &d, &[]).is_none());
+        let empty = SystemData::default();
+        let combo = read("combo", &empty, &[]).unwrap();
+        assert_eq!(combo.class, "unknown", "no part has a value");
     }
 
     #[test]
@@ -320,5 +334,39 @@ mod tests {
         // default parts.
         let r = read("combo", &d, &v(&["combo", "nope"])).unwrap();
         assert_eq!(r.text, format!("96% 41% {}", strings::NO_VALUE));
+    }
+
+    #[test]
+    fn a_temperature_without_the_thermal_word_is_normal() {
+        let d = SystemData {
+            temps: vec![Temp {
+                id: "k10temp/temp1".into(),
+                label: "Tctl".into(),
+                celsius: 50.0,
+                critical: None,
+                kind: "cpu".into(),
+            }],
+            ..SystemData::default()
+        };
+        assert_eq!(read("temp", &d, &[]).unwrap().class, "normal");
+    }
+
+    #[test]
+    fn the_schema_lists_the_items_combo_can_take() {
+        let schema: serde_json::Value =
+            serde_json::from_str(include_str!("../../../../share/mirqab/config.schema.json"))
+                .unwrap();
+        let listed: Vec<&str> = schema["properties"]["bar"]["properties"]["combo"]["items"]["enum"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(serde_json::Value::as_str)
+            .collect();
+        let items: Vec<&str> = strings::BAR_ITEMS
+            .iter()
+            .map(|(n, _)| *n)
+            .filter(|n| *n != "combo")
+            .collect();
+        assert_eq!(listed, items);
     }
 }
