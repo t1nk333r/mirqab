@@ -68,6 +68,22 @@ ok_file="$(dirname "$MIRQAB_SOCKET")/history.db"
 capture "$BIN/mirqab" history --list
 status_is "history --list exits 0" 0 "$STATUS"
 like "history --list names cpu.total" "$OUTPUT" "cpu.total"
+
+# The System tab's commands (plan 002).
+capture "$BIN/mirqab" load --json
+status_is "load --json exits 0" 0 "$STATUS"
+is "load --json has the cores" 16 "$(jq '.cpu.cores | length' <<<"$OUTPUT")"
+is "and the thermal word" '"cool"' "$(jq -c '.thermal.state' <<<"$OUTPUT")"
+capture "$BIN/mirqab" load
+like "load prints memory" "$OUTPUT" "memory    17 GB used of 67 GB"
+like "and the thermal word" "$OUTPUT" "thermal   Cool"
+capture "$BIN/mirqab" sensors --json
+is "sensors --json lists the temperatures" 7 "$(jq '.temps | length' <<<"$OUTPUT")"
+capture "$BIN/mirqab" sensors
+like "sensors names the CPU sensor" "$OUTPUT" "Tctl"
+like "and the GPUs" "$OUTPUT" "AMD GPU (card1)"
+capture "$BIN/mirqab" load --dry-run
+status_is "load takes no --dry-run" 64 "$STATUS"
 capture "$BIN/mirqab" history cpu.total --range 24h --json
 status_is "history --json exits 0" 0 "$STATUS"
 is "a fresh history has no points" "0" "$(jq '.series["cpu.total"].points | length' <<<"$OUTPUT")"

@@ -15,6 +15,8 @@ commands:
   close                                 hide the window
   history SERIES... [--range R] [--json]  stored minutes (R: 1h, 24h, 7d, 30d; default 1h)
   history --list                        the series history keeps
+  load [--json]                         CPU, load, memory, pressure and the thermal word
+  sensors [--json]                      temperatures, GPUs and power
   help [COMMAND]                        this text, or one command's
 
 options for every command:
@@ -46,6 +48,14 @@ pub fn command_help(command: &str) -> Option<&'static str> {
         "history" => {
             "usage: mirqab history SERIES... [--range R] [--json]\n       mirqab history --list\n\
              Prints the average and peak of each bucket of stored minutes. R is 1h (default), 24h, 7d or 30d.\n"
+        }
+        "load" => {
+            "usage: mirqab load [--json]\n\
+             CPU (averaged since the daemon's last minute), load averages, memory, swap, pressure and the thermal word.\n"
+        }
+        "sensors" => {
+            "usage: mirqab sensors [--json]\n\
+             Every temperature sensor, each GPU, and package and battery power.\n"
         }
         "help" => "usage: mirqab help [COMMAND]\n",
         _ => return None,
@@ -377,6 +387,126 @@ quits 60 s after the window was last hidden.
   --selftest TAB  build TAB in a window, print its widget tree as JSON, exit
 ";
 
+// --- System tab (plan 002) ------------------------------------------------
+
+/// A sensor kind as a word: `CPU`, `Disk`.
+pub fn temp_kind(kind: &str) -> &'static str {
+    match kind {
+        "cpu" => "CPU",
+        "gpu" => "GPU",
+        "disk" => "Disk",
+        "memory" => "Memory",
+        _ => "Sensor",
+    }
+}
+
+/// A sensor's name when its driver gives no label: `CPU 1`, `Disk 2`.
+pub fn temp_label(kind: &str, n: usize) -> String {
+    format!("{} {n}", temp_kind(kind))
+}
+
+pub fn mhz(v: u32) -> String {
+    format!("{v} MHz")
+}
+
+/// A GPU's name from its vendor and DRM card: `AMD GPU (card1)`.
+pub fn gpu_name(vendor: &str, card: &str) -> String {
+    let v = match vendor {
+        "amd" => "AMD GPU",
+        "intel" => "Intel GPU",
+        "nvidia" => "NVIDIA GPU",
+        _ => "GPU",
+    };
+    format!("{v} ({card})")
+}
+
+/// `mirqab load`, one line per part; each argument is already formatted.
+pub fn load_line(name: &str, value: &str) -> String {
+    format!("{name:<9} {value}")
+}
+pub const LOAD_CPU: &str = "cpu";
+pub const LOAD_LOAD: &str = "load";
+pub const LOAD_MEMORY: &str = "memory";
+pub const LOAD_SWAP: &str = "swap";
+pub const LOAD_PRESSURE: &str = "pressure";
+pub const LOAD_THERMAL: &str = "thermal";
+
+pub fn load_cpu(total: &str, user: &str, system: &str, iowait: &str) -> String {
+    format!("{total} (user {user}, system {system}, iowait {iowait})")
+}
+
+pub fn load_avgs(one: f64, five: f64, fifteen: f64, running: u32, tasks: u32) -> String {
+    format!("{one:.2} {five:.2} {fifteen:.2} ({running} running of {tasks})")
+}
+
+pub fn load_memory(used: &str, total: &str, available: &str) -> String {
+    format!("{used} used of {total}, {available} available")
+}
+
+pub fn load_swap(used: &str, total: &str) -> String {
+    format!("{used} of {total}")
+}
+
+pub fn load_pressure(cpu: &str, memory: &str, io: &str) -> String {
+    format!("cpu {cpu}  memory {memory}  io {io}  (some, last minute)")
+}
+
+/// The thermal word as people read it.
+pub fn thermal_word(state: &str, throttling: bool) -> String {
+    let w = match state {
+        "cool" => "Cool",
+        "warm" => "Warm",
+        "hot" => "Hot",
+        "critical" => "Critical",
+        other => other,
+    };
+    if throttling {
+        format!("{w}, throttling")
+    } else {
+        w.to_string()
+    }
+}
+
+/// `mirqab sensors`: one temperature.
+pub fn sensor_line(kind: &str, label: &str, temp: &str, critical: Option<&str>) -> String {
+    match critical {
+        Some(c) => format!("{kind:<7} {label:<20} {temp:>7}  critical {c}"),
+        None => format!("{kind:<7} {label:<20} {temp:>7}"),
+    }
+}
+
+/// `mirqab sensors`: one GPU; parts already formatted, absent ones skipped.
+pub fn gpu_line(name: &str, parts: &[String]) -> String {
+    format!("{:<7} {name:<20} {}", "GPU", parts.join("  "))
+}
+
+pub fn gpu_suspended(name: &str) -> String {
+    format!("{:<7} {name:<20} suspended", "GPU")
+}
+
+pub fn busy(percent: &str) -> String {
+    format!("{percent} busy")
+}
+
+/// `mirqab sensors`' power line. The helper hint only where RAPL exists
+/// but needs root (review of PR #7: it showed on machines with no RAPL).
+pub fn power_line(package: Option<&str>, battery: Option<&str>, needs_helper: bool) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    match package {
+        Some(w) => parts.push(format!("package {w}")),
+        None if needs_helper => parts.push(PACKAGE_POWER_NEEDS_HELPER.to_string()),
+        None => {}
+    }
+    parts.extend(battery.map(|b| format!("battery {b}")));
+    if parts.is_empty() {
+        parts.push(NO_VALUE.to_string());
+    }
+    format!("{:<7} {}", "power", parts.join(", "))
+}
+
+pub const PACKAGE_POWER_NEEDS_HELPER: &str = "package power needs the root helper (Fans tab)";
+pub const WATTS: &str = "W";
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -384,7 +514,7 @@ mod tests {
     #[test]
     fn every_command_in_the_usage_has_help() {
         for c in [
-            "daemon", "status", "open", "toggle", "close", "history", "help",
+            "daemon", "status", "open", "toggle", "close", "history", "load", "sensors", "help",
         ] {
             assert!(
                 CLI_USAGE.contains(&format!("  {c}")),

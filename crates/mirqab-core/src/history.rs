@@ -14,12 +14,35 @@ pub const KEEP_DAILY_DAYS: i64 = 90;
 /// The most series history holds (§6.1).
 pub const MAX_SERIES: usize = 64;
 
-/// The series plan 001 fixes: key, unit, scale. Plan 002 adds the rest.
+/// Every series history keeps: key, unit, scale. Plan 001 fixed the first
+/// four; plan 002 adds the System tab's (architecture §6.1). Page counts are
+/// per minute (`page.*` in KiB, as vmstat counts them; `swap.*` in pages).
 pub const SERIES: &[(&str, &str, i64)] = &[
     ("cpu.total", "percent", 100),
     ("mem.used", "bytes", 1),
     ("mem.available", "bytes", 1),
     ("swap.used", "bytes", 1),
+    ("cpu.user", "percent", 100),
+    ("cpu.system", "percent", 100),
+    ("cpu.iowait", "percent", 100),
+    ("load.one", "load", 100),
+    ("mem.cache", "bytes", 1),
+    ("psi.cpu", "percent", 100),
+    ("psi.memory", "percent", 100),
+    ("psi.io", "percent", 100),
+    ("page.in", "kib", 1),
+    ("page.out", "kib", 1),
+    ("swap.in", "pages", 1),
+    ("swap.out", "pages", 1),
+    ("temp.cpu", "celsius", 10),
+    ("temp.gpu", "celsius", 10),
+    ("gpu.0.busy", "percent", 100),
+    ("gpu.1.busy", "percent", 100),
+    ("gpu.0.vram", "bytes", 1),
+    ("gpu.1.vram", "bytes", 1),
+    ("power.package", "watts", 10),
+    ("power.battery", "watts", 10),
+    ("cpu.mhz", "mhz", 1),
 ];
 
 /// A range of §6.4 that the database answers: (name, span, bucket), seconds.
@@ -184,6 +207,17 @@ impl History {
             ids: BTreeMap::new(),
             moved_aside,
         };
+        // Every series the file already has, so a series a later plan
+        // registers (net.rx) is queryable after a restart before it is
+        // registered again (review of plan 001 phase C).
+        let stored: Vec<(String, i64, i64)> = h
+            .conn
+            .prepare("SELECT key, id, scale FROM series")?
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+            .collect::<Result<_, _>>()?;
+        for (key, id, scale) in stored {
+            h.ids.insert(key, (id, scale));
+        }
         for (key, unit, scale) in SERIES {
             h.register(key, unit, *scale)?;
         }
@@ -315,10 +349,20 @@ impl History {
 
     /// Deletes what is past its keep time. Returns the rows removed.
     pub fn prune(&mut self, now: i64) -> Result<usize, HistoryError> {
-        let mut n = self.conn.execute(
-            "DELETE FROM sample WHERE ts < ?1",
-            [minute(now - KEEP_SECS)],
-        )?;
+        // One range delete per series: the key is (series, ts), so a bare
+        // `ts < ?` scans the whole table (37 ms an hour on a full file;
+        // review of plan 001 phase C).
+        let cutoff = minute(now - KEEP_SECS);
+        let mut n = 0;
+        let ids: Vec<i64> = self.ids.values().map(|(id, _)| *id).collect();
+        {
+            let mut stmt = self
+                .conn
+                .prepare_cached("DELETE FROM sample WHERE series = ?1 AND ts < ?2")?;
+            for id in ids {
+                n += stmt.execute(rusqlite::params![id, cutoff])?;
+            }
+        }
         n += self
             .conn
             .execute("DELETE FROM event WHERE ts < ?1", [now - KEEP_SECS])?;

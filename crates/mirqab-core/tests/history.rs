@@ -4,9 +4,10 @@
 
 use mirqab_core::history::{self, History};
 use mirqab_core::root::Root;
-use mirqab_core::samplers::system_core::SystemCore;
+use mirqab_core::samplers::system::System;
 use rusqlite::params;
 use std::path::PathBuf;
+use std::time::{Duration, Instant};
 
 fn fixture(name: &str) -> Root {
     Root::new(
@@ -53,7 +54,7 @@ fn the_schema_is_created_with_the_first_series() {
         .unwrap();
     assert_eq!(
         keys,
-        ["cpu.total", "mem.used", "mem.available", "swap.used"]
+        history::SERIES.iter().map(|s| s.0).collect::<Vec<_>>()
     );
     let mode: String = h
         .conn()
@@ -62,13 +63,21 @@ fn the_schema_is_created_with_the_first_series() {
     assert_eq!(mode, "wal");
 }
 
+thread_local! {
+    static T0: Instant = Instant::now();
+}
+
 #[test]
 fn counters_difference_across_a_minute_and_gauges_are_point_samples() {
-    let mut s = SystemCore::new();
+    let mut s = System::new();
     // The first minute has no baseline for the counter: memory only.
-    let first = s.minute_at(&fixture("root-desktop"), (NOW) as u64);
+    let first = s.minute_at(&fixture("root-desktop"), NOW as u64, T0.with(|t| *t));
     assert!(first.iter().all(|(k, _)| *k != "cpu.total"));
-    let second = s.minute_at(&fixture("root-desktop.t1"), (NOW + 60) as u64);
+    let second = s.minute_at(
+        &fixture("root-desktop.t1"),
+        (NOW + 60) as u64,
+        T0.with(|t| *t) + Duration::from_secs(60),
+    );
     let get = |k: &str| second.iter().find(|(key, _)| *key == k).map(|(_, v)| *v);
     // Each of 16 CPUs: +150 user, +50 system, +800 idle → 20.00 % busy.
     assert_eq!(get("cpu.total"), Some(2000));
@@ -79,9 +88,13 @@ fn counters_difference_across_a_minute_and_gauges_are_point_samples() {
 
 #[test]
 fn a_gap_stores_no_counter() {
-    let mut s = SystemCore::new();
-    s.minute_at(&fixture("root-desktop"), (NOW) as u64);
-    let after_sleep = s.minute_at(&fixture("root-desktop.t1"), (NOW + 3600) as u64);
+    let mut s = System::new();
+    s.minute_at(&fixture("root-desktop"), NOW as u64, T0.with(|t| *t));
+    let after_sleep = s.minute_at(
+        &fixture("root-desktop.t1"),
+        (NOW + 3600) as u64,
+        T0.with(|t| *t) + Duration::from_secs(3600),
+    );
     assert!(
         after_sleep.iter().all(|(k, _)| *k != "cpu.total"),
         "an hour asleep is not one minute"
@@ -90,8 +103,8 @@ fn a_gap_stores_no_counter() {
 
 #[test]
 fn a_minimal_machine_still_writes_what_it_has() {
-    let mut s = SystemCore::new();
-    let m = s.minute_at(&fixture("root-minimal"), (NOW) as u64);
+    let mut s = System::new();
+    let m = s.minute_at(&fixture("root-minimal"), NOW as u64, T0.with(|t| *t));
     assert!(m.iter().any(|(k, _)| *k == "mem.used"));
     assert!(
         m.iter().all(|(k, _)| *k != "swap.used"),
@@ -267,7 +280,7 @@ fn a_broken_file_is_moved_aside() {
     let aside = h.moved_aside.clone().expect("moved aside");
     assert!(aside.ends_with(format!("history.db.broken-{NOW}")));
     assert!(aside.exists());
-    assert_eq!(h.list().as_array().unwrap().len(), 4);
+    assert_eq!(h.list().as_array().unwrap().len(), history::SERIES.len());
 }
 
 #[test]
@@ -298,7 +311,7 @@ fn sixty_four_series_for_thirty_days_fit_in_forty_megabytes() {
     for i in 0..history::MAX_SERIES {
         ids.push(
             h.register(&format!("test.series{i}"), "bytes", 1)
-                .or_else(|_| h.register(history::SERIES[i % 4].0, "", 1))
+                .or_else(|_| h.register(history::SERIES[i % history::SERIES.len()].0, "", 1))
                 .unwrap(),
         );
     }
@@ -321,4 +334,28 @@ fn sixty_four_series_for_thirty_days_fit_in_forty_megabytes() {
     let size = h.size_bytes();
     eprintln!("history: 64 series x 30 days = {size} bytes");
     assert!(size < 40 * 1024 * 1024, "{size} bytes");
+}
+
+#[test]
+fn a_series_registered_later_survives_a_reopen() {
+    let d = scratch("reopen");
+    let path = d.0.join("history.db");
+    {
+        let mut h = History::open(&path, NOW).unwrap();
+        h.register("net.rx", "bytes", 1).unwrap();
+        h.write_minute(NOW - 30, &[("net.rx", 42)]).unwrap();
+    }
+    // Reopened, before anything registers net.rx again.
+    let h = History::open(&path, NOW).unwrap();
+    assert!(
+        h.list()
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|s| s["key"] == "net.rx"),
+        "{}",
+        h.list()
+    );
+    let q = h.query(&["net.rx"], NOW - 3600, NOW + 1, 60).unwrap();
+    assert_eq!(q["series"]["net.rx"]["points"][0][1], 42.0);
 }

@@ -1,0 +1,7 @@
+nr_free_pages 1000
+pgpgin 1000600
+pgpgout 2001200
+pswpin 106
+pswpout 212
+pgmajfault 5050
+oom_kill 0

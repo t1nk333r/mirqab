@@ -21,7 +21,7 @@ use crate::proto::stream::{self, Machine, ProcessCost, SelfData, UiCost, UiEvent
 use crate::proto::{Code, Event, Hello, PROTOCOL, Reply, Request, ServerFrame, frame, strings};
 use crate::root::Root;
 use crate::sampler::Sampler;
-use crate::samplers::system_core::SystemCore;
+use crate::samplers::system::System;
 use crate::selfcost::{self, Meter};
 use crate::sys;
 use serde_json::{Value, json};
@@ -352,7 +352,7 @@ pub fn listen(opts: Options) -> Result<Server, ListenError> {
         ui: None,
         cpu_model: None,
     })];
-    samplers.push(Box::new(SystemCore::new()));
+    samplers.push(Box::new(System::new()));
     samplers.extend(opts.samplers);
 
     let mut slots = BTreeMap::new();
@@ -922,7 +922,7 @@ impl Inner {
         if let Some(r) = self.check_stream(req, name) {
             return r;
         }
-        let data = lock(&self.slots[name].sampler).sample(&self.root, Instant::now());
+        let data = lock(&self.slots[name].sampler).snapshot(&self.root, Instant::now());
         Reply::ok(req.id, data)
     }
 

@@ -25,6 +25,13 @@ pub trait Sampler: Send {
 
     fn sample(&mut self, root: &Root, now: Instant) -> Value;
 
+    /// One reading for `get`, outside any subscription. A sampler with rate
+    /// baselines overrides it so a `get` does not move a subscriber's
+    /// baseline (review of plan 001 phase B).
+    fn snapshot(&mut self, root: &Root, now: Instant) -> Value {
+        self.sample(root, now)
+    }
+
     /// Called once a minute, subscribers or not (phase C). Returns (series
     /// key, scaled value) pairs.
     fn minute(&mut self, _root: &Root) -> Vec<(&'static str, i64)> {
