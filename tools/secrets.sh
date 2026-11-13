@@ -3,8 +3,8 @@
 # (CLAUDE.md "The repository is public", architecture §10, plan 001 step 9).
 #   1. gitleaks over every ref a push can reach;
 #   2. privacy patterns gitleaks does not know, over tracked files and every
-#      added line in history: IPv4 addresses outside the documentation ranges,
-#      CGNAT (tailnet) addresses, MAC addresses, coordinates finer than a
+#      added line in history: IPv4 hosts outside the documentation ranges
+#      (private, tailnet and public alike), MAC addresses, coordinates finer than a
 #      city, token shapes, home paths, personal e-mail addresses, private keys,
 #      and the literal strings of tools/secrets-deny.txt plus the local file
 #      named by MIRQAB_SECRETS_DENY (a machine's own hostnames).
@@ -42,22 +42,26 @@ report() {
 }
 
 # Every line added anywhere in history, read once, outside the allowed
-# commits. This file, the deny list and the allow list are excluded: they
-# hold the patterns and hashes themselves.
+# commits. This file and the deny list are excluded: they hold the patterns
+# and the denied strings themselves. The allow list is scanned like any file.
 allow="$(sed -n 's/^\([0-9a-f]\{40\}\)\([[:space:]].*\)\{0,1\}$/\1/p' tools/secrets-allow.txt 2>/dev/null || true)"
 added="$(mktemp)"
 trap 'rm -f -- "$found" "$added"' EXIT
 git log -p --format='@@commit %H' "${REFS[@]}" -- . \
-    ':!tools/secrets.sh' ':!tools/secrets-deny.txt' ':!tools/secrets-allow.txt' |
+    ':!tools/secrets.sh' ':!tools/secrets-deny.txt' |
     awk -v allow="$allow" '
         BEGIN { n = split(allow, a, "\n"); for (i = 1; i <= n; i++) ok[a[i]] = 1 }
-        /^@@commit / { skip = ($2 in ok); next }
-        !skip && /^\+/ && !/^\+\+\+ / { print }
+        /^@@commit / { skip = ($2 in ok); prev = ""; next }
+        # A "+++ b/file" header follows a "--- a/file" line; an added line
+        # whose own text starts with "++ " does not, and is scanned.
+        /^\+\+\+ / && prev ~ /^--- / { prev = $0; next }
+        !skip && /^\+/ { print }
+        { prev = $0 }
     ' >"$added"
 
 # scan ERE — matches in tracked files and in lines added in history.
 scan() {
-    git grep -nIE -e "$1" -- . ':!tools/secrets.sh' ':!tools/secrets-deny.txt' ':!tools/secrets-allow.txt' || true
+    git grep -nIE -e "$1" -- . ':!tools/secrets.sh' ':!tools/secrets-deny.txt' || true
     grep -E -e "$1" "$added" || true
 }
 
@@ -81,7 +85,7 @@ done
 ipv4='\b([0-9]{1,3}\.){3}[0-9]{1,3}\b'
 allowed='^(192\.0\.2\.|198\.51\.100\.|203\.0\.113\.|127\.|0\.0\.0\.0$|255\.|1\.1\.1\.1$)'
 {
-    git grep -nIoE -e "$ipv4(/[0-9]+)?" -- . ':!tools/secrets.sh' ':!tools/secrets-allow.txt' || true
+    git grep -nIoE -e "$ipv4(/[0-9]+)?" -- . ':!tools/secrets.sh' || true
     grep -oE -e "$ipv4(/[0-9]+)?" "$added" || true
 } | while IFS= read -r hit; do
     addr="${hit##*:}"

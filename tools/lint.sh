@@ -130,17 +130,6 @@ if [[ ${1:-} == --rules ]]; then
     exit "$fail"
 fi
 
-# Rust: format, clippy, dependencies.
-cargo fmt --all --check || err "cargo fmt --check failed (run cargo fmt --all)"
-cargo clippy --workspace --all-targets --locked --quiet -- -D warnings || err "cargo clippy failed"
-deny_checks=(licenses bans sources)
-[[ -z ${CI:-} ]] || deny_checks+=(advisories)
-if command -v "${CARGO_DENY:-cargo-deny}" >/dev/null 2>&1; then
-    "${CARGO_DENY:-cargo-deny}" --log-level error check "${deny_checks[@]}" || err "cargo deny failed"
-else
-    err "cargo-deny not found (set CARGO_DENY or install cargo-deny)"
-fi
-
 # §3: the headless crates link no toolkit, whatever their sources say. A
 # cargo tree that fails is a failure, not an empty answer.
 tree_rule() {
@@ -160,6 +149,17 @@ if [[ ${1:-} == --tree ]]; then
     shift
     tree_rule "$@"
     exit "$fail"
+fi
+
+# Rust: format, clippy, dependencies.
+cargo fmt --all --check || err "cargo fmt --check failed (run cargo fmt --all)"
+cargo clippy --workspace --all-targets --locked --quiet -- -D warnings || err "cargo clippy failed"
+deny_checks=(licenses bans sources)
+[[ -z ${CI:-} ]] || deny_checks+=(advisories)
+if command -v "${CARGO_DENY:-cargo-deny}" >/dev/null 2>&1; then
+    "${CARGO_DENY:-cargo-deny}" --log-level error check "${deny_checks[@]}" || err "cargo deny failed"
+else
+    err "cargo-deny not found (set CARGO_DENY or install cargo-deny)"
 fi
 
 tree_rule "${HEADLESS[@]}"

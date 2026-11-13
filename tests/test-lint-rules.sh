@@ -103,3 +103,5 @@ plant "sudo beside a mention of elevate.rs" crates/mirqab-core/src/note.rs '// s
 capture "$REPO/tools/lint.sh" --tree mirqab-no-such-crate
 status_is "cargo tree failing fails the link rule" 1 "$STATUS"
 like "and says so" "$OUTPUT" "cargo tree -p mirqab-no-such-crate failed"
+capture env CARGO_DENY=/nonexistent "$REPO/tools/lint.sh" --tree mirqab-proto
+status_is "--tree runs only the link rule, and a headless crate passes it" 0 "$STATUS"

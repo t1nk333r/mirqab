@@ -75,10 +75,11 @@ mirqab --mcp           # MCP server on stdio
 On Arch, install the toolchain and the gate tools:
 
 ```sh
-pacman -S --needed rust pkgconf gtk4 libadwaita gtk4-layer-shell sqlite shellcheck jq cargo-deny gitleaks
+pacman -S --needed base-devel git dbus rust pkgconf gtk4 libadwaita gtk4-layer-shell sqlite shellcheck jq cargo-deny gitleaks
 ```
 
-Run the four gates before every commit:
+Run the first three gates before every commit, and `tools/secrets.sh`
+before every push:
 
 ```sh
 tools/lint.sh             # fmt, clippy, cargo deny, no-GTK link check, shellcheck, jq, grep rules, test coverage

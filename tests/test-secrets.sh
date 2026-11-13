@@ -61,6 +61,24 @@ status_is "a fine coordinate is flagged" 1 "$STATUS"
 scan '"latitude": 24.71'
 status_is "a city-level coordinate passes" 0 "$STATUS"
 
+# An added line whose text starts with "++ " is scanned, not taken for a
+# diff header, even after the next commit removes it.
+printf '++ %s\n' "$private_host" >"$repo/sample.txt"
+git -C "$repo" add -A
+git -C "$repo" -c user.name=t -c user.email=t@example.invalid commit -qm plusplus
+printf 'gone\n' >"$repo/sample.txt"
+git -C "$repo" -c user.name=t -c user.email=t@example.invalid commit -qam gone
+capture "$repo/tools/secrets.sh"
+status_is "a line starting with ++ in history is scanned" 1 "$STATUS"
+rm -rf "$repo/.git"
+git -C "$repo" init -q -b main
+
+# The allow list is scanned like any other file.
+printf 'host %s\n' "$private_host" >>"$repo/tools/secrets-allow.txt"
+scan 'clean'
+status_is "an address hidden in the allow list is found" 1 "$STATUS"
+printf '# none\n' >"$repo/tools/secrets-allow.txt"
+
 # A local deny list whose last line has no newline still counts.
 printf 'lunabox' >"$SANDBOX/deny"
 export MIRQAB_SECRETS_DENY="$SANDBOX/deny"

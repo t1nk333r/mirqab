@@ -485,7 +485,9 @@ new). Deferred, each to the step that adds the code it guards:
   time; widen it to all of `crates/mirqab-ui/src` but `widgets/graph.rs`,
   multi-line, once `client.rs` fixes the subscribe call's shape. Widen
   the toolkit list of the link rule (`glib-sys`, `gtk4-sys`, `pango`,
-  `gdk-pixbuf`) when GTK enters `Cargo.lock`.
+  `gdk-pixbuf`) when GTK enters `Cargo.lock`, and make it see build and
+  dev dependencies and renamed (`package =`) ones: `-e normal` sees
+  neither today.
 - Phase D, step 28: the timer rule accepts `add_tick_callback` with a
   `mirqab:sample` marker (§7.2 allows only `ui-timeout`), flags a `use`
   line and a trailing same-line marker, and does not check the 1000 ms
@@ -503,7 +505,9 @@ gate's status went through a pipe to `tail`. The values are synthetic.
 Rewriting the pushed branch was refused, so `tools/secrets.sh` gained
 `tools/secrets-allow.txt`: full hashes of reviewed commits whose history
 the scan skips, each with its reason. The test now builds its samples at
-run time, and the history is read once instead of once per pattern.
+run time, and the history is read once instead of once per pattern. The
+allow list is scanned like any other file; the entry becomes dead once the
+squash merge leaves `e72bfef` out of `main`, and is removed then.
 
 ### Phase B — daemon and protocol (PR 2)
 
