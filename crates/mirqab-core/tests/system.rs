@@ -56,6 +56,8 @@ fn a_minute_of_counters_gives_the_rates_and_series() {
     assert_eq!(get("gpu.1.busy"), Some(300));
     assert_eq!(get("gpu.1.vram"), Some(1_073_741_824));
     assert_eq!(get("cpu.mhz"), Some(3968));
+    // Cache is available − free, so used + cache + free is the total.
+    assert_eq!(get("mem.cache"), Some((48_000_000 - 24_000_000) * 1024));
     for (k, _) in &m {
         assert!(
             mirqab_core::history::SERIES.iter().any(|s| s.0 == *k),

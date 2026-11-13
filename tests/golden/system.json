@@ -147,7 +147,7 @@
   },
   "mem": {
     "availableBytes": 50331648000,
-    "cacheBytes": 2252341248,
+    "cacheBytes": 25165824000,
     "oomKills": 0,
     "pageInPerSec": null,
     "pageOutPerSec": null,

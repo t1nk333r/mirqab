@@ -131,7 +131,8 @@ pub struct Mem {
     pub available_bytes: u64,
     /// Total − available.
     pub used_bytes: u64,
-    /// Reclaimable cache: buffers + cached + reclaimable slab − shared.
+    /// The part of available memory that is cache: available − free, so
+    /// used + cache + free = total.
     pub cache_bytes: u64,
     pub shmem_bytes: u64,
     pub swap_total_bytes: u64,

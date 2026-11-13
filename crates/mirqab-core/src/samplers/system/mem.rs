@@ -23,10 +23,13 @@ impl MemInfo {
         self.total.saturating_sub(self.available)
     }
 
-    /// Cache the kernel can drop: buffers, page cache and reclaimable slab,
-    /// less shared memory (tmpfs and the like), which cannot be dropped.
+    /// The part of available memory that is cache: available − free. Used,
+    /// cache and free then add up to the total. Buffers + cached +
+    /// reclaimable slab overlaps what the kernel already counts as
+    /// available and can exceed it (seen on the development machine: 41 GB
+    /// of cache beside 25 GB used of 65 GB).
     pub fn cache(&self) -> u64 {
-        (self.buffers + self.cached + self.sreclaimable).saturating_sub(self.shmem)
+        self.available.saturating_sub(self.free)
     }
 
     pub fn swap_used(&self) -> u64 {
