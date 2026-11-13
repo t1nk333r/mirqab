@@ -9,8 +9,9 @@
 - **Category**: tab
 - **Planned at**: 2026-11-13, from the owner
 - **State**: DONE (2026-11-13). Acceptance 1 to 3 are tested by
-  `tests/test-ui-home.sh` (seeded Home, pin and order stored in the
-  config, and no `system` subscriber after `close`). Acceptance 4 in part:
+  `tests/test-ui-home.sh`: the seeded Home; a pin stored and an order that
+  survives restarting the daemon and the interface; no `system`
+  subscriber with a placeholder tab shown or after `close`. Acceptance 4 in part:
   CI builds and tests from source in a clean `archlinux` container on every
   push; showing the window there was not run (it has no display). M1 is
   complete with this plan.
@@ -168,10 +169,11 @@ From the review of PR #9 (2026-11-13):
 - `tests/test-ui-home.sh` checks the range pickers by their toggle buttons,
   with System as the positive control, and the subscribers through
   `mirqab status`: one while Home is shown, one with System shown instead,
-  none after `close`. The interface shares one daemon subscription per
-  stream among its pages, so "one" is what the daemon can tell; that Home
-  dropped its own handle is shown by the count reaching zero after
-  `close`.
+  none after `close`, and none while a placeholder tab hides Home (the
+  interface shares one daemon subscription per stream among its pages, so
+  only a tab without a `system` card shows Home let go). A restart of the
+  daemon and the interface keeps an order made on Home. A widget test
+  checks that a moved card keeps focus.
 
 ## Checklist
 

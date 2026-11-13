@@ -1,8 +1,11 @@
 # tests/test-ui-home.sh — Home against a real daemon (plan 003, Tests): a
 # fresh config seeds three cards and stores them; a card pinned with
 # `config.set` (what the pin control sends) shows on Home and its control
-# on the System page reads "Unpin from Home"; unpinning everything leaves
-# the empty state, and Home is not seeded again.
+# on the System page reads "Unpin from Home"; an order survives restarting
+# the daemon and the interface; unpinning everything leaves the empty
+# state, and Home is not seeded again; pins made before Home opened mark
+# it seeded; and Home's `system` subscription lasts only while it is shown
+# (acceptance 1 to 3).
 # mirqab:covers crates/mirqab-ui/src/tabs/home/** crates/mirqab-ui/src/tabs/mod.rs
 # mirqab:covers crates/mirqab-view/src/tabs/home.rs crates/mirqab-view/src/cards.rs
 # mirqab:covers crates/mirqab-ui/src/app.rs crates/mirqab-core/src/config.rs
@@ -33,15 +36,23 @@ set_config() {
     unlike "config.set $1 is accepted" "$reply" '"error"'
 }
 
-# stored KEY — a value in config.json, waiting up to 2 s for the write.
+# stored KEY WANT — a value in config.json, waiting up to 2 s for it to
+# become WANT; prints what it last read.
 stored() {
     local v=""
     for _ in $(seq 20); do
         v="$(jq -c "$1" "$CONFIG" 2>/dev/null || true)"
-        [[ -n $v && $v != null ]] && break
+        [[ $v == "$2" ]] && break
         sleep 0.1
     done
     printf '%s' "$v"
+}
+
+# restart_daemon — the same daemon root and config, a new process.
+restart_daemon() {
+    stop_daemon
+    rm -f "$SANDBOX/daemon.out"
+    start_daemon root-desktop
 }
 
 q() { jq -r "$1" <<<"$tree" 2>/dev/null; }
@@ -57,8 +68,9 @@ is "only Home was built" '["home"]' "$(q '.pages | tojson')"
 is "three seeded cards" 3 "$(cards)"
 like "the overview strip" "$(texts)" "Cool"
 like "the memory card" "$(texts)" "17 GB of 67 GB"
-is "the seed is stored" '["system.overview","system.cpu","system.memory"]' "$(stored .home.pinned)"
-is "seeded once" true "$(stored .home.seeded)"
+SEED='["system.overview","system.cpu","system.memory"]'
+is "the seed is stored" "$SEED" "$(stored .home.pinned "$SEED")"
+is "seeded once" true "$(stored .home.seeded true)"
 is "no range picker on Home" 0 "$(pickers)"
 
 set_config home.pinned '["system.overview","system.cpu","system.memory","system.gpu"]'
@@ -69,11 +81,19 @@ selftest system
 is "the System page marks the four pinned cards" 4 "$(unpins)"
 is "the System page has range pickers (the control for Home's check)" true "$(q '[.. | objects | select(.visible and ((.classes // []) | index("linked")) and any(.children[]?; .type == "GtkToggleButton"))] | length > 0')"
 
+# An order made on Home survives restarting the daemon and the interface
+# (each selftest is a new interface).
+set_config home.pinned '["system.gpu","system.overview","system.cpu","system.memory"]'
+restart_daemon
+selftest home
+headings() { q '[.. | objects | select(.visible and ((.classes // []) | index("mirqab-card-header"))) | .children[0] | select((.classes // []) | index("heading")) | .text] | join("|")'; }
+is "the order after a restart" "Graphics|Overview|CPU|Memory" "$(headings)"
+
 set_config home.pinned '[]'
 selftest home
 is "no cards when everything is unpinned" 0 "$(cards)"
 like "the empty state" "$(texts)" "Nothing is pinned"
-is "not seeded again" '[]' "$(stored .home.pinned)"
+is "not seeded again" '[]' "$(stored .home.pinned '[]')"
 
 # Pinned from System before Home ever opened: that counts as seeded, so
 # emptying Home later leaves it empty (review of PR #9).
@@ -83,14 +103,15 @@ start_daemon root-desktop
 set_config home.pinned '["system.cpu"]'
 selftest home
 is "one card pinned from a tab" 1 "$(cards)"
-is "marked seeded" true "$(stored .home.seeded)"
+is "marked seeded" true "$(stored .home.seeded true)"
 set_config home.pinned '[]'
 selftest home
 is "an emptied Home stays empty" 0 "$(cards)"
 
 # Subscriptions follow what is on screen (plan 003, acceptance 3): Home
-# holds `system` while shown; with System shown instead the daemon has
-# exactly one `system` subscriber; after `close` it has none.
+# holds `system` while shown and drops it for a tab without a `system`
+# card; with System shown the daemon has exactly one `system` subscriber;
+# after `close` it has none.
 set_config home.pinned '["system.overview","system.cpu"]'
 subs() { "$BIN/mirqab" status --json 2>/dev/null | jq -r '.streams.system.subscribers // 0'; }
 # until N — wait up to 5 s for N `system` subscribers.
@@ -111,9 +132,11 @@ for _ in $(seq 100); do
 done
 "$BIN/mirqab" open --window >/dev/null
 is "Home on screen holds system" 1 "$(until_subs 1)"
+"$BIN/mirqab" open apps --window >/dev/null
+is "Home hidden behind a placeholder: no system subscriber" 0 "$(until_subs 0)"
 "$BIN/mirqab" open system --window >/dev/null
 sleep 1
-is "System shown, Home hidden: one system subscriber" 1 "$(until_subs 1)"
+is "System shown: one system subscriber" 1 "$(until_subs 1)"
 "$BIN/mirqab" close >/dev/null
 is "closed: no system subscriber" 0 "$(until_subs 0)"
 kill "$ui" 2>/dev/null || true

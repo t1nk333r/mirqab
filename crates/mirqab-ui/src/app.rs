@@ -412,7 +412,9 @@ impl Ctx {
         }
         self.config.borrow_mut().seeded = true;
         // Seeded first: a daemon gone between the two writes must not leave
-        // pins that a later emptying would refill (review of PR #9).
+        // pins that a later emptying would refill (review of PR #9). The
+        // other way round, a first run would then keep an empty Home with
+        // its hint, which is the lesser harm.
         self.set_setting("home.seeded", json!(true));
         if let Some(seed) = seed {
             self.config.borrow_mut().pinned = seed.clone();

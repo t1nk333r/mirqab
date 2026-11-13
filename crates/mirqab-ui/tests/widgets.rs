@@ -327,8 +327,13 @@ fn moving_a_home_card_keeps_its_graph_live() {
     let wa: gtk::Widget = a.clone().upcast();
     let wb: gtk::Widget = b.clone().upcast();
     place(&grid, &[(wa.clone(), (0, 0, 1)), (wb.clone(), (0, 1, 1))]);
+    a.set_focusable(true);
     let win = shown(&grid, 400, 100);
     settle("both graphs are mapped", || a.is_mapped() && b.is_mapped());
+    a.grab_focus();
+    settle("the first graph has focus", || {
+        gtk::prelude::RootExt::focus(&win.0).as_ref() == Some(&wa)
+    });
     a.push_live(100, 1.0);
     a.push_live(101, 2.0);
     b.push_live(100, 3.0);
@@ -346,6 +351,11 @@ fn moving_a_home_card_keeps_its_graph_live() {
         .downcast::<gtk::GridLayoutChild>()
         .unwrap();
     assert_eq!(lc.column(), 1, "moved through its layout child");
+    assert_eq!(
+        gtk::prelude::RootExt::focus(&win.0),
+        Some(wa.clone()),
+        "a moved card keeps focus"
+    );
 
     // b unpinned: removed; a untouched.
     place(&grid, &[(wa.clone(), (0, 0, 2))]);
