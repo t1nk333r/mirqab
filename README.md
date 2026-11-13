@@ -238,12 +238,23 @@ mirqab bar combo --watch
 ```
 
 The daemon shows a tray icon (a StatusNotifierItem) on desktops with a
-tray host, such as Waybar's tray or KDE: a left click shows or hides the
-window, a middle click opens Home, and the menu opens each tab, Settings,
-or quits the daemon. The tooltip shows CPU, memory and temperature. The
-tray holds no subscription and no timer: a tooltip the host reads costs
-one reading at most every 10 s. Set `tray.enabled` to false to turn it off (read when the daemon
-starts). Until a package installs the icon, copy it into your icon theme:
+tray host, such as Waybar's tray or KDE. A left click shows or hides the
+window, and a middle click opens Home. The menu has Open, one entry for
+each tab the sidebar shows (a tab in `tabs.hidden` is left out, and the
+list is read each time the menu opens), Settings, and Quit daemon, which
+stops the daemon. The tooltip shows CPU, memory and temperature. It is
+computed only when the host reads it, so a host that reads it on a timer
+costs at most one reading every 10 s. The tray holds no subscription and
+no timer. Set `tray.enabled` to false to turn it off; it is read when the
+daemon starts.
+
+The tray starts with the daemon. With the units from `dist/` installed,
+the socket unit starts the daemon again on the next client after Quit
+daemon, such as `mirqab open` or a bar item, and the tray with it. If the
+session bus is missing when the daemon starts, it logs
+`tray: not shown (...)` and runs without a tray. It does not retry, so the
+tray appears at the next start. Until a package installs the icon, copy it
+into your icon theme:
 
 ```sh
 install -Dm644 dist/icons/mirqab-symbolic.svg ~/.local/share/icons/hicolor/symbolic/apps/mirqab-symbolic.svg

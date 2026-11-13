@@ -274,6 +274,10 @@ Part 2 (2026-11-14), where it differs from the plan:
 - `IconName` is `mirqab-symbolic` (`dist/icons/mirqab-symbolic.svg`, an
   original watchtower drawing); until a package installs it, copy it to
   `~/.local/share/icons/hicolor/symbolic/apps/`.
+- The icon's fill is fixed dark grey (`#2e3436`, in
+  `dist/icons/mirqab-symbolic.svg`). GTK hosts recolour symbolic icons, but
+  a Qt or Quickshell bar may show it dark on a dark bar; checking it on the
+  owner's bar is part of Acceptance 1.
 - Tests: `crates/mirqab/tests/tray.rs` on a private `dbus-daemon` with a
   stand-in watcher (`tests/support/watcher.rs`, also
   `examples/sni_watcher.rs` for the bench). Fixture daemons in the other
