@@ -14,7 +14,9 @@ Plan 001 (the foundation) is complete, phases A to E: the workspace, the
 development gates, the daemon with its socket protocol and the CLI,
 history, the view crate (`crates/mirqab-view`, with number formatting, the
 theme token table, the icon glyphs, graph geometry and the sidebar model;
-its tests need no display) and the window (`crates/mirqab-ui`).
+its tests need no display) and the window (`crates/mirqab-ui`). Plans 002
+and 003 are complete too, and milestone M1 (a running app with Home and
+System) is done.
 
 - Measured cost (2026-11-13, on the development machine, release build):
   idle, with no subscriber, 0.000 % of one core over 60 s and 5.0 MiB.
@@ -70,10 +72,13 @@ its tests need no display) and the window (`crates/mirqab-ui`).
   `7d` and `30d` come from history: each is read when chosen, then once a
   minute. The numbers update every 2 s. Pressure has three small live
   graphs and no picker. Every card has "Pin to Home".
-- Home shows the pinned cards on two columns, compact and live, and starts
-  with the overview, CPU and memory. Reorder by dragging a card's handle
-  or with Alt+Up and Alt+Down; a card's pin control unpins it. The window
-  opens on Home; `window.rememberTab` reopens the last tab instead.
+- Home shows the pinned cards on two columns, compact and live. The first
+  run pins the overview, CPU and memory, once; an emptied Home stays empty
+  and offers a button that opens System. Reorder by dragging a card's
+  handle, which shows on hover, or with Alt+Up and Alt+Down; a card's pin
+  control unpins it. Home subscribes to its cards' streams only while it
+  is on screen. The window opens on Home; `window.rememberTab` reopens the
+  last tab instead.
 - Not built yet: the content of the other tabs (each one is a placeholder
   until its plan lands), the MCP server and the root helper.
   `mirqab-fand` only prints its version.
@@ -81,6 +86,8 @@ its tests need no display) and the window (`crates/mirqab-ui`).
 The config is `~/.config/mirqab/config.json` (under `$XDG_CONFIG_HOME` when
 set), its keys are listed in `share/mirqab/config.schema.json`, the daemon
 is its only writer, and a file you broke by hand is never overwritten.
+`window.rememberTab` (default false) reopens the last tab; that tab is kept
+in `window.lastTab`, which is written only while `rememberTab` is true.
 
 The design is in `docs/architecture.md` and the plans are in `plans/`.
 The sections below describe the planned product. It is developed and
