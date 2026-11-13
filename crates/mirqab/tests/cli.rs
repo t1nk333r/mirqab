@@ -26,7 +26,8 @@ impl Drop for Daemon {
 }
 
 fn start(name: &str) -> Daemon {
-    let dir = std::env::temp_dir().join(format!("mirqab-cli-{name}-{}", std::process::id()));
+    // Under /tmp, not $TMPDIR: a socket path must stay under 108 bytes.
+    let dir = PathBuf::from("/tmp").join(format!("mqc-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     let run = dir.join("run");
     std::fs::create_dir_all(&run).unwrap();
@@ -130,4 +131,45 @@ fn a_second_daemon_refuses_the_socket() {
         .unwrap();
     assert_eq!(out.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&out.stderr).contains("already listens"));
+}
+
+#[test]
+fn a_file_or_directory_at_the_socket_path_is_never_removed() {
+    let dir = PathBuf::from("/tmp").join(format!("mqc-keep-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let run = dir.join("run");
+    std::fs::create_dir_all(run.join("precious/sub")).unwrap();
+    std::fs::set_permissions(&run, std::fs::Permissions::from_mode(0o700)).unwrap();
+    std::fs::write(run.join("precious/sub/file"), "keep").unwrap();
+    std::fs::write(run.join("notes.txt"), "keep").unwrap();
+    std::os::unix::fs::symlink(run.join("notes.txt"), run.join("link")).unwrap();
+    for target in ["precious", "notes.txt", "link"] {
+        let out = Command::new(BIN)
+            .args(["daemon", "--socket"])
+            .arg(run.join(target))
+            .env("XDG_RUNTIME_DIR", &run)
+            .env("XDG_CONFIG_HOME", dir.join("config"))
+            .output()
+            .unwrap();
+        assert_eq!(out.status.code(), Some(1), "{target}");
+        assert!(
+            String::from_utf8_lossy(&out.stderr).contains("is not a socket"),
+            "{target}"
+        );
+    }
+    assert_eq!(
+        std::fs::read_to_string(run.join("precious/sub/file")).unwrap(),
+        "keep"
+    );
+    assert_eq!(
+        std::fs::read_to_string(run.join("notes.txt")).unwrap(),
+        "keep"
+    );
+    assert!(
+        std::fs::symlink_metadata(run.join("link"))
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+    let _ = std::fs::remove_dir_all(&dir);
 }

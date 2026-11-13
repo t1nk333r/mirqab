@@ -59,7 +59,8 @@ impl Drop for Daemon {
 }
 
 fn start(name: &str) -> Daemon {
-    let dir = std::env::temp_dir().join(format!("mirqab-proto-{name}-{}", std::process::id()));
+    // Under /tmp, not $TMPDIR: a socket path must stay under 108 bytes.
+    let dir = PathBuf::from("/tmp").join(format!("mqp-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let socket = dir.join("run/daemon.sock");
@@ -416,4 +417,49 @@ fn a_client_that_never_reads_is_dropped() {
     let mut other = Client::connect(&d);
     other.hello();
     assert!(other.call("status", None, Value::Null).is_ok());
+}
+
+#[test]
+fn a_client_that_half_closes_still_gets_its_reply() {
+    let d = start("halfclose");
+    for i in 0..50 {
+        let mut c = Client::connect(&d);
+        c.hello();
+        let id = c.send("status", None, Value::Null);
+        c.stream.shutdown(std::net::Shutdown::Write).unwrap();
+        match c.frame() {
+            Some(ServerFrame::Reply(r)) => assert_eq!(r.id, id),
+            other => panic!("try {i}: expected the reply, got {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn a_dry_run_flag_that_is_not_a_boolean_is_refused() {
+    let d = start("dryrun");
+    let mut c = Client::connect(&d);
+    c.hello();
+    for flag in [json!("true"), json!(1)] {
+        assert_eq!(
+            c.call(
+                "config.set",
+                None,
+                json!({"key": "units.clock", "value": "24", "dryRun": flag})
+            ),
+            Err("bad-request".into())
+        );
+        assert_eq!(
+            c.call("action", None, json!({"name": "ui.hide", "dryRun": flag})),
+            Err("bad-request".into())
+        );
+    }
+    assert!(
+        !d.dir.join("config/mirqab/config.json").exists(),
+        "nothing was written"
+    );
+    assert_eq!(
+        c.call("config.get", None, json!({"keys": ["units.clock"]}))
+            .unwrap(),
+        json!({"units.clock": "auto"})
+    );
 }

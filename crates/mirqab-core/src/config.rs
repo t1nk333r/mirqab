@@ -124,6 +124,14 @@ pub struct Config {
     /// Set when the file exists but is not a JSON object.
     broken: Option<String>,
     problems: Vec<String>,
+    /// The file's modification time and length when it was last read, so a
+    /// hand edit while the daemon runs is noticed (review of phase B).
+    stamp: Option<(std::time::SystemTime, u64)>,
+}
+
+fn stamp(path: &Path) -> Option<(std::time::SystemTime, u64)> {
+    let m = std::fs::metadata(path).ok()?;
+    Some((m.modified().ok()?, m.len()))
 }
 
 #[derive(Debug, PartialEq)]
@@ -152,22 +160,42 @@ impl Config {
             file: Value::Object(Map::new()),
             broken: None,
             problems: Vec::new(),
+            stamp: None,
         };
-        match std::fs::read_to_string(path) {
+        c.read();
+        c
+    }
+
+    /// Reads the file afresh: what is on disk now is the truth, whatever an
+    /// earlier read found.
+    fn read(&mut self) {
+        self.effective = defaults();
+        self.file = Value::Object(Map::new());
+        self.broken = None;
+        self.problems = Vec::new();
+        self.stamp = stamp(&self.path);
+        match std::fs::read_to_string(&self.path) {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => c.broken = Some(e.to_string()),
+            Err(e) => self.broken = Some(e.to_string()),
             Ok(text) => match serde_json::from_str::<Value>(&text) {
                 Ok(v @ Value::Object(_)) => {
                     let (effective, problems) = merge(&v);
-                    c.effective = effective;
-                    c.problems = problems;
-                    c.file = v;
+                    self.effective = effective;
+                    self.problems = problems;
+                    self.file = v;
                 }
-                Ok(_) => c.broken = Some("not a JSON object".into()),
-                Err(e) => c.broken = Some(e.to_string()),
+                Ok(_) => self.broken = Some("not a JSON object".into()),
+                Err(e) => self.broken = Some(e.to_string()),
             },
         }
-        c
+    }
+
+    /// Re-reads the file when it changed on disk since the last read. Cheap:
+    /// one stat. Callers run it before answering from the config.
+    pub fn refresh(&mut self) {
+        if stamp(&self.path) != self.stamp {
+            self.read();
+        }
     }
 
     pub fn effective(&self) -> &Value {
@@ -199,6 +227,10 @@ impl Config {
         if let Some(why) = check(key, &value) {
             return Err(SetError::Invalid(why));
         }
+        // Always from the file as it is now: a hand edit or a breakage since
+        // the last read must be kept or refused, never written over. (A stat
+        // can miss an edit within the same timestamp tick; a read cannot.)
+        self.read();
         if let Some(why) = &self.broken {
             return Err(SetError::Broken(why.clone()));
         }
@@ -211,6 +243,7 @@ impl Config {
         if !dry_run {
             self.file = file;
             set_path(&mut self.effective, key, value);
+            self.stamp = stamp(&self.path);
         }
         Ok(done)
     }
@@ -265,6 +298,43 @@ mod tests {
             Err(SetError::Broken(_))
         ));
         assert_eq!(std::fs::read_to_string(&p).unwrap(), "{not json");
+        act::remove_path(&d, false).unwrap();
+    }
+
+    #[test]
+    fn a_file_broken_or_edited_after_load_is_kept() {
+        let d = scratch("later");
+        let p = d.join("config.json");
+        std::fs::write(&p, r#"{"units":{"temperature":"f"}}"#).unwrap();
+        let mut c = Config::load(&p);
+        // Broken by hand while the daemon runs: refused, the file kept.
+        std::fs::write(&p, "{oops").unwrap();
+        assert!(matches!(
+            c.set("units.clock", json!("24"), false),
+            Err(SetError::Broken(_))
+        ));
+        assert_eq!(std::fs::read_to_string(&p).unwrap(), "{oops");
+        // Fixed and extended by hand: the edit is kept and the set applies.
+        std::fs::write(
+            &p,
+            r#"{"units":{"temperature":"c"},"tabs":{"hidden":["fans"]}}"#,
+        )
+        .unwrap();
+        c.set("units.clock", json!("12"), false).unwrap();
+        let written: Value = serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
+        assert_eq!(
+            written,
+            json!({"units": {"temperature": "c", "clock": "12"}, "tabs": {"hidden": ["fans"]}})
+        );
+        assert_eq!(c.get("tabs.hidden"), Some(&json!(["fans"])));
+        // A later edit is picked up by refresh.
+        std::fs::write(
+            &p,
+            r#"{"units":{"temperature":"f","clock":"24"},"live":{"intervalMs":3000}}"#,
+        )
+        .unwrap();
+        c.refresh();
+        assert_eq!(c.live_interval_ms(), 3000);
         act::remove_path(&d, false).unwrap();
     }
 

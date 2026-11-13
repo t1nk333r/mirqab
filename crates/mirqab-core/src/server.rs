@@ -25,7 +25,7 @@ use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::io::{ErrorKind, Read, Write};
 use std::net::Shutdown;
-use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+use std::os::unix::fs::{DirBuilderExt, FileTypeExt, PermissionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{SyncSender, TrySendError, sync_channel};
@@ -286,12 +286,26 @@ fn bind(socket: &Path) -> Result<UnixListener, ListenError> {
         mkdir_private(dir).map_err(ListenError::Failed)?;
     }
     // A socket left by a daemon that died is not an owner: connect first,
-    // and only remove it when nothing answers.
-    if UnixStream::connect(socket).is_ok() {
-        return Err(ListenError::AlreadyRunning);
-    }
-    if std::fs::symlink_metadata(socket).is_ok() {
-        crate::act::remove_path(socket, false).map_err(|e| ListenError::Failed(e.to_string()))?;
+    // and remove it only when it is a socket and nothing listens on it
+    // (ECONNREFUSED). Anything else at the path, a file, a directory or a
+    // symlink, is the user's and is never touched: a typo in --socket must
+    // not delete data (review of plan 001 phase B).
+    let refused = match UnixStream::connect(socket) {
+        Ok(_) => return Err(ListenError::AlreadyRunning),
+        Err(e) => e.kind() == ErrorKind::ConnectionRefused,
+    };
+    if let Ok(meta) = std::fs::symlink_metadata(socket) {
+        if !meta.file_type().is_socket() {
+            return Err(ListenError::Failed(strings::not_a_socket(
+                &socket.display().to_string(),
+            )));
+        }
+        if !refused {
+            return Err(ListenError::Failed(strings::socket_busy(
+                &socket.display().to_string(),
+            )));
+        }
+        remove_socket(socket).map_err(ListenError::Failed)?;
     }
     let listener = UnixListener::bind(socket)
         .map_err(|e| ListenError::Failed(format!("bind {}: {e}", socket.display())))?;
@@ -382,6 +396,24 @@ impl Server {
                     }
                 }
                 Err(e) if e.kind() == ErrorKind::Interrupted => continue,
+                // Out of descriptors or memory, or a client that gave up
+                // before we took it: transient. Any same-uid process can
+                // cause these, so they must not end the daemon.
+                Err(e)
+                    if matches!(
+                        e.raw_os_error(),
+                        Some(
+                            libc::EMFILE
+                                | libc::ENFILE
+                                | libc::ENOBUFS
+                                | libc::ENOMEM
+                                | libc::ECONNABORTED
+                        )
+                    ) =>
+                {
+                    log(&format!("accept: {e}; retrying"));
+                    std::thread::sleep(Duration::from_millis(100));
+                }
                 Err(e) => return e,
             }
         }
@@ -411,9 +443,12 @@ impl Inner {
                     }
                 }
             });
-        if writer.is_err() {
+        let Ok(writer) = writer else {
             return;
-        }
+        };
+        // A client that stops reading is cut off after this long, so joining
+        // its writer below cannot hang.
+        let _ = conn.set_write_timeout(Some(Duration::from_secs(10)));
         let hello = frame::encode(&ServerFrame::Hello(Hello {
             protocol: PROTOCOL,
             version: crate::proto::VERSION.to_string(),
@@ -458,6 +493,10 @@ impl Inner {
         for s in streams {
             self.wake(&s);
         }
+        // The client and its queue's sender are gone; the writer drains what
+        // was queued (the reply to a client that half-closed after asking)
+        // and ends. Only then is the socket shut.
+        let _ = writer.join();
         let _ = conn.shutdown(Shutdown::Both);
     }
 
@@ -503,7 +542,7 @@ impl Inner {
                 // Let the writer flush the reply before the process goes.
                 std::thread::sleep(Duration::from_millis(50));
                 if !self.activated {
-                    let _ = crate::act::remove_path(&self.socket, false);
+                    let _ = remove_socket(&self.socket);
                 }
                 std::process::exit(0);
             }
@@ -570,7 +609,9 @@ impl Inner {
             .and_then(Value::as_u64)
             .unwrap_or(slot.default_ms);
         let floor = if live && slot.live {
-            lock(&self.config).live_interval_ms()
+            let mut c = lock(&self.config);
+            c.refresh();
+            c.live_interval_ms()
         } else {
             FLOOR_MS
         };
@@ -660,7 +701,8 @@ impl Inner {
         drop(state);
         let mut meter = Meter::new(&self.root, "proc/self");
         let cost = meter.read(&self.root, Instant::now());
-        let config = lock(&self.config);
+        let mut config = lock(&self.config);
+        config.refresh();
         json!({
             "version": crate::proto::VERSION,
             "protocol": PROTOCOL,
@@ -683,7 +725,8 @@ impl Inner {
     }
 
     fn config_get(&self, req: &Request) -> Reply {
-        let config = lock(&self.config);
+        let mut config = lock(&self.config);
+        config.refresh();
         match req.param("keys").and_then(Value::as_array) {
             None => Reply::ok(req.id, config.effective().clone()),
             Some(keys) => {
@@ -701,10 +744,10 @@ impl Inner {
             return Reply::err(req.id, Code::BadRequest, "key is required");
         };
         let value = req.param("value").cloned().unwrap_or(Value::Null);
-        let dry_run = req
-            .param("dryRun")
-            .and_then(Value::as_bool)
-            .unwrap_or(false);
+        let dry_run = match dry_run_param(req) {
+            Ok(d) => d,
+            Err(r) => return r,
+        };
         let result = lock(&self.config).set(key, value, dry_run);
         match result {
             Ok(entry) if dry_run => Reply::ok(req.id, json!({"wouldDo": [entry]})),
@@ -744,10 +787,10 @@ impl Inner {
             return Reply::err(req.id, Code::BadRequest, "name is required");
         };
         let args = req.param("args").cloned().unwrap_or(Value::Null);
-        let dry_run = req
-            .param("dryRun")
-            .and_then(Value::as_bool)
-            .unwrap_or(false);
+        let dry_run = match dry_run_param(req) {
+            Ok(d) => d,
+            Err(r) => return r,
+        };
         let tab = args.get("tab").and_then(Value::as_str).map(str::to_string);
         let event = match name {
             "ui.show" => UiEvent::Show {
@@ -769,6 +812,33 @@ impl Inner {
         }
         self.ui_event(&event);
         Reply::ok(req.id, json!({"done": [entry]}))
+    }
+}
+
+/// `dryRun`: absent is false, a boolean is itself, and anything else is a
+/// bad request. "true" or 1 must never fall through to the real action (the
+/// dry-run contract, architecture §5.4).
+fn dry_run_param(req: &Request) -> Result<bool, Reply> {
+    match req.param("dryRun") {
+        None | Some(Value::Null) => Ok(false),
+        Some(Value::Bool(b)) => Ok(*b),
+        Some(_) => Err(Reply::err(
+            req.id,
+            Code::BadRequest,
+            "dryRun must be true or false",
+        )),
+    }
+}
+
+/// Removes the socket at `path` only if it is a socket: never a file, a
+/// directory or a symlink someone put there (review of plan 001 phase B).
+fn remove_socket(path: &Path) -> Result<(), String> {
+    match std::fs::symlink_metadata(path) {
+        Ok(meta) if meta.file_type().is_socket() => crate::act::remove_path(path, false)
+            .map(|_| ())
+            .map_err(|e| e.to_string()),
+        Ok(_) => Err(strings::not_a_socket(&path.display().to_string())),
+        Err(_) => Ok(()),
     }
 }
 

@@ -80,6 +80,14 @@ pub fn already_running(socket: &str) -> String {
     format!("mirqab: a daemon already listens at {socket}")
 }
 
+pub fn not_a_socket(path: &str) -> String {
+    format!("{path} exists and is not a socket; refusing to replace it")
+}
+
+pub fn socket_busy(path: &str) -> String {
+    format!("{path} is a socket that did not refuse a connection; another daemon may be starting")
+}
+
 pub fn ready(socket: &str) -> String {
     format!("ready {socket}")
 }

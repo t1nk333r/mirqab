@@ -41,6 +41,7 @@ SCRATCH=""
 _cleanup_scratch() {
     # A daemon a test left running dies with its sandbox.
     [[ -z ${DAEMON_PID:-} ]] || { kill "$DAEMON_PID" 2>/dev/null || true; wait "$DAEMON_PID" 2>/dev/null || true; }
+    [[ -z ${MIRQAB_RUN_DIR:-} || ! -d $MIRQAB_RUN_DIR ]] || rm -rf -- "$MIRQAB_RUN_DIR"
     [[ -z $SCRATCH || ! -d $SCRATCH ]] || rm -rf -- "$SCRATCH"
 }
 trap _cleanup_scratch EXIT
@@ -51,10 +52,14 @@ sandbox() {
     _cleanup_scratch
     SCRATCH="$(mktemp -d "$MIRQAB_SCRATCH_PARENT/mirqab-test.XXXXXX")"
     SANDBOX="$SCRATCH"
-    mkdir -p "$SANDBOX/home" "$SANDBOX/stubs" "$SANDBOX/run" "$SANDBOX/tmp"
+    mkdir -p "$SANDBOX/home" "$SANDBOX/stubs" "$SANDBOX/tmp"
+    # The runtime dir holds sockets, whose paths must stay under 108 bytes,
+    # so it lives under /tmp whatever the caller's TMPDIR, and goes with the
+    # sandbox.
+    MIRQAB_RUN_DIR="$(mktemp -d /tmp/mqr.XXXXXX)"
+    ln -s "$MIRQAB_RUN_DIR" "$SANDBOX/run"
     # What runs under a test writes its temporary files here, not to /tmp.
     export TMPDIR="$SANDBOX/tmp"
-    chmod 0700 "$SANDBOX/run"
     local c
     for c in "${STUBBED_CMDS[@]}"; do
         printf '#!/bin/sh\necho "STUB-CALLED: %s $*" >&2\nexit 97\n' "$c" >"$SANDBOX/stubs/$c"
@@ -63,7 +68,7 @@ sandbox() {
     export HOME="$SANDBOX/home"
     export XDG_CONFIG_HOME="$HOME/.config" XDG_STATE_HOME="$HOME/.local/state"
     export XDG_DATA_HOME="$HOME/.local/share" XDG_CACHE_HOME="$HOME/.cache"
-    export XDG_RUNTIME_DIR="$SANDBOX/run"
+    export XDG_RUNTIME_DIR="$MIRQAB_RUN_DIR"
     unset XDG_DATA_DIRS
     export PATH="$SANDBOX/stubs:$CARGO_HOME/bin:/usr/bin:/bin"
     # Nothing under test may reach the session it runs in: a dead bus address

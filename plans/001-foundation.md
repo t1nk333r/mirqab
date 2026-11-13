@@ -564,6 +564,53 @@ Phase B as built (2026-11-13), where it differs from the steps above:
 - The config's keys are checked by hand in `config.rs`; a test checks
   that `share/mirqab/config.schema.json` names the same keys and defaults.
 
+Review of phase B (Sonnet, checked by Fable, 2026-11-13). Fixed before
+merge, each with a test:
+
+- `bind()` removed whatever sat at the socket path, recursively. Now it
+  replaces only a socket that refuses connections; a file, a directory or
+  a symlink makes the daemon refuse to start. `shutdown` uses the same
+  socket-only removal.
+- `config.set` wrote from what the daemon read at start, so a file broken
+  or edited by hand while it ran was overwritten. `set` now re-reads the
+  file first and refuses a broken one; other readers re-read it when its
+  modification time or length changed.
+- A `dryRun` that is not a boolean (`"true"`, `1`) ran the real action;
+  now it is `bad-request`.
+- A client that half-closed after a request lost the reply: the socket was
+  shut while the writer was still flushing. The writer is joined first,
+  with a 10 s write timeout so a client that never reads cannot hang it.
+- An `accept` error (EMFILE, ENFILE, ENOBUFS, ENOMEM, ECONNABORTED) ended
+  the daemon; now it logs and retries after 100 ms.
+- Tests put sockets under `/tmp` so a long `TMPDIR` cannot pass the
+  108-byte socket path limit.
+
+Deferred, each to where the code it guards is written:
+
+- Phase C: two daemons starting together can both run (the stale-socket
+  check races); a lock file, once both would write `history.db`. Phase C
+  or plan 020: `mirqab.service` has no `WantedBy`, so history waits for a
+  first client.
+- Phase D, step 27: re-subscribing sets "sample now" each time and can beat
+  the floor; clamp in `sampler_loop` to at most one immediate sample a
+  second (clearing it only for a new subscriber is not enough: unsubscribe
+  then subscribe gets past). `client.rs` must accept an event that arrives
+  before its subscribe reply. `config.set live.intervalMs` does not
+  re-floor live subscriptions already open.
+- Phase D: an earlier interface is not restored when the latest one
+  disconnects (`Client.ui_pid` is unused); a `config.json` that is a
+  symlink is replaced by a regular file on write.
+- Phase D, step 30, the first command the daemon runs: mark fd 3 from
+  socket activation close-on-exec.
+- Plans 002 and 005: `get` shares the subscription's sampler, so rate
+  baselines can have short windows. Plan 005 (MCP, the first caller that is
+  not ours): reject other malformed params instead of defaulting them; a
+  cap on clients.
+- Plans 006–008: `act::signal` checks the uid through `Root` but signals
+  the real pid, and a pid can be reused between check and signal.
+- Plans 008 and 017, the first callers that pass stdin: `exec.rs` writes
+  stdin before draining the pipes, so more than 64 KiB deadlocks.
+
 ### Phase C — history (PR 3)
 
 20. `samplers/system_core.rs`: CPU percent from `/proc/stat` deltas and
