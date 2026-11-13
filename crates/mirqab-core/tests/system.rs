@@ -121,6 +121,17 @@ fn the_first_live_event_reads_against_a_fresh_minute_baseline() {
 }
 
 #[test]
+fn a_stale_minute_baseline_gives_the_first_event_no_rate() {
+    let mut s = System::new();
+    s.probe(&fixture("root-desktop")).unwrap();
+    let late = data(s.sample(
+        &fixture("root-desktop.t1"),
+        Instant::now() + Duration::from_secs(600),
+    ));
+    assert_eq!(late.cpu.unwrap().percent, None);
+}
+
+#[test]
 fn gpu_history_keys_follow_the_card_not_the_awake_count() {
     // card0 suspends between a live sample and the minute: its slot stays
     // empty and card1 keeps gpu.1 (review of PR #7).

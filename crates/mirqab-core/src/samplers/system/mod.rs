@@ -464,9 +464,9 @@ impl Sampler for System {
         serde_json::to_value(data).unwrap_or(Value::Null)
     }
 
-    /// `get`: rates against the minute baseline, which it does not move,
-    /// so a `get` cannot shorten a subscriber's window (review of plan 001
-    /// phase B).
+    /// `get`: rates against the youngest of the live and minute baselines,
+    /// neither of which it moves, so a `get` cannot shorten a subscriber's
+    /// window (review of plan 001 phase B).
     /// With no baseline 1–90 s old (history off, or after a sleep), it
     /// takes its own second reading 200 ms later (review of PR #7: it
     /// averaged since the daemon started).
