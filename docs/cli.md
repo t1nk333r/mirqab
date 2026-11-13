@@ -92,7 +92,7 @@ Serves the Model Context Protocol on stdin and stdout until stdin closes, for a 
 mirqab mcp-config claude|codex|gemini|opencode|cursor|json [--write [-y]] [--dry-run]
 ```
 
-Prints how to register `mirqab mcp` with CLIENT: the client's own command, or for cursor and json the JSON to add. --write runs the client's command after showing it and asking; -y skips the question; without a terminal and without -y it does nothing and exits 3. --dry-run shows what --write would run.
+Prints how to register `mirqab mcp` with CLIENT: the client's own command, or for cursor and json the JSON to add. --write runs the client's command after showing it and asking, and refuses cursor and json; -y skips the question; without a terminal and without -y it does nothing and exits 3. --dry-run shows what --write would run.
 
 ## completions
 

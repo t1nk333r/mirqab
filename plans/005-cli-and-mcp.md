@@ -226,9 +226,9 @@ Part 1 (2026-11-14), where it differs from the plan:
     servers must implement `server/discover`, every result carries
     `resultType`, and an unsupported version is error -32022 with the
     supported list. Revisions up to 2025-11-25 open with `initialize`.
-    Part 2 serves both ("dual-era"): `initialize` for 2025-11-25 and
-    2025-06-18 clients, per-request `_meta` and `server/discover` for
-    2026-07-28.
+    Part 2 serves both ("dual-era"): `initialize` for 2025-11-25,
+    2025-06-18 and 2025-03-26 clients, per-request `_meta` and
+    `server/discover` for 2026-07-28.
   - Tool annotations in 2026-07-28: `title`, `readOnlyHint`,
     `destructiveHint`, `idempotentHint`, `openWorldHint` (`schema.ts`
     `ToolAnnotations`); `structuredContent` with a text copy for older
@@ -294,6 +294,9 @@ Part 2 (2026-11-14), where it differs from the plan:
   with recording stubs (the agent CLIs are always stubbed in the sandbox).
 
 ## Unverified
+
+Resolved on 2026-11-14; the answers are in As built. The questions stay
+here as they were asked.
 
 - **MCP protocol revision to declare.** Read the current specification at
   https://modelcontextprotocol.io/specification and declare the newest

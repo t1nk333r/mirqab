@@ -83,7 +83,7 @@ System) is done.
   last tab instead.
 - The tray icon and `mirqab bar` for status bars (plan 004).
 - Not built yet: the content of the other tabs (each one is a placeholder
-  until its plan lands), the MCP server and the root helper.
+  until its plan lands) and the root helper.
   `mirqab-fand` only prints its version.
 
 The config is `~/.config/mirqab/config.json` (under `$XDG_CONFIG_HOME` when
@@ -267,11 +267,14 @@ bind = SUPER, M, exec, mirqab toggle
 bind = SUPER SHIFT, M, exec, mirqab toggle system
 ```
 
-Coding agents can ask mirqab through its MCP server, `mirqab mcp`, which
-speaks the Model Context Protocol on stdin and stdout. Its tools read
-only: `system_load` and `explain_slowness`. `mirqab mcp-config claude`
-(or `codex`, `gemini`, `opencode`, `cursor`, `json`) prints how to
-register it; `--write` runs the client's own command after asking.
+Coding agents can ask mirqab through its MCP server, `mirqab mcp`. It
+speaks the Model Context Protocol on stdin and stdout. Its tools only
+read: `system_load` and `explain_slowness`.
+
+`mirqab mcp-config CLIENT` prints how to register it. CLIENT is `claude`,
+`codex`, `gemini`, `opencode`, `cursor` or `json`. With `--write`, mirqab
+runs the client's own command after asking. That works for `claude`,
+`codex`, `gemini` and `opencode`; `cursor` and `json` are edited by hand.
 
 ```sh
 mirqab mcp-config claude
