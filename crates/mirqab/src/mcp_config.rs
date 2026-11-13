@@ -14,11 +14,19 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 /// The client's own command that registers the server, if it has one.
+/// Each registers it for the user, not one project: claude defaults to
+/// `--scope local` and gemini to `-s project`, which bind the current
+/// directory; opencode needs `--global`; codex always writes
+/// `~/.codex/config.toml` (review of PR #13).
 pub fn command(client: &str) -> Option<&'static [&'static str]> {
     Some(match client {
-        "claude" => &["claude", "mcp", "add", "mirqab", "--", "mirqab", "mcp"],
+        "claude" => &[
+            "claude", "mcp", "add", "--scope", "user", "mirqab", "--", "mirqab", "mcp",
+        ],
         "codex" => &["codex", "mcp", "add", "mirqab", "--", "mirqab", "mcp"],
-        "gemini" => &["gemini", "mcp", "add", "mirqab", "mirqab", "mcp"],
+        "gemini" => &[
+            "gemini", "mcp", "add", "-s", "user", "mirqab", "mirqab", "mcp",
+        ],
         "opencode" => &[
             "opencode", "mcp", "add", "--global", "mirqab", "--", "mirqab", "mcp",
         ],

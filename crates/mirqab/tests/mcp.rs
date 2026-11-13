@@ -181,6 +181,10 @@ fn a_modern_client_discovers_and_an_unknown_version_is_refused() {
     let disc = s.ask(modern(1, "server/discover", json!({})));
     let r = &disc["result"];
     assert_eq!(r["resultType"], "complete");
+    assert_eq!(
+        (r["ttlMs"].clone(), r["cacheScope"].clone()),
+        (json!(0), json!("public"))
+    );
     assert_eq!(r["supportedVersions"][0], "2026-07-28");
     assert_eq!(
         r["_meta"]["io.modelcontextprotocol/serverInfo"]["name"],
@@ -188,6 +192,8 @@ fn a_modern_client_discovers_and_an_unknown_version_is_refused() {
     );
     let list = s.ask(modern(2, "tools/list", json!({})));
     assert_eq!(list["result"]["resultType"], "complete");
+    assert_eq!(list["result"]["ttlMs"], 0);
+    assert_eq!(list["result"]["cacheScope"], "public");
 
     let mut old = modern(3, "tools/list", json!({}));
     old["params"]["_meta"]["io.modelcontextprotocol/protocolVersion"] = json!("1900-01-01");

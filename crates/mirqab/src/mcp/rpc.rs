@@ -21,6 +21,8 @@ pub enum Incoming {
     },
     /// No id: nothing is answered.
     Notification,
+    /// A response to a request this server never sends: dropped.
+    Response,
     /// Not a request; answered with this error.
     Bad(Value),
 }
@@ -43,10 +45,15 @@ pub fn parse(line: &str) -> Incoming {
             params: v.get("params").cloned().unwrap_or(Value::Null),
         },
         (Some("2.0"), Some(_), None) => Incoming::Notification,
-        // A response from the client, or anything else: answered only when
-        // it carries an id to answer.
+        // The server sends no requests, so a response answers nothing; an
+        // error reply to it could loop with a client that does the same
+        // (review of PR #13).
+        (_, None, _) if v.get("result").is_some() || v.get("error").is_some() => Incoming::Response,
+        // Anything else is answered, with its id only when that is one a
+        // request may carry.
         (_, _, id) => Incoming::Bad(error(
-            id.unwrap_or(Value::Null),
+            id.filter(|i| i.is_string() || i.is_number())
+                .unwrap_or(Value::Null),
             INVALID_REQUEST,
             strings::MCP_BAD_REQUEST,
             None,
@@ -92,5 +99,17 @@ mod tests {
             (e["id"].clone(), e["error"]["code"].clone()),
             (json!(7), json!(INVALID_REQUEST))
         );
+        assert_eq!(
+            parse(r#"{"jsonrpc":"2.0","id":9,"result":{}}"#),
+            Incoming::Response
+        );
+        assert_eq!(
+            parse(r#"{"jsonrpc":"2.0","id":9,"error":{"code":1,"message":"x"}}"#),
+            Incoming::Response
+        );
+        let Incoming::Bad(e) = parse(r#"{"jsonrpc":"2.0","id":{"a":1},"method":"x"}"#) else {
+            panic!("object id")
+        };
+        assert!(e["id"].is_null(), "an object id is not echoed");
     }
 }

@@ -30,7 +30,7 @@ status_is "no client is a usage error" 64 "$STATUS"
 
 capture "$BIN/mirqab" mcp-config claude --write --dry-run
 status_is "--dry-run exits 0" 0 "$STATUS"
-like "and shows the command" "$OUTPUT" "claude mcp add mirqab -- mirqab mcp"
+like "and shows the command" "$OUTPUT" "claude mcp add --scope user mirqab -- mirqab mcp"
 is "and runs nothing" "" "$(cat "$STUB_LOG" 2>/dev/null)"
 
 capture "$BIN/mirqab" mcp-config codex --write </dev/null
