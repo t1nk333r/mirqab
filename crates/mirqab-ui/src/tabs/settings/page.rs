@@ -173,10 +173,13 @@ pub fn build(ctx: &Rc<Ctx>) -> gtk::Widget {
     }
     let switches = Rc::new(switches);
     for (_, row) in switches.iter() {
-        let all = Rc::clone(&switches);
+        // Weak: each row holds this closure, so a strong list of the rows
+        // would keep them all alive after the page is dropped.
+        let all = Rc::downgrade(&switches);
         let s = set("tabs.hidden");
         let q = Rc::clone(&quiet);
         row.connect_active_notify(move |_| {
+            let Some(all) = all.upgrade() else { return };
             if q.get() {
                 return;
             }

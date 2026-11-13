@@ -46,6 +46,42 @@ fn neighbours_more_than_a_step_and_a_half_apart_break_the_line() {
 }
 
 #[test]
+fn an_inverted_or_nan_fixed_scale_does_not_panic() {
+    for scale in [
+        Scale::Fixed { min: 1.0, max: 0.0 },
+        Scale::Fixed {
+            min: f64::NAN,
+            max: 100.0,
+        },
+        Scale::Fixed { min: 5.0, max: 5.0 },
+    ] {
+        let g = geometry(&[(0, 1.0), (60, 2.0)], win(), scale, 600.0, 100.0);
+        assert_eq!(g.runs.len(), 1);
+        assert!(g.top > g.bottom, "{scale:?}");
+    }
+}
+
+#[test]
+fn live_seconds_one_stamp_apart_through_rounding_stay_one_line() {
+    let live = Window {
+        from: 0,
+        to: 120,
+        step: 1,
+    };
+    // Ticks at 10.999 and 12.001 are stamped 10 and 12.
+    let g = geometry(
+        &[(9, 1.0), (10, 1.0), (12, 1.0), (13, 1.0)],
+        live,
+        PCT,
+        120.0,
+        10.0,
+    );
+    assert_eq!(g.runs.len(), 1);
+    let g = geometry(&[(9, 1.0), (10, 1.0), (13, 1.0)], live, PCT, 120.0, 10.0);
+    assert_eq!(g.runs.len(), 2, "three seconds is a gap");
+}
+
+#[test]
 fn an_empty_series_draws_nothing() {
     let g = geometry(&[], win(), PCT, 600.0, 100.0);
     assert!(g.runs.is_empty());

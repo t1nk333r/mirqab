@@ -20,10 +20,9 @@ pub fn run(ctx: &Rc<Ctx>, tab: &str) {
     let keep: Rc<RefCell<Option<crate::client::Subscription>>> = Rc::new(RefCell::new(None));
     let weak = Rc::downgrade(ctx);
     let d = Rc::clone(&done);
-    let sub = ctx.client.subscribe_with(
+    let sub = ctx.client.subscribe_params(
         stream::SELF,
         2000,
-        false,
         Value::Null,
         Rc::new(move |_| {
             if d.replace(true) {

@@ -115,10 +115,23 @@ struct State {
     runs: BTreeMap<String, SlotRun>,
     /// The interface: the latest client that subscribed to `ui` as one.
     ui: Option<(u64, u32)>,
-    /// An event for an interface being started, delivered when it attaches.
-    pending_ui: Option<UiEvent>,
-    /// `systemctl start` was run and no interface has attached yet.
-    starting_ui: bool,
+    /// The interface being started, if one is: `systemctl start` ran and
+    /// no interface has attached yet.
+    starting_ui: Option<UiStart>,
+    /// Numbers the start attempts.
+    ui_starts: u64,
+}
+
+/// One attempt to start the interface. It owns the deadline and the queued
+/// event, so a waiter leaves only when its own attempt ended (review of
+/// PR #5: each caller cleared shared state on its own deadline, and one
+/// could report success for an event that was never delivered).
+struct UiStart {
+    id: u64,
+    deadline: Instant,
+    /// Delivered right after the interface's `ui` subscribe reply; the
+    /// latest `open` wins, and a `close` clears it.
+    event: Option<UiEvent>,
 }
 
 impl State {
@@ -365,8 +378,8 @@ pub fn listen(opts: Options) -> Result<Server, ListenError> {
             next_id: 0,
             runs: BTreeMap::new(),
             ui: None,
-            pending_ui: None,
-            starting_ui: false,
+            starting_ui: None,
+            ui_starts: 0,
         }),
         ui_attached: Condvar::new(),
         slots,
@@ -769,7 +782,7 @@ impl Inner {
             )));
             let mut state = lock(&self.state);
             let pending = if as_ui && pid.is_some() {
-                state.pending_ui.take()
+                state.starting_ui.take().and_then(|s| s.event)
             } else {
                 None
             };
@@ -794,7 +807,6 @@ impl Inner {
             }
             if as_ui && let Some(pid) = pid {
                 state.ui = Some((id, pid));
-                state.starting_ui = false;
                 self.ui_attached.notify_all();
             }
             self.refresh_shared(&state);
@@ -1129,9 +1141,11 @@ impl Inner {
 
     /// Sends a window event to the interface, starting it first when none is
     /// attached: `systemctl --user start mirqab-ui.service` through exec.rs,
-    /// the event queued, delivered when the interface subscribes to `ui`,
-    /// and an error after UI_START. `hide` with no interface is done: nothing
-    /// is shown. Concurrent opens start the unit once; the latest event wins.
+    /// the event queued on the start attempt and delivered when the
+    /// interface subscribes to `ui`. One deadline covers the start and the
+    /// wait. `hide` with no interface is done, and clears an event queued
+    /// for one being started. Concurrent opens share one attempt; the latest
+    /// event wins.
     fn deliver_ui(&self, event: UiEvent) -> Result<(), (Code, String)> {
         let mut state = lock(&self.state);
         if state.ui.is_some() {
@@ -1140,14 +1154,31 @@ impl Inner {
             return Ok(());
         }
         if event == UiEvent::Hide {
+            if let Some(s) = &mut state.starting_ui {
+                s.event = None;
+            }
             return Ok(());
         }
-        state.pending_ui = Some(event);
-        let start = !state.starting_ui;
-        state.starting_ui = true;
+        let timeout = ui_start_timeout();
+        let (id, deadline, starter) = match &mut state.starting_ui {
+            Some(s) => {
+                s.event = Some(event);
+                (s.id, s.deadline, false)
+            }
+            None => {
+                state.ui_starts += 1;
+                let (id, deadline) = (state.ui_starts, Instant::now() + timeout);
+                state.starting_ui = Some(UiStart {
+                    id,
+                    deadline,
+                    event: Some(event),
+                });
+                (id, deadline, true)
+            }
+        };
         drop(state);
-        if start {
-            let started = exec::run(&["systemctl", "--user", "start", UI_UNIT], None, UI_START);
+        if starter {
+            let started = exec::run(&["systemctl", "--user", "start", UI_UNIT], None, timeout);
             let failed = match started {
                 Ok(out) if out.success() => None,
                 Ok(out) => Some(out.stderr.trim().to_string()),
@@ -1155,21 +1186,20 @@ impl Inner {
             };
             if let Some(why) = failed {
                 let mut state = lock(&self.state);
-                state.starting_ui = false;
-                state.pending_ui = None;
+                if state.starting_ui.as_ref().is_some_and(|s| s.id == id) {
+                    state.starting_ui = None;
+                }
+                // Other opens waiting on this attempt leave now too.
+                self.ui_attached.notify_all();
                 return Err((Code::Failed, strings::interface_start_failed(&why)));
             }
         }
-        let deadline = Instant::now() + ui_start_timeout();
         let mut state = lock(&self.state);
-        while state.ui.is_none() {
+        while state.starting_ui.as_ref().is_some_and(|s| s.id == id) {
             let Some(left) = deadline.checked_duration_since(Instant::now()) else {
-                state.starting_ui = false;
-                state.pending_ui = None;
-                return Err((
-                    Code::Unavailable,
-                    strings::interface_did_not_attach().to_string(),
-                ));
+                state.starting_ui = None;
+                self.ui_attached.notify_all();
+                break;
             };
             state = self
                 .ui_attached
@@ -1177,7 +1207,14 @@ impl Inner {
                 .map(|(g, _)| g)
                 .unwrap_or_else(|p| p.into_inner().0);
         }
-        Ok(())
+        if state.ui.is_some() {
+            Ok(())
+        } else {
+            Err((
+                Code::Unavailable,
+                strings::interface_did_not_attach().to_string(),
+            ))
+        }
     }
 }
 

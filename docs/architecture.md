@@ -635,6 +635,20 @@ em of the base font so the fractional-scale case works.
   are in `em`, and custom widgets measure in multiples of the font size
   they get from Pango. No pixel size literal outside `style.css`.
 
+A key in `theme.json` is the token's CSS variable name without the leading
+`--`: `{"accent-bg-color": "#3584e4"}` sets `--accent-bg-color`. Each value
+is checked against the token's kind (colour, length in `em` or `px`, or font
+family) and written back in canonical form, so no CSS passes through. An
+unknown key or bad value is skipped and listed in `Theme::problems`; the
+rest still applies. `theme.follow` may name haseen's shell token file:
+`background` sets the window, view, headerbar and sidebar backgrounds;
+`surfaceAlt` the card, popover and dialog backgrounds; `foreground` the text
+colours; `accent` the accent background, accent colour and series 1;
+`accentFg`, `urgent`, `warning` and `success` the accent text, error, warning
+and success colours; `radius` (px) the card radius. Missing keys are left
+alone, `mode` picks dark or light when `theme.scheme` is `system`, and
+`theme.json` is applied after the followed file, so it wins.
+
 Rejected: a stylesheet that restyles every widget from scratch (it breaks
 with each libadwaita release); `@define-color` (deprecated in favour of
 CSS variables since GTK 4.16); following the GTK theme of the desktop

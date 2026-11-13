@@ -770,19 +770,28 @@ above:
   `radius`, and `mode` for the scheme); `theme.json` wins over it.
 - `icons`: Material Design glyphs, their code points read from the
   installed font's own glyph names with fontTools.
-- `graph`: points are `(unix seconds, value)`; neighbours more than one
-  and a half steps apart break the line; a run of one point becomes a
-  flat segment one step wide; the fill is the line closed along the
-  baseline. `Window::for_range` holds §6.4's spans and steps.
+- `graph`: points are `(unix seconds, value)`, sorted by time;
+  neighbours more than one and a half steps apart, and more than one step
+  plus a second, break the line (live samples are stamped in whole
+  seconds, so two ticks 1.002 s apart can read 2 s apart); a run of one
+  point becomes a flat segment one step wide, cut at the window's edges;
+  the fill is the line closed along the baseline; an inverted or
+  non-finite `Fixed` scale is treated as `Auto`. `Window::for_range` holds
+  §6.4's spans and steps.
 - `shell`: each tab carries its stream, its plan and `built`. A tab is
   hidden for a missing stream only once `built` is true; Home is never
   hidden, even if `tabs.hidden` names it. `cost` adds daemon and
   interface; `machine_line` shortens the CPU model. Which stream carries
   the CPU model and the machine's uptime is part 2's (the `self` stream).
 - The colour rule (deferred from PR #1) now looks only at value
-  positions: a hash inside a string literal in Rust, not after `{:` or
-  `:` (`{n:#06b}`); in CSS, a hash after a colon once the selector up to
-  the last `{` is cut away (`#cafe {` and `button:hover #id` pass).
+  positions. In Rust: a hash inside an open string literal (an even
+  number of quotes before it), not after a format spec's `:<^>+-`, and
+  `:#hex` unless it runs straight into `}`, so `{n:#06b}` and `"x"; //
+  plan #001` pass and `"color:#abc;"` fails. One case stays ambiguous and
+  passes: `"a{color:#abcdef}"` with no `;`, which reads like a format
+  spec. In CSS: what stands inside a rule's braces, counted across lines
+  with comments cut away, so a value on the next line fails and `#cafe {`,
+  `button:hover #id` and `/* issue: #123 */` pass. (Review of PR #4.)
 
 Phase D as built, part 2 (2026-11-13), where it differs from the steps
 above:
@@ -860,6 +869,47 @@ above:
   `gtk4-broadwayd` starts as the user with no display, and the socket it
   announces is `broadway<N+1>.socket`, so `start_broadway` waits for its
   "Listening on" line instead of guessing the name.
+
+Review of phase D (Sonnet, checked by Fable, 2026-11-13). Fixed before
+merge:
+
+- Part 1 (PR #4): the Rust colour rule missed compact CSS in a string
+  (`"color:#abc;"`); the CSS rule read one line at a time; an inverted or
+  NaN fixed scale panicked; live samples one stamp apart through rounding
+  broke the line. Each has a test (see "as built, part 1").
+- A graph drew averages first and clipped every peak to their ceiling;
+  peaks now set the scale both lines share. Two live samples in the same
+  second replace each other.
+- A tile click rebuilt a `--window` window as the configured popover: a
+  `show` without a mode keeps the shown window's mode. A plain
+  `mirqab open` no longer sends `"mode": "popover"`, so the Settings
+  switch applies (architecture §4).
+- Replacing a window held a borrow across `hide`, whose `is-active`
+  notification read the same cell and aborted the process.
+- `open` with no interface: each caller owned a deadline and cleared shared
+  state, so one could report success for an event never delivered, a
+  `close` during start-up was dropped, and the wait could reach 10 s. Now
+  one start attempt owns one deadline and the queued event: concurrent
+  opens join it, the latest event wins, `close` clears it, and a waiter
+  leaves only when its attempt ended. Three tests in `cli.rs`.
+- A cold-started interface built its first window with the default
+  config: the interface now subscribes to `ui`, which releases the queued
+  `show`, only after the first `config.get` reply. A hand-run interface
+  parks its first show until then, or until the first failed connection.
+  A reused popover is re-placed when the corner, margin or size changes.
+- Settings rows and theme listeners no longer outlive their page; the
+  `live` parameter is private to the client; a trailing timer marker
+  marks only its own line, and `timeout_future` and `interval_stream`
+  need markers too; the footer has one border; the exit-timer test
+  outlasts the delay it checks.
+
+Deferred: a failed `subscribe` reply, and accessible labels for Graph and
+Meter (plan 002, their first users); a card's pin state (plan 003); a
+popover's Keep open surviving hide, its monitor, and the bar click that
+loses focus before it toggles (plan 004); `write_file` keeping a 0600
+mode (plan 005); the `.desktop` icon asset, the hello's protocol check,
+and `open` while the interface reconnects to a restarted daemon (plan
+020).
 
 ### Phase E — budget and handover (PR 5)
 

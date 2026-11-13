@@ -19,7 +19,7 @@ const BASE: &str = include_str!("../resources/style.css");
 
 thread_local! {
     static CURRENT: RefCell<Rc<Theme>> = RefCell::new(Rc::new(Theme::new(Scheme::Dark)));
-    static LISTENERS: RefCell<Vec<Box<dyn Fn()>>> = const { RefCell::new(Vec::new()) };
+    static LISTENERS: RefCell<Vec<Box<dyn Fn() -> bool>>> = const { RefCell::new(Vec::new()) };
 }
 
 /// The theme in force.
@@ -27,8 +27,9 @@ pub fn theme() -> Rc<Theme> {
     CURRENT.with(|c| Rc::clone(&c.borrow()))
 }
 
-/// Runs `f` after every theme change. `f` should hold its widget weakly.
-pub fn on_change(f: impl Fn() + 'static) {
+/// Runs `f` after every theme change until it returns false (its widget
+/// is gone). `f` should hold its widget weakly.
+pub fn on_change(f: impl Fn() -> bool + 'static) {
     LISTENERS.with(|l| l.borrow_mut().push(Box::new(f)));
 }
 
@@ -161,10 +162,14 @@ impl Style {
         theme.problems.extend(unreadable);
         self.tokens.load_from_string(&theme.stylesheet());
         CURRENT.with(|c| *c.borrow_mut() = Rc::new(theme));
+        // Taken out while they run: a listener may add another.
+        let current = LISTENERS.with(|l| std::mem::take(&mut *l.borrow_mut()));
+        let kept: Vec<_> = current.into_iter().filter(|f| f()).collect();
         LISTENERS.with(|l| {
-            for f in l.borrow().iter() {
-                f();
-            }
+            let mut l = l.borrow_mut();
+            let added = std::mem::take(&mut *l);
+            *l = kept;
+            l.extend(added);
         });
     }
 

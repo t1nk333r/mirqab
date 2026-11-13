@@ -88,6 +88,7 @@ window.mirqab.popover {
 .mirqab-card-header,
 .mirqab-card-body,
 .mirqab-footer,
+.mirqab-footer-line,
 .mirqab-header {
   border-spacing: var(--mirqab-space-2);
 }

@@ -51,7 +51,9 @@ like "status prints the version" "$OUTPUT" "mirqab 0.1.0"
 like "status prints the subscriber count" "$OUTPUT" "subscribers 0"
 capture "$BIN/mirqab" open system --dry-run
 status_is "open --dry-run exits 0 without an interface" 0 "$STATUS"
-is "open --dry-run says what it would do" '{"event":"show","mode":"popover","tab":"system"}' "$(jq -c '.wouldDo[0]' <<<"$OUTPUT")"
+is "open --dry-run says what it would do" '{"event":"show","mode":null,"tab":"system"}' "$(jq -c '.wouldDo[0]' <<<"$OUTPUT")"
+capture "$BIN/mirqab" open system --window --dry-run
+is "only --window names a mode" '"window"' "$(jq -c '.wouldDo[0].mode' <<<"$OUTPUT")"
 capture "$BIN/mirqab" open
 status_is "open without an interface exits 1" 1 "$STATUS"
 like "and says why" "$OUTPUT" "could not start mirqab-ui.service"

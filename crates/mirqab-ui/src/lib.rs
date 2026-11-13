@@ -69,7 +69,7 @@ pub fn run() -> glib::ExitCode {
             selftest::run(&c, tab);
         } else if !(first && opts.background) {
             let mode = opts.window.then_some(mirqab_view::config::Mode::Window);
-            c.show(opts.tab.as_deref(), mode);
+            c.show_when_ready(opts.tab.as_deref(), mode);
         } else {
             // Started hidden by the unit: wait for a `show`, but not forever.
             c.hide();
