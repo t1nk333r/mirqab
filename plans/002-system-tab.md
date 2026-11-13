@@ -11,7 +11,8 @@
 - **Category**: tab
 - **Planned at**: 2026-11-13, from the owner
 - **State**: IN PROGRESS. Part 1 (the sampler, history series, `load`
-  and `sensors`) implemented 2026-11-13. Measured on the development
+  and `sensors`) implemented 2026-11-13. Part 2 (the page) implemented
+  2026-11-13. Measured on the development
   machine (release build, real `/`): 0.116 % of one core subscribed at
   2 s, 0.233 % live at 1 s, 5.4–5.6 MiB RSS.
 
@@ -248,6 +249,28 @@ Part 1 (2026-11-13), where it differs from the plan:
   `units.temperature` reaches the CLI with plan 005.
 - The restart advice's pressure condition uses the sampler's own last 60
   minutes of memory `some60`, not a history query.
+
+Part 2 (2026-11-13), where it differs from the plan:
+
+- Memory "cache" is available − free, so used, cache and free add up to
+  the total (on the development machine buffers + cached + reclaimable
+  slab was 41 GB beside 25 GB used of 65 GB). Fixed in part 1's branch.
+- A card with a graph is one `GraphCard` (`tabs/system/graph_card.rs`):
+  the range picker, the graph's live subscription at `2m`, and a stored
+  range fetched with `history.query` on selection and every 60 s while on
+  screen (`// mirqab:sample`). The page's numbers come from one `system`
+  subscription at 2 s held while the page is mapped.
+- Pressure shows three small live graphs without a range picker of their
+  own (one picker for three graphs would need a shared range; plan 018's
+  Trends tab shows pressure history).
+- `Ctx::page_ready` and `when_ready`: a page with a stream says when its
+  first data is drawn, and `--selftest` waits for it as well as for the
+  footer's first `self` event.
+- The System tab is `built`, so it is hidden where the daemon does not
+  serve `system`. The seven System cards are in `cards::CARDS` for plan
+  003; each card's pin toggles its id in `home.pinned`.
+- Checked by eye on the development machine (window mode, release data
+  from the real `/`): 16 cores, both GPUs, zram, pressure and 20 sensors.
 
 ## Unverified
 

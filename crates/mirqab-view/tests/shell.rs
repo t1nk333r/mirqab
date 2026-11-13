@@ -40,6 +40,10 @@ fn sixteen_tabs_in_the_documented_order() {
 fn unbuilt_tabs_show_whatever_the_daemon_serves() {
     let tiles = shell::sidebar(TABS, &strings(&["system"]), &[]);
     assert_eq!(tiles.len(), 16);
+    // System is built (plan 002): without its stream it is hidden.
+    let tiles = shell::sidebar(TABS, &[], &[]);
+    assert_eq!(tiles.len(), 15);
+    assert!(tiles.iter().all(|t| t.id != "system"));
 }
 
 #[test]
@@ -62,7 +66,7 @@ fn a_built_tab_hides_without_its_stream_and_hidden_tabs_hide() {
 
 #[test]
 fn keyboard_moves_between_tiles() {
-    let tiles = shell::sidebar(TABS, &[], &[]);
+    let tiles = shell::sidebar(TABS, &strings(&["system"]), &[]);
     assert_eq!(shell::tab_for_number(&tiles, 1), Some("home"));
     assert_eq!(shell::tab_for_number(&tiles, 3), Some("system"));
     assert_eq!(shell::tab_for_number(&tiles, 0), None);
@@ -153,6 +157,10 @@ fn pinned_cards_skip_unknown_ids() {
     let got = cards::pinned(TEST_CARDS, &strings(&["system.mem", "gone", "system.cpu"]));
     let ids: Vec<&str> = got.iter().map(|c| c.id).collect();
     assert_eq!(ids, ["system.mem", "system.cpu"]);
-    assert!(cards::CARDS.is_empty());
-    assert!(cards::find("system.cpu").is_none());
+    assert_eq!(cards::find("system.cpu").map(|c| c.tab), Some("system"));
+    assert!(cards::find("nope").is_none());
+    let mut ids: Vec<&str> = cards::CARDS.iter().map(|c| c.id).collect();
+    ids.sort();
+    ids.dedup();
+    assert_eq!(ids.len(), cards::CARDS.len(), "card ids are unique");
 }

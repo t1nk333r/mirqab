@@ -1,5 +1,6 @@
 //! `--selftest <tab>` (architecture §7.5, layer 3): window mode, build the
-//! page, wait for the first event of the footer's `self` stream (or 5 s),
+//! page, wait for the first event of the footer's `self` stream and for the
+//! page's first data (or 5 s),
 //! print the widget tree as JSON on stdout and exit 0; exit 1 with the
 //! reason on stderr when nothing arrived.
 
@@ -20,6 +21,7 @@ pub fn run(ctx: &Rc<Ctx>, tab: &str) {
     let keep: Rc<RefCell<Option<crate::client::Subscription>>> = Rc::new(RefCell::new(None));
     let weak = Rc::downgrade(ctx);
     let d = Rc::clone(&done);
+    let tab_name = ctx.current_tab();
     let sub = ctx.client.subscribe_params(
         stream::SELF,
         2000,
@@ -29,11 +31,17 @@ pub fn run(ctx: &Rc<Ctx>, tab: &str) {
                 return;
             }
             let weak = weak.clone();
-            // After this event's other handlers (the footer's) have run.
+            let tab = tab_name.clone();
+            // After this event's other handlers (the footer's) have run, and
+            // once the page has drawn its first data.
             glib::idle_add_local_once(move || {
-                if let Some(ctx) = weak.upgrade() {
-                    finish(&ctx, 0, None);
-                }
+                let Some(ctx) = weak.upgrade() else { return };
+                let w = Rc::downgrade(&ctx);
+                ctx.when_ready(&tab, move || {
+                    if let Some(ctx) = w.upgrade() {
+                        finish(&ctx, 0, None);
+                    }
+                });
             });
         }),
     );
@@ -42,10 +50,11 @@ pub fn run(ctx: &Rc<Ctx>, tab: &str) {
     let tab = tab.to_string();
     // mirqab:ui-timeout
     glib::timeout_add_local_once(Duration::from_secs(5), move || {
+        // finish() exits the process, so still running here means the
+        // event or the page's first data never came.
         let _keep = keep;
-        if !done.get()
-            && let Some(ctx) = weak.upgrade()
-        {
+        let _ = done;
+        if let Some(ctx) = weak.upgrade() {
             finish(&ctx, 1, Some(strings::selftest_no_event(&tab)));
         }
     });

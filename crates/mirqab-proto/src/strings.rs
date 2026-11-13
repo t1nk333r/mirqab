@@ -502,6 +502,80 @@ pub fn power_line(package: Option<&str>, battery: Option<&str>) -> String {
 pub const PACKAGE_POWER_NEEDS_HELPER: &str = "package power needs the root helper (Fans tab)";
 pub const WATTS: &str = "W";
 
+// --- System page (plan 002, part 2) ---------------------------------------
+
+pub const SYSTEM_OVERVIEW: &str = "Overview";
+pub const SYSTEM_CPU: &str = "CPU";
+pub const SYSTEM_CORES: &str = "Cores";
+pub const SYSTEM_MEMORY: &str = "Memory";
+pub const SYSTEM_PRESSURE: &str = "Pressure";
+pub const SYSTEM_IO: &str = "I/O";
+pub const SYSTEM_TEMPERATURES: &str = "Temperatures";
+pub const SYSTEM_POWER: &str = "Power";
+pub const SYSTEM_PRESSURE_HINT: &str =
+    "The share of the last minute in which some tasks waited for this resource.";
+pub const SYSTEM_USER: &str = "user";
+pub const SYSTEM_SYS: &str = "system";
+pub const SYSTEM_IOWAIT: &str = "iowait";
+pub const SYSTEM_USED: &str = "used";
+pub const SYSTEM_CACHE: &str = "cache";
+pub const SYSTEM_FREE: &str = "free";
+pub const SYSTEM_PACKAGE: &str = "Package";
+pub const SYSTEM_BATTERY: &str = "Battery";
+pub const SYSTEM_SUSPENDED: &str = "Suspended; not woken to read it";
+pub const SYSTEM_VRAM: &str = "VRAM";
+pub const SYSTEM_BUSY: &str = "Busy";
+
+pub fn system_uptime(d: &str) -> String {
+    format!("up {d}")
+}
+
+pub fn system_load(one: f64, five: f64, fifteen: f64) -> String {
+    format!("load {one:.2} {five:.2} {fifteen:.2}")
+}
+
+pub fn system_clock(avg_ghz: f64, max_ghz: Option<f64>) -> String {
+    match max_ghz {
+        Some(m) => format!("{avg_ghz:.1} GHz now, {m:.1} GHz max"),
+        None => format!("{avg_ghz:.1} GHz now"),
+    }
+}
+
+pub fn system_used_of(used: &str, total: &str) -> String {
+    format!("{used} of {total}")
+}
+
+pub fn system_swap(used: &str, total: &str) -> String {
+    format!("Swap {used} of {total}")
+}
+
+pub fn system_zram(orig: &str, compr: &str) -> String {
+    format!("Compressed swap {orig} in {compr}")
+}
+
+pub fn system_paging(page_in: &str, page_out: &str) -> String {
+    format!("Paging in {page_in}, out {page_out}")
+}
+
+pub fn system_advice(reason: &str) -> &'static str {
+    match reason {
+        "uptime-30d" => "Up for over a month: a restart is recommended",
+        "uptime-7d-swap" => "Swap is more than half full after a week: a restart is recommended",
+        "uptime-7d-pressure" => {
+            "Memory has been under pressure for an hour: a restart is recommended"
+        }
+        _ => "A restart is recommended",
+    }
+}
+
+pub fn core_label(id: u32) -> String {
+    format!("{id}")
+}
+
+pub fn per_second(v: &str) -> String {
+    format!("{v}/s")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
