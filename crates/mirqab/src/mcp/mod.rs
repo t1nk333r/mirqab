@@ -1,5 +1,6 @@
 //! `mirqab mcp` (plan 005): the Model Context Protocol on stdin and stdout,
-//! one JSON-RPC message per line, until stdin closes. Logs go to stderr.
+//! one JSON-RPC message per line, until stdin closes. Nothing else is
+//! written to stdout, which carries only replies.
 //!
 //! It serves both eras of the protocol. A client of revision 2025-11-25 or
 //! earlier opens with `initialize`; a client of 2026-07-28 sends each
