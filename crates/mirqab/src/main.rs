@@ -6,6 +6,7 @@ mod bar;
 mod cli;
 mod daemon;
 mod elevate;
+mod tray;
 
 use mirqab_core::proto::strings;
 use std::path::PathBuf;

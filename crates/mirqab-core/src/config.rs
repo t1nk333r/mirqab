@@ -19,7 +19,8 @@ pub fn defaults() -> Value {
         "units": {"temperature": "c", "clock": "auto"},
         "home": {"pinned": [], "seeded": false},
         "tabs": {"hidden": []},
-        "bar": {"combo": ["cpu", "mem", "temp"]}
+        "bar": {"combo": ["cpu", "mem", "temp"]},
+        "tray": {"enabled": true}
     })
 }
 
@@ -54,7 +55,7 @@ fn check(key: &str, v: &Value) -> Option<String> {
         "window.marginEm" => number(0.0, 10.0),
         "window.widthEm" => number(30.0, 120.0),
         "window.heightEm" => number(20.0, 80.0),
-        "window.rememberTab" | "home.seeded" => match v {
+        "window.rememberTab" | "home.seeded" | "tray.enabled" => match v {
             Value::Bool(_) => None,
             _ => Some(format!("{key} must be true or false")),
         },

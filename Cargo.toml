@@ -24,6 +24,9 @@ mirqab-core = { path = "crates/mirqab-core" }
 mirqab-view = { path = "crates/mirqab-view" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1.0.154"
+# The tray (plan 004): ksni needs zbus 5, so zbus is held on 5.x
+# (architecture §5.6; owner, 2026-11-13).
+ksni = { version = "=0.3.7", default-features = false, features = ["async-io", "blocking"] }
 
 # Architecture §14: small binaries, as in haseen's sidecar.
 [profile.release]

@@ -11,7 +11,8 @@
 - **Category**: integration
 - **Planned at**: 2026-11-13, from the owner
 - **State**: IN PROGRESS. Part 1 (`mirqab bar`, the haseen widget, the
-  Waybar example) implemented 2026-11-13; part 2 (the tray) next.
+  Waybar example) implemented 2026-11-13; part 2 (the tray) implemented
+  2026-11-14. Acceptance 1 and 4 are owner steps on the desktop.
 - **Owner decisions** (2026-11-13): the tray uses `ksni` with `zbus` held
   on 5.x; Unlicense goes on `cargo deny`'s allow-list for `ksni` only.
 
@@ -218,6 +219,45 @@ Part 1 (2026-11-13), where it differs from the plan:
   there was `mirqab` not on `PATH` (not installed). `Widget.qml` passes
   Qt 6's `qmllint` for syntax; haseen's own modules are not importable
   outside haseen.
+
+Part 2 (2026-11-14), where it differs from the plan:
+
+- **Step 1, measured** (release profile of the workspace, stripped):
+  `mirqab` grew from 961 552 to 2 399 264 bytes. In a scratch crate with
+  the same profile, an empty `main` is 281 296 bytes, a hand-written
+  StatusNotifierItem on `zbus` 5.19.0 with one interface 1 367 032, and a
+  `ksni` 0.3.7 tray 1 804 056: `zbus` itself is about 1.09 MB, which any
+  tray carries, and `ksni` adds about 437 KB over one bare interface, less
+  over a real hand-written item with the `dbusmenu` layout. Under the
+  500 KiB line, so `ksni` stays. `cargo tree` shows `async-io`,
+  `async-executor`, `blocking`, `polling` and `async-process` (zbus's), no
+  tokio. `tools/bench-idle.sh --tray --seconds 60`: 0.000 % of one core,
+  6.9 MiB, 121 context switches, against 0.000 %, 6.8 MiB and 121 without
+  the tray: ksni's thread sleeps.
+- **The `zbus` 5 advisories.** `cargo deny` reports `zvariant`,
+  `zbus_names` and `zvariant_derive` unmaintained (RUSTSEC-2026-0370 to
+  0372: merged into `zbus` 6). `ksni` 0.3.7 is the latest and needs `zbus`
+  5; the owner chose to keep it and ignore exactly those three
+  (2026-11-14, `deny.toml`), until `ksni` moves to `zbus` 6.
+  `Unlicense` is allowed for `ksni` only.
+- The tray is a client of the daemon's own socket: Activate sends
+  `ui.toggle`, the middle click `ui.show home`, the menu `ui.show <tab>`,
+  Quit `shutdown`, and the tooltip one `get system`, cached 10 s. No core
+  API was added.
+- It starts on a thread of its own: ksni builds the menu while it
+  registers, the menu asks the daemon for its tabs, and the daemon answers
+  only once it serves. The menu reads the tabs (the sidebar's, with
+  `tabs.hidden`) each time the host builds it.
+- `tray.enabled` is read when the daemon starts. "Pin window" is not in
+  the menu: the protocol has no action for it.
+- `IconName` is `mirqab-symbolic` (`dist/icons/mirqab-symbolic.svg`, an
+  original watchtower drawing); until a package installs it, copy it to
+  `~/.local/share/icons/hicolor/symbolic/apps/`.
+- Tests: `crates/mirqab/tests/tray.rs` on a private `dbus-daemon` with a
+  stand-in watcher (`tests/support/watcher.rs`, also
+  `examples/sni_watcher.rs` for the bench). Fixture daemons in the other
+  tests get a dead bus address, so no test shows a tray on the desktop.
+  Not automated: the menu's layout.
 
 ## Unverified
 

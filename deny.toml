@@ -6,6 +6,14 @@ all-features = true
 
 [advisories]
 version = 2
+# zbus 5's parts, merged into zbus 6 and so marked unmaintained. ksni
+# 0.3.7, the latest, needs zbus 5; the owner chose to keep it
+# (2026-11-14, plan 004). Lift with the pin when ksni moves to zbus 6.
+ignore = [
+    { id = "RUSTSEC-2026-0370", reason = "zvariant: zbus 5, held for ksni (plan 004)" },
+    { id = "RUSTSEC-2026-0371", reason = "zbus_names: zbus 5, held for ksni (plan 004)" },
+    { id = "RUSTSEC-2026-0372", reason = "zvariant_derive: zbus 5, held for ksni (plan 004)" },
+]
 
 [licenses]
 version = 2
@@ -17,7 +25,6 @@ allow = [
     "ISC",
     "Unicode-3.0",
     "Zlib",
-    "Unlicense",
 ]
 confidence-threshold = 0.9
 
@@ -27,6 +34,12 @@ confidence-threshold = 0.9
 [[licenses.exceptions]]
 crate = "target-lexicon"
 allow = ["Apache-2.0 WITH LLVM-exception"]
+
+# The tray (plan 004): a public-domain dedication, compatible with MIT,
+# allowed for ksni only (owner, 2026-11-13).
+[[licenses.exceptions]]
+crate = "ksni"
+allow = ["Unlicense"]
 
 [licenses.private]
 # The workspace's own crates are not published; their licence is LICENSE.

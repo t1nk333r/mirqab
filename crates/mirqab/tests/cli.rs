@@ -68,6 +68,8 @@ fn start(name: &str) -> Daemon {
         .env("STUB_FAIL", dir.join("fail"))
         .env("MIRQAB_TEST", "1")
         .env("MIRQAB_UI_START_MS", "2000")
+        // No tray on the developer's desktop: tests/tray.rs has its own bus.
+        .env("DBUS_SESSION_BUS_ADDRESS", "unix:path=/nonexistent")
         .env_remove("MIRQAB_SOCKET")
         .env_remove("NOTIFY_SOCKET")
         .stdout(Stdio::piped())

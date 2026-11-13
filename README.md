@@ -80,6 +80,7 @@ System) is done.
   control unpins it. Home subscribes to its cards' streams only while it
   is on screen. The window opens on Home; `window.rememberTab` reopens the
   last tab instead.
+- The tray icon and `mirqab bar` for status bars (plan 004).
 - Not built yet: the content of the other tabs (each one is a placeholder
   until its plan lands), the MCP server and the root helper.
   `mirqab-fand` only prints its version.
@@ -221,6 +222,18 @@ prints the text only. `contrib/waybar/README.md` has Waybar modules and
 
 ```sh
 mirqab bar combo --watch
+```
+
+The daemon shows a tray icon (a StatusNotifierItem) on desktops with a
+tray host, such as Waybar's tray or KDE: a left click shows or hides the
+window, a middle click opens Home, and the menu opens each tab, Settings,
+or quits the daemon. The tooltip shows CPU, memory and temperature. The
+tray holds no subscription, so it costs nothing while the window is
+closed. Set `tray.enabled` to false to turn it off (read when the daemon
+starts). Until a package installs the icon, copy it into your icon theme:
+
+```sh
+install -Dm644 dist/icons/mirqab-symbolic.svg ~/.local/share/icons/hicolor/symbolic/apps/mirqab-symbolic.svg
 ```
 
 To toggle the window from a key in Hyprland:
