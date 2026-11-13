@@ -2,11 +2,32 @@
 //! fractions and groupings of each card out. The widgets in
 //! `crates/mirqab-ui/src/tabs/system/` only lay these out.
 
+use crate::cards::{Card, Size};
 use crate::format::{self, TempUnit};
 use crate::graph::Scale;
 use mirqab_proto::stream::{Gpu, SystemData};
 use mirqab_proto::strings as s;
 use serde_json::Value;
+
+const fn card(id: &'static str, size: Size) -> Card {
+    Card {
+        id,
+        tab: "system",
+        streams: &["system"],
+        size,
+    }
+}
+
+/// The System tab's cards, each pinnable to Home (plan 003).
+pub const CARDS: &[Card] = &[
+    card("system.overview", Size::Wide),
+    card("system.cpu", Size::Wide),
+    card("system.memory", Size::Half),
+    card("system.pressure", Size::Half),
+    card("system.gpu", Size::Half),
+    card("system.temps", Size::Half),
+    card("system.power", Size::Half),
+];
 
 /// A status colour; the widget maps it to a style class.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

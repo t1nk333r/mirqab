@@ -11,7 +11,8 @@
 - **Category**: tab
 - **Planned at**: 2026-11-13, from the owner
 - **State**: DONE (2026-11-13). Part 1 (the sampler, history series,
-  `load` and `sensors`, PR #7) and part 2 (the page, PR #8). Measured on the development
+  `load` and `sensors`, PR #7) and part 2 (the page, PR #8). Plan 003 made the GPUs one
+  card. Measured on the development
   machine (release build, real `/`): 0.116 % of one core subscribed at
   2 s, 0.233 % live at 1 s, 5.4–5.6 MiB RSS.
 
@@ -130,7 +131,8 @@ Top to bottom, as cards, each with "Pin to Home":
    pressure as a second graph line; swap and zram lines; paging rates.
 4. **Pressure**: three small graphs (CPU, memory, I/O) of `some60` with a
    one-line explanation of what stall percentage means.
-5. **GPU** (one card per GPU): busy percent graph, VRAM meter, temperature,
+5. **GPU** (one card per GPU; plan 003 made it one "Graphics" card with a
+   section per GPU): busy percent graph, VRAM meter, temperature,
    watts, clock. Hidden with no GPU data.
 6. **Temperatures**: a list grouped by kind, each with a small meter against
    its critical value.
@@ -289,7 +291,7 @@ Part 2 (2026-11-13), where it differs from the plan:
   first data is drawn, and `--selftest` waits for it as well as for the
   footer's first `self` event.
 - The System tab is `built`, so it is hidden where the daemon does not
-  serve `system`. The seven System cards are in `cards::CARDS` for plan
+  serve `system`. The seven System cards are in `system::CARDS` for plan
   003; each card's pin toggles its id in `home.pinned`.
 - Checked by eye on the development machine (window mode, release data
   from the real `/`): 16 cores, both GPUs, zram, pressure and 20 sensors.

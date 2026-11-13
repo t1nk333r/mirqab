@@ -34,6 +34,7 @@ pub const SUPPORT: Glyph = g("md-lifebuoy", '\u{f087e}');
 pub const SETTINGS: Glyph = g("md-cog_outline", '\u{f08bb}');
 pub const PIN: Glyph = g("md-pin", '\u{f0403}');
 pub const PIN_OUTLINE: Glyph = g("md-pin_outline", '\u{f0931}');
+pub const DRAG: Glyph = g("md-drag_vertical", '\u{f01dd}');
 pub const MENU: Glyph = g("md-dots_vertical", '\u{f01d9}');
 pub const CLOSE: Glyph = g("md-close", '\u{f0156}');
 pub const HEALTH: Glyph = g("md-heart_pulse", '\u{f05f6}');
@@ -61,6 +62,7 @@ pub const ALL: &[Glyph] = &[
     SETTINGS,
     PIN,
     PIN_OUTLINE,
+    DRAG,
     MENU,
     CLOSE,
     HEALTH,

@@ -1,8 +1,8 @@
 //! `--selftest <tab>` (architecture §7.5, layer 3): window mode, build the
-//! page, wait for the first event of the footer's `self` stream and for the
-//! page's first data (or 5 s),
-//! print the widget tree as JSON on stdout and exit 0; exit 1 with the
-//! reason on stderr when nothing arrived.
+//! page once the config is known, wait for the first event of the footer's
+//! `self` stream and for the page's first data (or 5 s), print the widget
+//! tree as JSON on stdout and exit 0; exit 1 with the reason on stderr when
+//! nothing arrived.
 
 use crate::app::Ctx;
 use gtk::glib;
@@ -16,12 +16,19 @@ use std::rc::Rc;
 use std::time::Duration;
 
 pub fn run(ctx: &Rc<Ctx>, tab: &str) {
-    ctx.show(Some(tab), Some(Mode::Window));
+    // Once the config is in, as a real open: Home built from the defaults
+    // was empty and ready before the user's pins arrived (plan 003).
+    ctx.show_when_ready(Some(tab), Some(Mode::Window));
     let done = Rc::new(Cell::new(false));
     let keep: Rc<RefCell<Option<crate::client::Subscription>>> = Rc::new(RefCell::new(None));
     let weak = Rc::downgrade(ctx);
     let d = Rc::clone(&done);
-    let tab_name = ctx.current_tab();
+    // The page `show` falls back to for an unknown tab.
+    let tab_name = if tab == "settings" || mirqab_view::shell::find(tab).is_some() {
+        tab.to_string()
+    } else {
+        mirqab_view::shell::DEFAULT_TAB.to_string()
+    };
     let sub = ctx.client.subscribe_params(
         stream::SELF,
         2000,
@@ -76,12 +83,18 @@ fn finish(ctx: &Rc<Ctx>, code: i32, error: Option<String>) {
 }
 
 /// A widget and its children: type, style classes, name, text, tooltip,
-/// accessible role, visibility.
+/// accessible role, visibility. `visible` is false under a hidden parent
+/// too (plan 003: Home's hidden empty state counted as shown).
 pub fn dump(w: &gtk::Widget) -> Value {
+    dump_in(w, true)
+}
+
+fn dump_in(w: &gtk::Widget, parent_visible: bool) -> Value {
+    let visible = parent_visible && w.is_visible();
     let mut node = json!({
         "type": w.type_().name(),
         "classes": w.css_classes().iter().map(|c| c.to_string()).collect::<Vec<_>>(),
-        "visible": w.is_visible(),
+        "visible": visible,
         "role": format!("{:?}", w.accessible_role()),
     });
     let name = w.widget_name();
@@ -97,7 +110,7 @@ pub fn dump(w: &gtk::Widget) -> Value {
     let mut children = Vec::new();
     let mut c = w.first_child();
     while let Some(child) = c {
-        children.push(dump(&child));
+        children.push(dump_in(&child, visible));
         c = child.next_sibling();
     }
     if !children.is_empty() {

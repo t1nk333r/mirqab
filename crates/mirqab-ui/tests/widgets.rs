@@ -301,3 +301,66 @@ fn the_confirm_dialog_lists_every_would_do_line() {
     assert_eq!(d.body().as_str(), lines.join("\n"));
     assert!(d.has_response(confirm_dialog::CONFIRM));
 }
+
+#[gtk::test]
+#[ignore = "needs a display: run tests/test-ui-widgets.sh"]
+fn moving_a_home_card_keeps_its_graph_live() {
+    use mirqab_ui::tabs::home::page::place;
+    let fake = Rc::new(Fake {
+        live: Rc::new(Cell::new(0)),
+        plain: Rc::new(Cell::new(0)),
+        on_event: RefCell::new(None),
+    });
+    let graph = || {
+        let g = Graph::new();
+        g.set_live(Some(Live {
+            source: fake.clone(),
+            stream: "system".into(),
+            extract: Rc::new(|v: &Value| v["cpu"]["percent"].as_f64()),
+        }));
+        g.set_range("2m");
+        g.set_size_request(200, 60);
+        g
+    };
+    let (a, b) = (graph(), graph());
+    let grid = gtk::Grid::new();
+    let wa: gtk::Widget = a.clone().upcast();
+    let wb: gtk::Widget = b.clone().upcast();
+    place(&grid, &[(wa.clone(), (0, 0, 1)), (wb.clone(), (0, 1, 1))]);
+    a.set_focusable(true);
+    let win = shown(&grid, 400, 100);
+    settle("both graphs are mapped", || a.is_mapped() && b.is_mapped());
+    a.grab_focus();
+    settle("the first graph has focus", || {
+        gtk::prelude::RootExt::focus(&win.0).as_ref() == Some(&wa)
+    });
+    a.push_live(100, 1.0);
+    a.push_live(101, 2.0);
+    b.push_live(100, 3.0);
+    assert_eq!(fake.live.get(), 2);
+
+    // Swapped: both stay mapped and keep their points.
+    place(&grid, &[(wb.clone(), (0, 0, 1)), (wa.clone(), (0, 1, 1))]);
+    assert_eq!((a.ring_len(), b.ring_len()), (2, 1));
+    assert!(a.is_live() && b.is_live());
+    assert_eq!(fake.live.get(), 2, "no live subscription was dropped");
+    let lc = grid
+        .layout_manager()
+        .unwrap()
+        .layout_child(&wa)
+        .downcast::<gtk::GridLayoutChild>()
+        .unwrap();
+    assert_eq!(lc.column(), 1, "moved through its layout child");
+    assert_eq!(
+        gtk::prelude::RootExt::focus(&win.0),
+        Some(wa.clone()),
+        "a moved card keeps focus"
+    );
+
+    // b unpinned: removed; a untouched.
+    place(&grid, &[(wa.clone(), (0, 0, 2))]);
+    assert!(b.parent().is_none());
+    assert_eq!(a.ring_len(), 2);
+    assert_eq!(fake.live.get(), 1);
+    drop(win);
+}

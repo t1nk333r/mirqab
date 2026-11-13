@@ -12,7 +12,9 @@
         "anchor": {"enum": ["top-left", "top", "top-right", "bottom-left", "bottom", "bottom-right"], "default": "top-right"},
         "marginEm": {"type": "number", "minimum": 0, "maximum": 10, "default": 0.5},
         "widthEm": {"type": "number", "minimum": 30, "maximum": 120, "default": 58},
-        "heightEm": {"type": "number", "minimum": 20, "maximum": 80, "default": 40}
+        "heightEm": {"type": "number", "minimum": 20, "maximum": 80, "default": 40},
+        "rememberTab": {"type": "boolean", "default": false, "description": "Reopen on the last tab instead of Home."},
+        "lastTab": {"type": ["string", "null"], "pattern": "^[a-z-]{1,32}$", "default": null, "description": "The last tab shown, kept while rememberTab is true."}
       }
     },
     "live": {
@@ -39,7 +41,8 @@
     "home": {
       "type": "object",
       "properties": {
-        "pinned": {"type": "array", "items": {"type": "string"}, "default": []}
+        "pinned": {"type": "array", "items": {"type": "string"}, "default": [], "description": "Card ids shown on Home, in order."},
+        "seeded": {"type": "boolean", "default": false, "description": "Home was given its first cards once; an emptied Home stays empty."}
       }
     },
     "tabs": {

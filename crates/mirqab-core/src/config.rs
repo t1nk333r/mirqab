@@ -13,11 +13,11 @@ use std::path::{Path, PathBuf};
 /// Every key with its default (plan 001, "Config keys added here").
 pub fn defaults() -> Value {
     json!({
-        "window": {"mode": "popover", "anchor": "top-right", "marginEm": 0.5, "widthEm": 58, "heightEm": 40},
+        "window": {"mode": "popover", "anchor": "top-right", "marginEm": 0.5, "widthEm": 58, "heightEm": 40, "rememberTab": false, "lastTab": null},
         "live": {"intervalMs": 1000},
         "theme": {"follow": null, "accent": null, "scheme": "dark"},
         "units": {"temperature": "c", "clock": "auto"},
-        "home": {"pinned": []},
+        "home": {"pinned": [], "seeded": false},
         "tabs": {"hidden": []}
     })
 }
@@ -53,6 +53,20 @@ fn check(key: &str, v: &Value) -> Option<String> {
         "window.marginEm" => number(0.0, 10.0),
         "window.widthEm" => number(30.0, 120.0),
         "window.heightEm" => number(20.0, 80.0),
+        "window.rememberTab" | "home.seeded" => match v {
+            Value::Bool(_) => None,
+            _ => Some(format!("{key} must be true or false")),
+        },
+        "window.lastTab" => match v {
+            Value::Null => None,
+            Value::String(t)
+                if (1..=32).contains(&t.len())
+                    && t.bytes().all(|b| b.is_ascii_lowercase() || b == b'-') =>
+            {
+                None
+            }
+            _ => Some(format!("{key} must be a tab id or null")),
+        },
         "live.intervalMs" => match v.as_u64() {
             Some(n) if (1000..=5000).contains(&n) => None,
             _ => Some(format!(
@@ -366,6 +380,36 @@ mod tests {
             written,
             json!({"mine": {"keep": true}, "live": {"intervalMs": 2000}})
         );
+        act::remove_path(&d, false).unwrap();
+    }
+
+    #[test]
+    fn home_and_tab_keys_validate_and_keep_order() {
+        let d = scratch("home");
+        let p = d.join("config.json");
+        let mut c = Config::load(&p);
+        let order = json!(["system.memory", "system.cpu", "gone.card"]);
+        c.set("home.pinned", order.clone(), false).unwrap();
+        for bad in [json!(["system.cpu", 3]), json!("system.cpu"), json!(null)] {
+            assert!(matches!(
+                c.set("home.pinned", bad, false),
+                Err(SetError::Invalid(_))
+            ));
+        }
+        c.set("home.seeded", json!(true), false).unwrap();
+        assert!(c.set("home.seeded", json!("yes"), false).is_err());
+        c.set("window.rememberTab", json!(true), false).unwrap();
+        c.set("window.lastTab", json!("system"), false).unwrap();
+        assert!(c.set("window.lastTab", json!("../x"), false).is_err());
+        let written: Value = serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
+        assert_eq!(written["home"], json!({"pinned": order, "seeded": true}));
+        assert_eq!(written["window"]["lastTab"], "system");
+        // Written atomically: no temporary file is left beside it.
+        let names: Vec<_> = std::fs::read_dir(&d)
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(names, ["config.json"]);
         act::remove_path(&d, false).unwrap();
     }
 

@@ -94,6 +94,9 @@ pub struct UiConfig {
     pub temperature: TempUnit,
     pub clock: String,
     pub pinned: Vec<String>,
+    pub seeded: bool,
+    pub remember_tab: bool,
+    pub last_tab: Option<String>,
     pub hidden: Vec<String>,
 }
 
@@ -147,6 +150,13 @@ impl UiConfig {
                 .unwrap_or("auto")
                 .to_string(),
             pinned: list("home.pinned"),
+            seeded: lookup(v, "home.seeded")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+            remember_tab: lookup(v, "window.rememberTab")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+            last_tab: s("window.lastTab").map(str::to_string),
             hidden: list("tabs.hidden"),
         }
     }

@@ -2,15 +2,18 @@
 //! line when there is one (plan 002).
 
 use crate::app::Ctx;
+use crate::tabs::CardWidget;
 use crate::tabs::system::graph_card::pinnable;
 use crate::widgets::card::Card;
 use crate::widgets::pill::{Tone as PillTone, pill, set_tone};
 use gtk::prelude::*;
 use mirqab_proto::strings;
 use mirqab_view::tabs::system::{Overview, Tone};
-use std::rc::Rc;
+use serde_json::Value;
+use std::rc::{Rc, Weak};
 
 pub struct OverviewStrip {
+    ctx: Weak<Ctx>,
     pub card: Card,
     thermal: gtk::Label,
     uptime: gtk::Label,
@@ -44,6 +47,7 @@ impl OverviewStrip {
         card.append(&row);
         card.append(&advice);
         OverviewStrip {
+            ctx: Rc::downgrade(ctx),
             card,
             thermal,
             uptime,
@@ -52,7 +56,7 @@ impl OverviewStrip {
         }
     }
 
-    pub fn update(&self, o: &Overview) {
+    fn show(&self, o: &Overview) {
         match &o.thermal {
             Some((word, tone)) => {
                 self.thermal.set_text(word);
@@ -75,5 +79,17 @@ impl OverviewStrip {
         self.advice
             .set_text(o.advice.as_deref().unwrap_or_default());
         self.advice.set_visible(o.advice.is_some());
+    }
+}
+
+impl CardWidget for OverviewStrip {
+    fn card(&self) -> &Card {
+        &self.card
+    }
+
+    fn update(&self, stream: &str, data: &Value) {
+        if let Some(v) = super::view_of(&self.ctx, stream, data) {
+            self.show(&v.overview);
+        }
     }
 }

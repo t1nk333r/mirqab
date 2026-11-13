@@ -8,7 +8,7 @@ Read `docs/architecture.md` first: it is the contract the plans build to.
 |------|-------|-----------|----------|--------|------------|--------|
 | 001 | Foundation: skeleton, daemon, IPC, history, GTK4 app shell, theming, gates, CI | M1 | P1 | XL | — | DONE |
 | 002 | System tab | M1 | P1 | L | 001 | DONE |
-| 003 | Home tab and pinned cards | M1 | P1 | M | 001 002 | PLANNED |
+| 003 | Home tab and pinned cards | M1 | P1 | M | 001 002 | DONE |
 | 004 | Tray icon and bar items | M2 | P1 | M | 001 002 | PLANNED |
 | 005 | CLI and MCP server | M2 | P1 | M | 001 002 | PLANNED |
 | 006 | Apps tab and process inspector | M3 | P1 | L | 001 005 | PLANNED |
@@ -44,6 +44,8 @@ moved" below).
 | **M6 Everyday** | 016, 017 | Time and Weather |
 | **M7 Insight** | 018, 019 | Trends, spike rewind, alerts, "why is it slow", the health report |
 | **M8 Release** | 020 | A checked PKGBUILD, a tagged release, the AUR package (owner step) |
+
+M1 is complete (2026-11-13, plan 003).
 
 Order inside a milestone is the plan number. M3 to M6 do not depend on each
 other and can run in parallel by different agents once M2 is merged; M7

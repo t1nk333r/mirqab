@@ -8,7 +8,13 @@
 - **Depends on**: 001, 002
 - **Category**: tab
 - **Planned at**: 2026-11-13, from the owner
-- **State**: PLANNED
+- **State**: DONE (2026-11-13). Acceptance 1 to 3 are tested by
+  `tests/test-ui-home.sh`: the seeded Home; a pin stored and an order that
+  survives restarting the daemon and the interface; no `system`
+  subscriber with a placeholder tab shown or after `close`. Acceptance 4 in part:
+  CI builds and tests from source in a clean `archlinux` container on every
+  push; showing the window there was not run (it has no display). M1 is
+  complete with this plan.
 
 ## Problem
 
@@ -114,12 +120,69 @@ No new fixture tree.
    starting the socket and running `mirqab open` shows Home and System
    working. The exact commands go in `README.md`.
 
+## As built
+
+Where it differs from the plan (2026-11-13):
+
+- The registry entry is `cards::Card { id, tab, streams, size }`; the
+  title stays with the widget, since the strings module is the only place
+  for text. The widget table is `tabs::card(id, ctx, compact)` with
+  `CARD_IDS`; a unit test in `crates/mirqab-ui/src/tabs/mod.rs` checks it
+  against `cards::all()`.
+- Each card is a `CardWidget` (`card()`, `update(stream, data)`) and
+  reads the event itself, so the System page and Home feed their cards the
+  same way. The System page builds its cards from `system::CARDS` through
+  the same table.
+- The GPUs are one card, "Graphics", with a section per GPU and one range
+  picker for all of them, so `system.gpu` pins every GPU at once. Plan 002
+  had one card per GPU.
+- Seeding happens when the first config arrives from a daemon
+  (`Ctx::seed_home`), not when Home is built, so a first run that opens on
+  another tab is seeded too. The seed order is overview, CPU, memory.
+- Reordering: a drag handle (`md-drag_vertical`) shown on hover or focus
+  and dropped onto another card (`home::dropped`), and Alt+Up / Alt+Down
+  anywhere inside a card (`home::moved`); the moved card keeps focus after
+  the rebuild. A rebuild keeps the widgets of cards that stay pinned.
+- `window.rememberTab` needs the last tab across restarts of the
+  interface, which quits 60 s after it is hidden, so the config gains
+  `window.lastTab`, written only while `rememberTab` is true.
+- `--selftest` now builds its page once the config is known, as a real
+  open does, and the dump's `visible` is false under a hidden parent
+  (Home's hidden empty state counted as shown).
+- The config test is in `crates/mirqab-core/src/config.rs`'s own tests,
+  beside the other config tests, not in `crates/mirqab-core/tests/`.
+- The pin control is not a `pinned` property set by the page: it reads
+  `home.pinned` at each press and follows every config change.
+
+From the review of PR #9 (2026-11-13):
+
+- A config change moves the cards that stay pinned through the grid's
+  layout children (`tabs::home::page::place`) instead of removing and
+  re-attaching every card, which unmapped each graph and cleared its live
+  history; a moved card keeps focus. A widget test checks that a swap and
+  an unpin leave the other graphs live with their points.
+- Something pinned from a tab before Home ever opened marks Home seeded
+  (`home::mark_seeded`), so emptying Home later never refills it; the
+  seeding writes `home.seeded` before `home.pinned`.
+- An id listed twice shows once. A drop is written only when the dropped
+  id is pinned.
+- `tests/test-ui-home.sh` checks the range pickers by their toggle buttons,
+  with System as the positive control, and the subscribers through
+  `mirqab status`: one while Home is shown, one with System shown instead,
+  none after `close`, and none while a placeholder tab hides Home (the
+  interface shares one daemon subscription per stream among its pages, so
+  only a tab without a `system` card shows Home let go). A restart of the
+  daemon and the interface keeps an order made on Home. A widget test
+  checks that a moved card keeps focus.
+
 ## Checklist
 
-1. `crates/mirqab-view/src/cards.rs` (`CardSpec`, `all()`); `CARDS` in
+1. `crates/mirqab-view/src/cards.rs` (`CardSpec`, `all()`; built as
+   `Card`, see As built); `CARDS` in
    `crates/mirqab-view/src/tabs/system.rs`; the constructor table in
    `crates/mirqab-ui/src/tabs/mod.rs`; give each System card widget the
-   `compact` and `pinned` properties.
+   `compact` and `pinned` properties (built: `compact` at construction;
+   the pin control follows the config, see As built).
 2. `crates/mirqab-ui/src/widgets/card.rs`: the pin control, wired to
    `config.set`.
 3. `crates/mirqab-view/src/tabs/home.rs` (the view model and the tab's cards); `crates/mirqab-ui/src/tabs/home/{mod,page,pinned_card}.rs`.
