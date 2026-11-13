@@ -10,9 +10,12 @@ and no paid tier.
 
 ## Status
 
-Phases A, B and C of the foundation exist (plan 001): the workspace, the
+Phases A to C of the foundation exist (plan 001): the workspace, the
 development gates, the daemon with its socket protocol and the CLI, and
-history. Nothing is on screen yet.
+history. Phase D part 1 is in as well: the view crate
+(`crates/mirqab-view`), with number formatting, the theme token table, the
+icon glyphs, graph geometry and the sidebar model. Its tests need no
+display. Nothing is on screen yet; the window comes in part 2.
 
 - The daemon (`mirqab daemon`) serves a private Unix socket at
   `$XDG_RUNTIME_DIR/mirqab/daemon.sock`, or at `$MIRQAB_SOCKET` or
@@ -30,6 +33,9 @@ history. Nothing is on screen yet.
   `toggle [TAB]`, `close`, `history SERIES... [--range 1h|24h|7d|30d]
   [--json]`, `history --list`, `help [COMMAND]`, `--help` and `--version`.
   Every command takes `--socket PATH`.
+- Theme tokens can be overridden in `~/.config/mirqab/theme.json`, one
+  key per CSS variable name. The view crate checks the file; no program
+  applies it until the window exists.
 - There is no window yet. `mirqab-ui` only prints its version, so `open`,
   `toggle` and `close` fail with `unavailable: no interface is running`
   and exit 1. They take `--dry-run`, which prints what the action would do.
