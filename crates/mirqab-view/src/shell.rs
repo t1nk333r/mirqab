@@ -47,11 +47,21 @@ const fn tab(
     }
 }
 
+impl Tab {
+    /// The tab's plan has landed: it is hidden where its stream is not served.
+    const fn built(self) -> Tab {
+        Tab {
+            built: true,
+            ..self
+        }
+    }
+}
+
 /// Every tab, in sidebar order (architecture §7.1).
 pub const TABS: &[Tab] = &[
     tab("home", icons::HOME, Place::Top, None, 3),
     tab("apps", icons::APPS, Place::Top, Some("apps"), 6),
-    tab("system", icons::SYSTEM, Place::Top, Some("system"), 2),
+    tab("system", icons::SYSTEM, Place::Top, Some("system"), 2).built(),
     tab("fans", icons::FANS, Place::Top, Some("fans"), 15),
     tab("disk", icons::DISK, Place::Top, Some("disk"), 10),
     tab("network", icons::NETWORK, Place::Top, Some("net"), 11),

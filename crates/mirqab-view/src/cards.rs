@@ -11,8 +11,24 @@ pub struct Card {
     pub stream: &'static str,
 }
 
-/// Every card. Plans 002 and 003 add the first.
-pub const CARDS: &[Card] = &[];
+const fn system(id: &'static str) -> Card {
+    Card {
+        id,
+        tab: "system",
+        stream: "system",
+    }
+}
+
+/// Every card. Plan 002 adds the System tab's; plan 003 builds them on Home.
+pub const CARDS: &[Card] = &[
+    system("system.overview"),
+    system("system.cpu"),
+    system("system.memory"),
+    system("system.pressure"),
+    system("system.gpu"),
+    system("system.temps"),
+    system("system.power"),
+];
 
 pub fn find(id: &str) -> Option<&'static Card> {
     CARDS.iter().find(|c| c.id == id)

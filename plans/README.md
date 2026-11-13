@@ -7,7 +7,7 @@ Read `docs/architecture.md` first: it is the contract the plans build to.
 | Plan | Title | Milestone | Priority | Effort | Depends on | Status |
 |------|-------|-----------|----------|--------|------------|--------|
 | 001 | Foundation: skeleton, daemon, IPC, history, GTK4 app shell, theming, gates, CI | M1 | P1 | XL | — | DONE |
-| 002 | System tab | M1 | P1 | L | 001 | IN PROGRESS (part 1) |
+| 002 | System tab | M1 | P1 | L | 001 | DONE |
 | 003 | Home tab and pinned cards | M1 | P1 | M | 001 002 | PLANNED |
 | 004 | Tray icon and bar items | M2 | P1 | M | 001 002 | PLANNED |
 | 005 | CLI and MCP server | M2 | P1 | M | 001 002 | PLANNED |

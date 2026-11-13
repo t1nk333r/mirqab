@@ -11,4 +11,5 @@ pub mod format;
 pub mod graph;
 pub mod icons;
 pub mod shell;
+pub mod tabs;
 pub mod theme;

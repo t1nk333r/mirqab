@@ -55,6 +55,9 @@ impl Opts {
     }
 }
 
+/// Something waiting for a page's first data.
+type Waiter = Box<dyn FnOnce()>;
+
 /// Shared by the window, the pages and the event handlers.
 pub struct Ctx {
     pub app: adw::Application,
@@ -71,6 +74,10 @@ pub struct Ctx {
     /// `mirqab-ui`), run once it has, or on the first failed connection.
     parked: RefCell<Option<(Option<String>, Option<Mode>)>>,
     config_listeners: RefCell<Vec<Box<dyn Fn() -> bool>>>,
+    /// Pages that have shown their first data since the window appeared,
+    /// and what waits for one (the selftest).
+    ready: RefCell<std::collections::HashSet<String>>,
+    ready_waiters: RefCell<Vec<(String, Waiter)>>,
 }
 
 /// The exit delay: 60 s, or `MIRQAB_UI_EXIT_MS` when `MIRQAB_TEST=1`.
@@ -101,6 +108,8 @@ impl Ctx {
             ui_sub: RefCell::new(None),
             parked: RefCell::new(None),
             config_listeners: RefCell::new(Vec::new()),
+            ready: RefCell::new(Default::default()),
+            ready_waiters: RefCell::new(Vec::new()),
         });
         let weak = Rc::downgrade(&ctx);
         ctx.client.on_state(move |client| {
@@ -254,6 +263,7 @@ impl Ctx {
         if let Some(w) = self.window() {
             w.hide();
         }
+        self.ready.borrow_mut().clear();
         if self.exit_timer.borrow().is_some() {
             return;
         }
@@ -282,6 +292,30 @@ impl Ctx {
                 ctx.quit();
             }
         });
+    }
+
+    /// A page has shown its first data (a placeholder or Settings at once).
+    pub fn page_ready(&self, tab: &str) {
+        if !self.ready.borrow_mut().insert(tab.to_string()) {
+            return;
+        }
+        let waiters = std::mem::take(&mut *self.ready_waiters.borrow_mut());
+        let (now, later): (Vec<_>, Vec<_>) = waiters.into_iter().partition(|(t, _)| t == tab);
+        self.ready_waiters.borrow_mut().extend(later);
+        for (_, f) in now {
+            f();
+        }
+    }
+
+    /// Runs `f` once `tab`'s page has shown its first data.
+    pub fn when_ready(&self, tab: &str, f: impl FnOnce() + 'static) {
+        if self.ready.borrow().contains(tab) {
+            f();
+        } else {
+            self.ready_waiters
+                .borrow_mut()
+                .push((tab.to_string(), Box::new(f)));
+        }
     }
 
     /// Runs `f` after every config or status change (Settings re-reads its

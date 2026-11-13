@@ -61,9 +61,18 @@ its tests need no display) and the window (`crates/mirqab-ui`).
   line, and a Settings button. Escape or `mirqab close` hides the window,
   and the process quits 60 s after it was last hidden. The `.desktop`
   entry opens a window.
-- Not built yet: the content of the tabs (each one is a placeholder until
-  its plan lands), the MCP server and the root helper. `mirqab-fand` only
-  prints its version.
+- The System tab shows these cards: the overview (the thermal word,
+  uptime, load and restart advice), CPU with its cores, memory, pressure,
+  the GPUs, temperatures and power. Each single-graph card has a range
+  picker. `2m` is live and updates every second while the page is on
+  screen (the default `live.intervalMs`). `1h`, `24h`, `7d` and `30d` come
+  from history: each is read when chosen, then once a minute. The numbers
+  update every 2 s. Pressure has three small live graphs and no picker.
+  Every card has "Pin to Home". Home is plan 003 and is not built yet.
+  The page keeps at most two GPUs, as history does.
+- Not built yet: the content of the other tabs (each one is a placeholder
+  until its plan lands), the MCP server and the root helper. The System
+  tab is built. `mirqab-fand` only prints its version.
 
 The config is `~/.config/mirqab/config.json` (under `$XDG_CONFIG_HOME` when
 set), its keys are listed in `share/mirqab/config.schema.json`, the daemon
