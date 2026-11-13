@@ -59,6 +59,8 @@ plant "a literal /sys path" crates/mirqab-core/src/fans.rs 'fn x() { read("/sys/
 plant "a kill outside act.rs" crates/mirqab-core/src/ports.rs 'fn x() { libc::kill(1, 15); }' "mutation or command"
 plant "remove_file outside act.rs" crates/mirqab-core/src/history.rs 'fn x() { std::fs::remove_file(p); }' "mutation or command"
 plant "Command::new outside exec.rs" crates/mirqab/src/cli.rs 'fn x() { Command::new("ls"); }' "mutation or command"
+plant "println! in the CLI" crates/mirqab/src/cli.rs 'fn x() { println!("{v}"); }' "print macro outside out.rs"
+plant "eprintln! in the daemon" crates/mirqab/src/daemon.rs 'fn x() { eprintln!("no"); }' "print macro outside out.rs"
 plant "gtk in the view crate" crates/mirqab-view/src/graph.rs 'use gtk4::prelude::*;' "toolkit named in a headless crate"
 plant "glib in the daemon" crates/mirqab/src/main.rs 'fn x() { glib::idle_add(f); }' "toolkit named in a headless crate"
 plant "a toolkit dependency" crates/mirqab-core/Cargo.toml 'gtk4 = "0.11"' "toolkit dependency"

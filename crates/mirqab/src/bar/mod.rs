@@ -50,7 +50,7 @@ impl Throttle {
 }
 
 fn usage(msg: &str) -> ExitCode {
-    eprintln!("{msg}");
+    crate::out::err(msg);
     ExitCode::from(EXIT_USAGE)
 }
 
@@ -68,7 +68,7 @@ fn parse(rest: &[String]) -> Result<Option<Opts>, ExitCode> {
         match a.as_str() {
             "--list" => {
                 for (name, about) in strings::BAR_ITEMS {
-                    println!("{name:<7} {about}");
+                    crate::out::line(&format!("{name:<7} {about}"));
                 }
                 return Ok(None);
             }
@@ -134,12 +134,6 @@ fn reading_line(o: &Opts, combo: &[String], data: &Value) -> (String, bool) {
     (format::line(o.format, &o.item, &r), r.class == "unknown")
 }
 
-/// Prints `line`; false once stdout is closed.
-fn emit(line: &str) -> bool {
-    let mut out = std::io::stdout().lock();
-    writeln!(out, "{line}").and_then(|_| out.flush()).is_ok()
-}
-
 pub fn run(args: Args) -> ExitCode {
     let o = match parse(&args.rest) {
         Ok(Some(o)) => o,
@@ -158,7 +152,7 @@ pub fn run(args: Args) -> ExitCode {
     if !o.watch {
         return match call(&socket, Request::new(1, "get").with_stream(stream::SYSTEM)) {
             Ok(v) => {
-                emit(&reading_line(&o, &combo, &v).0);
+                crate::out::line(&reading_line(&o, &combo, &v).0);
                 ExitCode::SUCCESS
             }
             Err(e) => crate::cli::exit_for(&socket, e),
@@ -211,9 +205,8 @@ fn watch(o: &Opts, combo: &[String], socket: &std::path::Path) -> ExitCode {
                 let (out, unknown) = reading_line(o, combo, &ev.data);
                 let now = Instant::now();
                 if out != last && throttle.allow(now, o.secs) {
-                    if !emit(&out) {
-                        return ExitCode::SUCCESS;
-                    }
+                    // A closed bar ends the process inside out::line.
+                    crate::out::line(&out);
                     throttle.emitted(now, unknown);
                     last = out;
                 } else if mirqab_core::sys::stdout_closed() {

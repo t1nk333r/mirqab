@@ -13,7 +13,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 fn fail(msg: &str) -> ExitCode {
-    eprintln!("{msg}");
+    crate::out::err(msg);
     ExitCode::from(EXIT_FAILED)
 }
 
@@ -61,12 +61,12 @@ pub fn run(args: Args) -> ExitCode {
                     root = Root::new(v);
                 }
                 None => {
-                    eprintln!("{}", strings::missing_value("--root"));
+                    crate::out::err(&strings::missing_value("--root"));
                     return ExitCode::from(EXIT_USAGE);
                 }
             },
             other => {
-                eprintln!("{}", strings::unknown_option(other));
+                crate::out::err(&strings::unknown_option(other));
                 return ExitCode::from(EXIT_USAGE);
             }
         }
@@ -98,7 +98,18 @@ pub fn run(args: Args) -> ExitCode {
         }
         Err(ListenError::Failed(why)) => return fail(&format!("mirqab: {why}")),
     };
-    println!("{}", strings::ready(&server.socket().display().to_string()));
+    // Not out::print: the daemon must not exit because no one reads its
+    // stdout, so a failed write is ignored.
+    {
+        use std::io::Write;
+        let mut out = std::io::stdout().lock();
+        let _ = writeln!(
+            out,
+            "{}",
+            strings::ready(&server.socket().display().to_string())
+        )
+        .and_then(|_| out.flush());
+    }
     notify_ready();
     // Read once at start (plan 004).
     if Config::load(&config_path_for_tray)

@@ -6,6 +6,7 @@ mod bar;
 mod cli;
 mod daemon;
 mod elevate;
+mod out;
 mod tray;
 
 use mirqab_core::proto::strings;
@@ -25,7 +26,7 @@ pub struct Args {
 }
 
 fn usage_error(msg: &str) -> ExitCode {
-    eprintln!("{msg}");
+    crate::out::err(msg);
     ExitCode::from(EXIT_USAGE)
 }
 
@@ -42,7 +43,11 @@ fn main() -> ExitCode {
             },
             "-h" | "--help" => help = true,
             "-V" | "--version" => {
-                println!("{} {}", strings::APP_NAME, mirqab_core::proto::VERSION);
+                out::print(&format!(
+                    "{} {}\n",
+                    strings::APP_NAME,
+                    mirqab_core::proto::VERSION
+                ));
                 return ExitCode::SUCCESS;
             }
             _ => rest.push(a),
@@ -56,7 +61,7 @@ fn main() -> ExitCode {
 
     // `mirqab`, `mirqab --help`, `mirqab help [COMMAND]`, `mirqab COMMAND --help`.
     if command.is_empty() {
-        print!("{}", strings::CLI_USAGE);
+        out::print(&strings::cli_usage());
         return if help {
             ExitCode::SUCCESS
         } else {
@@ -71,14 +76,19 @@ fn main() -> ExitCode {
     };
     if let Some(topic) = topic {
         if topic.is_empty() {
-            print!("{}", strings::CLI_USAGE);
+            out::print(&strings::cli_usage());
+            return ExitCode::SUCCESS;
+        }
+        if topic == "--markdown" && command == "help" {
+            out::print(&strings::cli_markdown());
             return ExitCode::SUCCESS;
         }
         return match strings::command_help(&topic) {
             Some(text) => {
-                print!("{text}");
+                out::print(&text);
                 ExitCode::SUCCESS
             }
+            None if topic.starts_with('-') => usage_error(&strings::unknown_option(&topic)),
             None => usage_error(&strings::unknown_command(&topic)),
         };
     }
@@ -90,6 +100,16 @@ fn main() -> ExitCode {
             cli::run(&command, args)
         }
         "bar" => bar::run(args),
+        "completions" => match args.rest.as_slice() {
+            [shell] => match strings::cli_completions(shell) {
+                Some(script) => {
+                    out::print(&script);
+                    ExitCode::SUCCESS
+                }
+                None => usage_error(&strings::bad_shell(shell)),
+            },
+            _ => usage_error(&strings::command_help("completions").unwrap_or_default()),
+        },
         other => usage_error(&strings::unknown_command(other)),
     }
 }
