@@ -4,8 +4,11 @@
 
 mod bar;
 mod cli;
+mod confirm;
 mod daemon;
 mod elevate;
+mod mcp;
+mod mcp_config;
 mod out;
 mod tray;
 
@@ -13,10 +16,13 @@ use mirqab_core::proto::strings;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-/// Exit codes: 0 done; 1 the daemon refused or failed; 2 no daemon; 64 a
+/// Exit codes: 0 done; 1 the daemon refused or failed; 2 no daemon; 3 a
+/// change that needs confirmation and could not get it; 64 a
 /// usage error.
 pub const EXIT_FAILED: u8 = 1;
 pub const EXIT_NO_DAEMON: u8 = 2;
+/// A change that needs confirmation and could not get it (plan 005).
+pub const EXIT_CONFIRM: u8 = 3;
 pub const EXIT_USAGE: u8 = 64;
 
 /// The socket every command may name, and what is left for the command.
@@ -99,6 +105,16 @@ fn main() -> ExitCode {
             cli::run(&command, args)
         }
         "bar" => bar::run(args),
+        // With no socket to name, the server still starts: each tool then
+        // says there is no daemon, which the agent can tell the user.
+        "mcp" | "--mcp" => mcp::run(
+            &args
+                .socket
+                .clone()
+                .or_else(mirqab_core::server::default_socket)
+                .unwrap_or_default(),
+        ),
+        "mcp-config" => mcp_config::run(args),
         "completions" => match args.rest.as_slice() {
             [shell] => match strings::cli_completions(shell) {
                 Some(script) => {

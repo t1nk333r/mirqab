@@ -77,6 +77,23 @@ mirqab bar --list
 
 Prints one reading of ITEM for a status bar and exits. With --watch it prints a line each time the reading changes, at most once per interval (default 5 s, from 2 s to an hour), until its output is closed. --format waybar (default) prints Waybar's JSON; plain the text only; json every field.
 
+## mcp
+
+```
+mirqab mcp
+mirqab --mcp
+```
+
+Serves the Model Context Protocol on stdin and stdout until stdin closes, for a coding agent: the tools read the daemon (system_load, explain_slowness). Register it with `mirqab mcp-config CLIENT`.
+
+## mcp-config
+
+```
+mirqab mcp-config claude|codex|gemini|opencode|cursor|json [--write [-y]] [--dry-run]
+```
+
+Prints how to register `mirqab mcp` with CLIENT: the client's own command, or for cursor and json the JSON to add. --write runs the client's command after showing it and asking; -y skips the question; without a terminal and without -y it does nothing and exits 3. --dry-run shows what --write would run.
+
 ## completions
 
 ```
@@ -100,4 +117,4 @@ Prints this text, or one command's. --markdown prints every command as Markdown 
 - `--help`: help for the command
 - `--version`: print the version
 
-Exit codes: 0 done, 1 refused or failed, 2 no daemon, 64 usage error.
+Exit codes: 0 done, 1 refused or failed, 2 no daemon, 3 needs confirmation (no terminal and no -y), 64 usage error.

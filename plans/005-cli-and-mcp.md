@@ -10,10 +10,11 @@
 - **Depends on**: 001, 002
 - **Category**: integration
 - **Planned at**: 2026-11-13, from the owner
-- **State**: IN PROGRESS. Part 1 (the CLI frame: one command table for
-  usage, help, `docs/cli.md` and completions; output that survives a
-  closed pipe) implemented 2026-11-14. Part 2 (the MCP server, plans,
-  `mcp-config`) next.
+- **State**: DONE (2026-11-14). Part 1 (the CLI frame; PR #12) and part 2
+  (the MCP server, plan ids, the ancestry guard, `mcp-config`). Acceptance
+  2 (an MCP client the owner configures lists the tools) is an owner step.
+  The end-to-end confirm-flow test lands with the first acting tool
+  (plan 007's `kill_port`); its parts are tested here.
 
 ## Problem
 
@@ -222,6 +223,37 @@ Part 1 (2026-11-14), where it differs from the plan:
     `~/.cursor/mcp.json` (`cursor-agent mcp --help`). So `mcp-config`
     prints the client's own command and `--write` runs it, instead of
     mirqab editing another program's file.
+
+Part 2 (2026-11-14), where it differs from the plan:
+
+- **Both protocol eras.** `mirqab mcp` (also `mirqab --mcp`) answers
+  `initialize` for 2025-11-25, 2025-06-18 and 2025-03-26 (an unknown
+  version gets 2025-11-25), and serves 2026-07-28 requests by their
+  `_meta` version, with `server/discover`; any other `_meta` version is
+  -32022 with the supported list. Every result carries `resultType`.
+  `ping` is answered; notifications are read and not answered; malformed
+  JSON is -32700 and the server stays up.
+- The server connects to the daemon for each tool call instead of holding
+  one connection: a daemon restarted between calls is found again. With
+  no socket to name (no `XDG_RUNTIME_DIR`) it still starts, and each tool
+  says there is no daemon.
+- **No acting tool yet**, so the confirm flow's parts are in
+  `mirqab-core`, tested on their own: `plan.rs` (single-use plan ids, a
+  120 s expiry, only targets that were planned and are still there) and
+  `guard.rs` (the caller's ancestry from `proc/<pid>/stat`, through
+  `Root`). The first acting tool (plan 007) wires them in, with the
+  `event` record of rule 5.
+- `mcp-config CLIENT` prints the client's own command (`claude`, `codex`,
+  `gemini`, `opencode`) or the JSON block (`cursor`, `json`). `--write`
+  runs the command after the confirm flow (`confirm.rs`: `--dry-run`
+  stops, `-y` goes, a terminal is asked `[y/N]`, otherwise exit 3); for a
+  client configured by file it refuses. mirqab never edits another
+  program's file. The registered command is `mirqab mcp`, found on `PATH`.
+- The modules are `crates/mirqab/src/{mcp/{mod,rpc,tools},confirm,
+  mcp_config}.rs`; the CLI stayed one file (`cli.rs`).
+- Tests: `crates/mirqab/tests/mcp.rs` (both eras, the tools against a
+  fixture daemon, bad input, no daemon, EOF); `tests/test-mcp-config.sh`
+  with recording stubs (the agent CLIs are always stubbed in the sandbox).
 
 ## Unverified
 

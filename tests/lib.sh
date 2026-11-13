@@ -24,7 +24,8 @@ TESTS_FAILED=0
 # Binaries a test must never execute for real. Read-only tools the tests use
 # (jq, sed, grep, git, cargo) are deliberately absent.
 STUBBED_CMDS=(sudo pkexec systemctl systemd-run systemd-inhibit loginctl
-    busctl notify-send xdg-open curl wget hyprctl pactl wpctl kill pkill)
+    busctl notify-send xdg-open curl wget hyprctl pactl wpctl kill pkill
+    claude codex gemini opencode cursor-agent)
 
 # The toolchain lives in the real HOME. Capture it before the sandbox moves
 # HOME, so cargo neither downloads the registry again nor writes into it.

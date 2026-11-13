@@ -124,7 +124,7 @@ fn print_history(v: &Value, list: bool) {
     }
 }
 
-fn system(v: &Value) -> SystemData {
+pub(crate) fn system(v: &Value) -> SystemData {
     serde_json::from_value(v.clone()).unwrap_or_default()
 }
 
@@ -134,8 +134,15 @@ fn pct(v: Option<f64>) -> String {
 
 /// `mirqab load`: CPU, load, memory, swap, pressure, thermal word.
 fn print_load(v: &Value) {
-    let d = system(v);
-    let line = |k: &str, val: String| crate::out::line(&strings::load_line(k, &val).to_string());
+    for l in load_lines(&system(v)) {
+        crate::out::line(&l);
+    }
+}
+
+/// `mirqab load`'s lines, which the MCP tools reuse (plan 005).
+pub(crate) fn load_lines(d: &SystemData) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut line = |k: &str, val: String| out.push(strings::load_line(k, &val));
     if let Some(c) = &d.cpu {
         line(
             strings::LOAD_CPU,
@@ -186,6 +193,7 @@ fn print_load(v: &Value) {
             strings::thermal_word(&t.state, t.throttling),
         );
     }
+    out
 }
 
 /// `mirqab sensors`: temperatures, GPUs, power. Celsius; plan 005 reads

@@ -267,6 +267,16 @@ bind = SUPER, M, exec, mirqab toggle
 bind = SUPER SHIFT, M, exec, mirqab toggle system
 ```
 
+Coding agents can ask mirqab through its MCP server, `mirqab mcp`, which
+speaks the Model Context Protocol on stdin and stdout. Its tools read
+only: `system_load` and `explain_slowness`. `mirqab mcp-config claude`
+(or `codex`, `gemini`, `opencode`, `cursor`, `json`) prints how to
+register it; `--write` runs the client's own command after asking.
+
+```sh
+mirqab mcp-config claude
+```
+
 Every command is described in `docs/cli.md` (made from `mirqab help
 --markdown`). Shell completion: `mirqab completions bash` (or `zsh`,
 `fish`) prints a script, for example

@@ -85,6 +85,20 @@ pub const CLI_COMMANDS: &[CliCommand] = &[
         flags: &["--watch", "--interval", "--format", "--list"],
     },
     CliCommand {
+        name: "mcp",
+        usage: &["mcp", "--mcp"],
+        summary: "the MCP server for coding agents, on stdin and stdout",
+        help: "Serves the Model Context Protocol on stdin and stdout until stdin closes, for a coding agent: the tools read the daemon (system_load, explain_slowness). Register it with `mirqab mcp-config CLIENT`.",
+        flags: &[],
+    },
+    CliCommand {
+        name: "mcp-config",
+        usage: &["mcp-config claude|codex|gemini|opencode|cursor|json [--write [-y]] [--dry-run]"],
+        summary: "how to register the MCP server with an agent",
+        help: "Prints how to register `mirqab mcp` with CLIENT: the client's own command, or for cursor and json the JSON to add. --write runs the client's command after showing it and asking; -y skips the question; without a terminal and without -y it does nothing and exits 3. --dry-run shows what --write would run.",
+        flags: &["--write", "-y", "--dry-run"],
+    },
+    CliCommand {
         name: "completions",
         usage: &["completions bash|zsh|fish"],
         summary: "a shell completion script",
@@ -111,7 +125,7 @@ pub const CLI_GLOBAL: &[(&str, &str)] = &[
 ];
 
 /// Exit codes, for the usage text and `docs/cli.md`.
-pub const CLI_EXITS: &str = "Exit codes: 0 done, 1 refused or failed, 2 no daemon, 64 usage error.";
+pub const CLI_EXITS: &str = "Exit codes: 0 done, 1 refused or failed, 2 no daemon, 3 needs confirmation (no terminal and no -y), 64 usage error.";
 
 pub fn cli_command(name: &str) -> Option<&'static CliCommand> {
     CLI_COMMANDS.iter().find(|c| c.name == name)
@@ -250,6 +264,70 @@ pub fn cli_completions(shell: &str) -> Option<String> {
         }
         _ => return None,
     })
+}
+
+// --- The MCP server (plan 005) -------------------------------------------------
+
+pub const MCP_INSTRUCTIONS: &str = "mirqab reports this Linux machine's state. Read tools only: system_load for CPU, load, memory, pressure and the thermal word; explain_slowness when the user says the machine is slow. Every tool reads the mirqab daemon; if it is not running, the result says how to start it.";
+pub const MCP_SYSTEM_LOAD_TITLE: &str = "System load";
+pub const MCP_SYSTEM_LOAD: &str = "Reads only: the machine's CPU use (user, system, I/O wait), load averages, memory and swap, pressure stall percentages and the thermal word (cool, warm, hot, critical), from the mirqab daemon.";
+pub const MCP_SLOWNESS_TITLE: &str = "Explain slowness";
+pub const MCP_SLOWNESS: &str = "Reads only: explains why the machine feels slow. For now it returns the current load with a note; the rules that name a cause arrive with mirqab's Trends tab.";
+pub const MCP_SLOWNESS_LATER: &str = "mirqab cannot name a cause yet: its rules for slowness arrive with the Trends tab (plan 018). The current load:";
+
+pub fn mcp_unknown_tool(name: &str) -> String {
+    format!("Unknown tool: {name}")
+}
+
+pub fn mcp_unsupported(version: &str) -> String {
+    format!("Unsupported protocol version: {version}")
+}
+
+pub const MCP_BAD_REQUEST: &str = "Invalid request";
+pub const MCP_PARSE_ERROR: &str = "Parse error";
+
+pub fn mcp_unknown_method(method: &str) -> String {
+    format!("Method not found: {method}")
+}
+
+pub const MCP_ARGS_NOT_OBJECT: &str = "arguments must be an object";
+
+// --- mcp-config and confirmation (plan 005) ---------------------------------
+
+pub const MCP_CLIENTS: &[&str] = &["claude", "codex", "gemini", "opencode", "cursor", "json"];
+
+pub fn mcp_bad_client(client: &str) -> String {
+    format!(
+        "mirqab: mcp-config knows claude, codex, gemini, opencode, cursor and json, not {client}"
+    )
+}
+
+pub fn mcp_config_run(cmd: &str) -> String {
+    format!("Register mirqab's MCP server with:\n  {cmd}\n")
+}
+
+pub fn mcp_config_json(path: &str, json: &str) -> String {
+    format!("Add this to {path} (merge it with what is there):\n{json}\n")
+}
+
+/// Where a client configured by file keeps its MCP servers.
+pub fn mcp_config_path(client: &str) -> &'static str {
+    match client {
+        "cursor" => "~/.cursor/mcp.json",
+        _ => "your client's MCP configuration",
+    }
+}
+
+pub const MCP_CONFIG_PRINT_ONLY: &str = "mirqab: --write needs a client with its own command (claude, codex, gemini, opencode); edit the file yourself";
+
+pub const CONFIRM_WILL: &str = "This will run:";
+pub const CONFIRM_PROMPT: &str = "Go ahead? [y/N] ";
+pub const CONFIRM_DECLINED: &str = "Not done.";
+pub const CONFIRM_NEEDS_TERMINAL: &str =
+    "Not done: no terminal to ask in. Run it in a terminal, or pass -y.";
+
+pub fn mcp_config_failed(why: &str) -> String {
+    format!("mirqab: the client's command failed: {why}")
 }
 
 pub fn bad_shell(shell: &str) -> String {
@@ -896,6 +974,8 @@ mod tests {
             "load",
             "sensors",
             "bar",
+            "mcp",
+            "mcp-config",
             "completions",
             "help",
         ] {
