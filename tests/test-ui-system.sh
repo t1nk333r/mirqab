@@ -1,8 +1,8 @@
 # tests/test-ui-system.sh — the System page against a real daemon (plan 002,
 # Tests): `mirqab-ui --selftest system` on root-desktop shows every card
-# with its data and two GPU cards; on root-minimal the page still loads,
+# with its data and both GPUs in the graphics card; on root-minimal the page still loads,
 # without the GPU, pressure and temperature cards, and logs no error.
-# mirqab:covers crates/mirqab-ui/src/tabs/system/** crates/mirqab-view/src/tabs/system.rs
+# mirqab:covers crates/mirqab-ui/src/tabs/system/** crates/mirqab-ui/src/tabs/mod.rs crates/mirqab-view/src/tabs/system.rs
 # mirqab:covers tests/fixtures/root-desktop/** tests/fixtures/root-minimal/**
 # mirqab:covers-shared
 
@@ -29,12 +29,14 @@ texts() { q '[.. | objects | select(.visible) | .text? // empty] | join("|")'; }
 
 selftest root-desktop
 is "only the System page was built" '["system"]' "$(q '.pages | tojson')"
-# Overview, CPU, memory, pressure, two GPUs, temperatures, power.
-is "eight cards on the desktop" 8 "$(cards)"
+# Overview, CPU, memory, pressure, graphics (both GPUs), temperatures,
+# power.
+is "seven cards on the desktop" 7 "$(cards)"
 like "the thermal word" "$(texts)" "Cool"
 like "the memory line" "$(texts)" "17 GB of 67 GB"
 like "a temperature group" "$(texts)" "Tctl"
 like "both GPUs" "$(texts)" "AMD GPU (card1)"
+is "two GPU sections" 2 "$(q '[.. | objects | select(.visible and .classes == ["heading"] and ((.text // "") | test("\\(card")))] | length')"
 like "the helper line where package power is unknown" "$(texts)" "package power needs the root helper"
 is "graphs are present" 1 "$(q '[.. | objects | select(.type == "MirqabGraph")] | length > 0 | if . then 1 else 0 end')"
 

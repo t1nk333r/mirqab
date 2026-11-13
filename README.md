@@ -55,8 +55,16 @@ its tests need no display) and the window (`crates/mirqab-ui`).
   line, and a Settings button. Escape or `mirqab close` hides the window,
   and the process quits 60 s after it was last hidden. The `.desktop`
   entry opens a window.
-- Not built yet: the content of the tabs (each one is a placeholder until
-  its plan lands), the MCP server and the root helper. `mirqab-fand` only
+- Home and System work (plans 002 and 003). System shows CPU with its
+  cores, memory, pressure, the GPUs, temperatures and power, each with a
+  graph that updates every second while it is on screen and a range
+  picker for stored history. Every System card has "Pin to Home". Home
+  shows the pinned cards on two columns, starts with the overview, CPU
+  and memory, and reorders by dragging a card's handle or with Alt+Up and
+  Alt+Down. The window opens on Home; `window.rememberTab` reopens the
+  last tab instead.
+- Not built yet: the other tabs (each one is a placeholder until its plan
+  lands), the MCP server and the root helper. `mirqab-fand` only
   prints its version.
 
 The config is `~/.config/mirqab/config.json` (under `$XDG_CONFIG_HOME` when
@@ -107,6 +115,16 @@ tested on an Arch-based system; other distributions are untested.
 - English only for now.
 
 ## Try it
+
+Build from source on an Arch-based system. The interface draws its icons
+with Symbols Nerd Font (`ttf-nerd-fonts-symbols`):
+
+```sh
+sudo pacman -S --needed base-devel rust pkgconf gtk4 libadwaita gtk4-layer-shell sqlite ttf-nerd-fonts-symbols
+git clone https://github.com/t1nk333r/mirqab && cd mirqab
+cargo build --release --locked
+sudo install -m755 target/release/mirqab target/release/mirqab-ui /usr/bin/
+```
 
 Run the daemon in one shell. It stays in the foreground and stops on
 Ctrl-C. It needs `XDG_RUNTIME_DIR`, which a login session sets, and it

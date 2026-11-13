@@ -2,15 +2,19 @@
 //! user/system/iowait legend, clock and governor, and the cores (plan 002).
 
 use crate::app::Ctx;
+use crate::tabs::CardWidget;
 use crate::tabs::system::cores_grid::CoresGrid;
 use crate::tabs::system::graph_card::GraphCard;
+use crate::widgets::card::Card;
 use gtk::prelude::*;
 use mirqab_proto::strings;
 use mirqab_view::format;
 use mirqab_view::tabs::system::{CPU_GRAPH, CpuCard as View};
-use std::rc::Rc;
+use serde_json::Value;
+use std::rc::{Rc, Weak};
 
 pub struct CpuCard {
+    ctx: Weak<Ctx>,
     pub graph: Rc<GraphCard>,
     percent: gtk::Label,
     legend: gtk::Label,
@@ -19,13 +23,14 @@ pub struct CpuCard {
 }
 
 impl CpuCard {
-    pub fn new(ctx: &Rc<Ctx>) -> CpuCard {
+    pub fn new(ctx: &Rc<Ctx>, compact: bool) -> CpuCard {
         let graph = GraphCard::new(
             ctx,
             strings::SYSTEM_CPU,
-            "system.cpu",
+            Some("system.cpu"),
             CPU_GRAPH,
             Rc::new(format::percent),
+            compact,
         );
         let percent = gtk::Label::new(None);
         percent.add_css_class("title-1");
@@ -44,6 +49,7 @@ impl CpuCard {
         graph.card.append(&clock);
         graph.card.append(&cores.root);
         CpuCard {
+            ctx: Rc::downgrade(ctx),
             graph,
             percent,
             legend,
@@ -52,7 +58,7 @@ impl CpuCard {
         }
     }
 
-    pub fn update(&self, v: &View) {
+    fn show(&self, v: &View) {
         self.percent.set_text(&v.percent);
         self.legend.set_text(&v.legend.join("  "));
         let mut clock: Vec<&str> = Vec::new();
@@ -64,5 +70,21 @@ impl CpuCard {
         }
         self.clock.set_text(&clock.join(" \u{b7} "));
         self.cores.update(&v.core_groups);
+    }
+}
+
+impl CardWidget for CpuCard {
+    fn card(&self) -> &Card {
+        &self.graph.card
+    }
+
+    fn update(&self, stream: &str, data: &Value) {
+        let Some(v) = super::view_of(&self.ctx, stream, data) else {
+            return;
+        };
+        self.graph.card.root.set_visible(v.cpu.is_some());
+        if let Some(c) = &v.cpu {
+            self.show(c);
+        }
     }
 }

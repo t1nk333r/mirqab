@@ -2,18 +2,21 @@
 //! critical temperature (plan 002).
 
 use crate::app::Ctx;
+use crate::tabs::CardWidget;
 use crate::tabs::system::graph_card::pinnable;
 use crate::widgets::card::Card;
 use crate::widgets::meter::Meter;
 use gtk::prelude::*;
 use mirqab_proto::strings;
 use mirqab_view::tabs::system::TempRow;
+use serde_json::Value;
 use std::cell::RefCell;
-use std::rc::Rc;
+use std::rc::{Rc, Weak};
 
 type Group = (String, Vec<TempRow>);
 
 pub struct TempsCard {
+    ctx: Weak<Ctx>,
     pub card: Card,
     list: gtk::Box,
     /// The rows' labels as built, to rebuild only when sensors change.
@@ -29,6 +32,7 @@ impl TempsCard {
         list.add_css_class("mirqab-card-body");
         card.append(&list);
         TempsCard {
+            ctx: Rc::downgrade(ctx),
             card,
             list,
             shape: RefCell::new(Vec::new()),
@@ -36,7 +40,7 @@ impl TempsCard {
         }
     }
 
-    pub fn update(&self, groups: &[Group]) {
+    fn show(&self, groups: &[Group]) {
         self.card.root.set_visible(!groups.is_empty());
         let shape: Vec<(String, Vec<String>)> = groups
             .iter()
@@ -84,5 +88,17 @@ impl TempsCard {
             }
         }
         *self.rows.borrow_mut() = built;
+    }
+}
+
+impl CardWidget for TempsCard {
+    fn card(&self) -> &Card {
+        &self.card
+    }
+
+    fn update(&self, stream: &str, data: &Value) {
+        if let Some(v) = super::view_of(&self.ctx, stream, data) {
+            self.show(&v.temps);
+        }
     }
 }

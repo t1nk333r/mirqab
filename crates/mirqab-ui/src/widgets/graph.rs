@@ -52,6 +52,8 @@ pub struct State {
     pub handle: Option<Box<dyn Any>>,
     pub name: String,
     pub format: Option<Format>,
+    /// Shorter, for a card on Home (plan 003).
+    pub compact: bool,
 }
 
 impl Default for State {
@@ -68,6 +70,7 @@ impl Default for State {
             handle: None,
             name: String::new(),
             format: None,
+            compact: false,
         }
     }
 }
@@ -103,6 +106,7 @@ mod imp {
             let e = em(&*self.obj());
             match orientation {
                 gtk::Orientation::Horizontal => ((e * 10.0) as i32, (e * 24.0) as i32, -1, -1),
+                _ if self.state.borrow().compact => ((e * 2.5) as i32, (e * 3.5) as i32, -1, -1),
                 _ => ((e * 4.0) as i32, (e * 6.0) as i32, -1, -1),
             }
         }
@@ -234,6 +238,11 @@ impl Graph {
         }
         self.describe();
         self.queue_draw();
+    }
+
+    pub fn set_compact(&self, compact: bool) {
+        self.imp().state.borrow_mut().compact = compact;
+        self.queue_resize();
     }
 
     pub fn set_scale(&self, scale: Scale) {

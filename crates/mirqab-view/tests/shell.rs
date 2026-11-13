@@ -142,25 +142,14 @@ fn glyphs_are_unique_and_private_use() {
 
 #[test]
 fn pinned_cards_skip_unknown_ids() {
-    static TEST_CARDS: &[cards::Card] = &[
-        cards::Card {
-            id: "system.cpu",
-            tab: "system",
-            stream: "system",
-        },
-        cards::Card {
-            id: "system.mem",
-            tab: "system",
-            stream: "system",
-        },
-    ];
-    let got = cards::pinned(TEST_CARDS, &strings(&["system.mem", "gone", "system.cpu"]));
+    let got = cards::pinned(&strings(&["system.memory", "gone", "system.cpu"]));
     let ids: Vec<&str> = got.iter().map(|c| c.id).collect();
-    assert_eq!(ids, ["system.mem", "system.cpu"]);
+    assert_eq!(ids, ["system.memory", "system.cpu"]);
     assert_eq!(cards::find("system.cpu").map(|c| c.tab), Some("system"));
     assert!(cards::find("nope").is_none());
-    let mut ids: Vec<&str> = cards::CARDS.iter().map(|c| c.id).collect();
+    let mut ids: Vec<&str> = cards::all().map(|c| c.id).collect();
+    let n = ids.len();
     ids.sort();
     ids.dedup();
-    assert_eq!(ids.len(), cards::CARDS.len(), "card ids are unique");
+    assert_eq!(ids.len(), n, "card ids are unique");
 }

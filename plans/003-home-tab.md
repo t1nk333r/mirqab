@@ -8,7 +8,9 @@
 - **Depends on**: 001, 002
 - **Category**: tab
 - **Planned at**: 2026-11-13, from the owner
-- **State**: PLANNED
+- **State**: DONE (2026-11-13). 125 Rust tests and 123 shell checks in
+  the affected suites (`test-rust.sh` and the four `test-ui-*.sh`) pass.
+  M1 is complete with this plan.
 
 ## Problem
 
@@ -113,6 +115,41 @@ No new fixture tree.
 4. M1 as a whole: on a clean Arch container, building from source,
    starting the socket and running `mirqab open` shows Home and System
    working. The exact commands go in `README.md`.
+
+## As built
+
+Where it differs from the plan (2026-11-13):
+
+- The registry entry is `cards::Card { id, tab, streams, size }`; the
+  title stays with the widget, since the strings module is the only place
+  for text. The widget table is `tabs::card(id, ctx, compact)` with
+  `CARD_IDS`; a unit test in `crates/mirqab-ui/src/tabs/mod.rs` checks it
+  against `cards::all()`.
+- Each card is a `CardWidget` (`card()`, `update(stream, data)`) and
+  reads the event itself, so the System page and Home feed their cards the
+  same way. The System page builds its cards from `system::CARDS` through
+  the same table.
+- The GPUs are one card, "Graphics", with a section per GPU and one range
+  picker for all of them, so `system.gpu` pins every GPU at once. Plan 002
+  had one card per GPU.
+- Seeding happens when the first config arrives from a daemon
+  (`Ctx::seed_home`), not when Home is built, so a first run that opens on
+  another tab is seeded too. The seed order is overview, CPU, memory.
+- Reordering: a drag handle (`md-drag_vertical`) shown on hover or focus
+  and dropped onto another card (`home::dropped`), and Alt+Up / Alt+Down
+  anywhere inside a card (`home::moved`); the moved card keeps focus after
+  the rebuild. A rebuild keeps the widgets of cards that stay pinned.
+- `window.rememberTab` needs the last tab across restarts of the
+  interface, which quits 60 s after it is hidden, so the config gains
+  `window.lastTab`, written only while `rememberTab` is true.
+- `--selftest` now builds its page once the config is known, as a real
+  open does, and the dump's `visible` is false under a hidden parent
+  (Home's hidden empty state counted as shown).
+- The config test is in `crates/mirqab-core/src/config.rs`'s own tests,
+  beside the other config tests, not in `crates/mirqab-core/tests/`.
+- Not automated: "with Home hidden and System shown, the daemon still has
+  exactly one `system` subscriber". The selftest builds one page per run;
+  Home drops its subscriptions on unmap like the System page does.
 
 ## Checklist
 

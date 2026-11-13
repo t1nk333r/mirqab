@@ -2,15 +2,19 @@
 //! free, its graph, and swap, compressed swap and paging lines (plan 002).
 
 use crate::app::Ctx;
+use crate::tabs::CardWidget;
 use crate::tabs::system::graph_card::GraphCard;
+use crate::widgets::card::Card;
 use crate::widgets::meter::Meter;
 use gtk::prelude::*;
 use mirqab_proto::strings;
 use mirqab_view::format;
 use mirqab_view::tabs::system::{MEMORY_GRAPH, MemoryCard as View};
-use std::rc::Rc;
+use serde_json::Value;
+use std::rc::{Rc, Weak};
 
 pub struct MemoryCard {
+    ctx: Weak<Ctx>,
     pub graph: Rc<GraphCard>,
     total: gtk::Label,
     used: Meter,
@@ -20,13 +24,14 @@ pub struct MemoryCard {
 }
 
 impl MemoryCard {
-    pub fn new(ctx: &Rc<Ctx>) -> MemoryCard {
+    pub fn new(ctx: &Rc<Ctx>, compact: bool) -> MemoryCard {
         let graph = GraphCard::new(
             ctx,
             strings::SYSTEM_MEMORY,
-            "system.memory",
+            Some("system.memory"),
             MEMORY_GRAPH,
             Rc::new(|b| format::bytes(b.max(0.0) as u64)),
+            compact,
         );
         let total = gtk::Label::new(None);
         total.add_css_class("title-2");
@@ -52,6 +57,7 @@ impl MemoryCard {
         graph.card.append(&legend);
         graph.card.append(&lines);
         MemoryCard {
+            ctx: Rc::downgrade(ctx),
             graph,
             total,
             used,
@@ -61,7 +67,7 @@ impl MemoryCard {
         }
     }
 
-    pub fn update(&self, v: &View) {
+    fn show(&self, v: &View) {
         self.total.set_text(&v.used_of_total);
         self.used.set_fraction(v.split.used, &v.legend[0]);
         self.cache.set_fraction(v.split.cache, &v.legend[1]);
@@ -72,5 +78,21 @@ impl MemoryCard {
             .collect();
         self.lines.set_text(&lines.join("\n"));
         self.lines.set_visible(!lines.is_empty());
+    }
+}
+
+impl CardWidget for MemoryCard {
+    fn card(&self) -> &Card {
+        &self.graph.card
+    }
+
+    fn update(&self, stream: &str, data: &Value) {
+        let Some(v) = super::view_of(&self.ctx, stream, data) else {
+            return;
+        };
+        self.graph.card.root.set_visible(v.memory.is_some());
+        if let Some(m) = &v.memory {
+            self.show(m);
+        }
     }
 }

@@ -23,7 +23,7 @@ is "Home's tile is active" Home "$(q '[.. | objects | select((.classes // []) | 
 like "the footer shows the cost" "$(q '[.. | objects | select((.classes // []) | index("mirqab-cost"))][0].text')" "self "
 is "the footer shows the machine line" "Example Desktop · up 1h 0m" "$(q '[.. | objects | select((.classes // []) | index("mirqab-machine"))][0].text')"
 is "the page slot holds one page" 1 "$(q '[.. | objects | select((.classes // []) | index("mirqab-page"))] | length')"
-like "Home's placeholder names its plan" "$(q '[.. | objects | .text? // empty] | join("|")')" "Plan 003 fills this tab."
+like "Home shows its seeded cards" "$(q '[.. | objects | select(.visible) | .text? // empty] | join("|")')" "Overview"
 is "no tile tooltip is missing" 0 "$(q '[.. | objects | select((.classes // []) | index("mirqab-tile")) | select(.tooltip == null)] | length')"
 
 capture timeout 20 "$BIN/mirqab-ui" --socket "$MIRQAB_SOCKET" --selftest nonsense

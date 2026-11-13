@@ -274,6 +274,9 @@ pub const CLOSE: &str = "Close";
 pub const RANGE: &str = "Range";
 pub const PIN_TO_HOME: &str = "Pin to Home";
 pub const UNPIN_FROM_HOME: &str = "Unpin from Home";
+pub const DRAG_TO_REORDER: &str = "Drag to reorder (Alt+Up, Alt+Down)";
+pub const HOME_EMPTY: &str = "Nothing is pinned. Pin a card from its tab to see it here.";
+pub const HOME_GO_SYSTEM: &str = "Open System";
 pub const CANCEL: &str = "Cancel";
 pub const CONFIRM: &str = "Go ahead";
 pub const SIDEBAR: &str = "Tabs";
@@ -523,6 +526,7 @@ pub const SYSTEM_FREE: &str = "free";
 pub const SYSTEM_PACKAGE: &str = "Package";
 pub const SYSTEM_BATTERY: &str = "Battery";
 pub const SYSTEM_SUSPENDED: &str = "Suspended; not woken to read it";
+pub const SYSTEM_GRAPHICS: &str = "Graphics";
 pub const SYSTEM_VRAM: &str = "VRAM";
 pub const SYSTEM_BUSY: &str = "Busy";
 

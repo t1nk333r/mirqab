@@ -220,10 +220,22 @@ impl Ctx {
         let mode = mode
             .or_else(|| self.window().filter(|w| w.is_visible()).map(|w| w.mode))
             .unwrap_or(self.config.borrow().mode);
-        let tab = tab
-            .filter(|t| *t == "settings" || shell::find(t).is_some())
-            .map(str::to_string)
-            .unwrap_or_else(|| self.current_tab());
+        let valid = |t: &&str| *t == "settings" || shell::find(t).is_some();
+        // No tab: an open window stays where it is; otherwise Home, or the
+        // last tab with `window.rememberTab` (plan 003).
+        let tab = tab.filter(valid).map(str::to_string).unwrap_or_else(|| {
+            let cfg = self.config.borrow();
+            if self.window().is_some_and(|w| w.is_visible()) {
+                self.current_tab()
+            } else if cfg.remember_tab {
+                cfg.last_tab
+                    .clone()
+                    .filter(|t| valid(&t.as_str()))
+                    .unwrap_or_else(|| self.current_tab())
+            } else {
+                shell::DEFAULT_TAB.to_string()
+            }
+        });
         let reuse = self
             .window()
             .filter(|w| w.mode == mode || (mode == Mode::Popover && !crate::window::layer_shell()));
@@ -252,6 +264,17 @@ impl Ctx {
         };
         w.show_tab(self, &tab);
         w.present(self);
+        let remember = {
+            let mut cfg = self.config.borrow_mut();
+            let changed = cfg.remember_tab && cfg.last_tab.as_deref() != Some(tab.as_str());
+            if changed {
+                cfg.last_tab = Some(tab.clone());
+            }
+            changed
+        };
+        if remember {
+            self.set_setting("window.lastTab", json!(tab));
+        }
         // Last: replacing a window may have started the exit timer.
         if let Some(id) = self.exit_timer.borrow_mut().take() {
             id.remove();
@@ -352,6 +375,7 @@ impl Ctx {
             old.scheme != cfg.scheme || old.follow != cfg.follow
         };
         *self.config.borrow_mut() = cfg;
+        self.seed_home();
         let cfg = self.config.borrow().clone();
         if changed_style {
             self.style
@@ -367,6 +391,26 @@ impl Ctx {
             }
         }
         self.config_changed();
+    }
+
+    /// A first run pins Home's seed cards, once (plan 003). Only against a
+    /// daemon: the defaults used while disconnected are not the user's.
+    fn seed_home(self: &Rc<Self>) {
+        if !self.client.connected() {
+            return;
+        }
+        let seed = {
+            let cfg = self.config.borrow();
+            mirqab_view::tabs::home::seed(&cfg.pinned, cfg.seeded)
+        };
+        let Some(seed) = seed else { return };
+        {
+            let mut cfg = self.config.borrow_mut();
+            cfg.pinned = seed.clone();
+            cfg.seeded = true;
+        }
+        self.set_setting("home.pinned", json!(seed));
+        self.set_setting("home.seeded", json!(true));
     }
 
     pub fn refresh_status(self: &Rc<Self>) {

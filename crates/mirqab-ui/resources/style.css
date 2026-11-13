@@ -92,3 +92,18 @@ window.mirqab.popover {
 .mirqab-header {
   border-spacing: var(--mirqab-space-2);
 }
+
+.mirqab-page-column,
+.mirqab-home-grid {
+  border-spacing: var(--mirqab-space-3);
+}
+
+/* Home's drag handle shows on hover or focus only (plan 003). */
+.mirqab-drag-handle {
+  opacity: 0;
+}
+
+.mirqab-card:hover .mirqab-drag-handle,
+.mirqab-card:focus-within .mirqab-drag-handle {
+  opacity: 1;
+}
