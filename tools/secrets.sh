@@ -8,6 +8,9 @@
 #      city, token shapes, home paths, personal e-mail addresses, private keys,
 #      and the literal strings of tools/secrets-deny.txt plus the local file
 #      named by MIRQAB_SECRETS_DENY (a machine's own hostnames).
+# The history scan skips the commits tools/secrets-allow.txt lists, each with
+# its reason: commits already pushed whose matches were reviewed and found
+# synthetic. A full 40-character hash per line; nothing else is skippable.
 # GITLEAKS overrides the binary. Exit 1 on any finding.
 #
 # Adapted from haseen tools/secrets.sh (MIT, (c) 2026 t1nk33r; NOTICE.md).
@@ -29,7 +32,6 @@ fi
 # report LABEL — print matches read from stdin under LABEL. It runs at the
 # end of a pipeline, in a subshell, so a finding is recorded in a file.
 found="$(mktemp)"
-trap 'rm -f -- "$found"' EXIT
 report() {
     local hits
     hits="$(sed '/^$/d')"
@@ -39,12 +41,24 @@ report() {
     echo "$1" >>"$found"
 }
 
-# scan ERE — matches in tracked files and in lines added anywhere in history.
-# This file and the deny list are excluded: they hold the patterns themselves.
+# Every line added anywhere in history, read once, outside the allowed
+# commits. This file, the deny list and the allow list are excluded: they
+# hold the patterns and hashes themselves.
+allow="$(sed -n 's/^\([0-9a-f]\{40\}\)\([[:space:]].*\)\{0,1\}$/\1/p' tools/secrets-allow.txt 2>/dev/null || true)"
+added="$(mktemp)"
+trap 'rm -f -- "$found" "$added"' EXIT
+git log -p --format='@@commit %H' "${REFS[@]}" -- . \
+    ':!tools/secrets.sh' ':!tools/secrets-deny.txt' ':!tools/secrets-allow.txt' |
+    awk -v allow="$allow" '
+        BEGIN { n = split(allow, a, "\n"); for (i = 1; i <= n; i++) ok[a[i]] = 1 }
+        /^@@commit / { skip = ($2 in ok); next }
+        !skip && /^\+/ && !/^\+\+\+ / { print }
+    ' >"$added"
+
+# scan ERE — matches in tracked files and in lines added in history.
 scan() {
-    git grep -nIE -e "$1" -- . ':!tools/secrets.sh' ':!tools/secrets-deny.txt' || true
-    git log -p "${REFS[@]}" -- . ':!tools/secrets.sh' ':!tools/secrets-deny.txt' |
-        grep -E '^\+' | grep -E -e "$1" || true
+    git grep -nIE -e "$1" -- . ':!tools/secrets.sh' ':!tools/secrets-deny.txt' ':!tools/secrets-allow.txt' || true
+    grep -E -e "$1" "$added" || true
 }
 
 patterns=(
@@ -67,8 +81,8 @@ done
 ipv4='\b([0-9]{1,3}\.){3}[0-9]{1,3}\b'
 allowed='^(192\.0\.2\.|198\.51\.100\.|203\.0\.113\.|127\.|0\.0\.0\.0$|255\.|1\.1\.1\.1$)'
 {
-    git grep -nIoE -e "$ipv4(/[0-9]+)?" -- . ':!tools/secrets.sh' || true
-    git log -p "${REFS[@]}" -- . ':!tools/secrets.sh' | grep -E '^\+' | grep -oE -e "$ipv4(/[0-9]+)?" || true
+    git grep -nIoE -e "$ipv4(/[0-9]+)?" -- . ':!tools/secrets.sh' ':!tools/secrets-allow.txt' || true
+    grep -oE -e "$ipv4(/[0-9]+)?" "$added" || true
 } | while IFS= read -r hit; do
     addr="${hit##*:}"
     host="${addr%/*}"
@@ -93,7 +107,7 @@ for f in "${deny_files[@]}"; do
         [[ -n $word && $word != '#'* ]] || continue
         {
             git grep -nIF -e "$word" -- . ':!tools/secrets-deny.txt' || true
-            git log -p "${REFS[@]}" -- . ':!tools/secrets-deny.txt' | grep -E '^\+' | grep -F -e "$word" || true
+            grep -F -e "$word" "$added" || true
         } | report "a denied string from $f"
     done <"$f"
 done

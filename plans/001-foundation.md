@@ -496,6 +496,15 @@ new). Deferred, each to the step that adds the code it guards:
 - Plan 017: the coordinate rule is case-sensitive and key-based
   (`Lat: 24.71361` passes).
 
+The first version of `tests/test-secrets.sh` wrote its sample addresses,
+MAC and coordinate out literally, and that commit (`e72bfef`) reached the
+pull request branch before the gate caught it: the push ran because the
+gate's status went through a pipe to `tail`. The values are synthetic.
+Rewriting the pushed branch was refused, so `tools/secrets.sh` gained
+`tools/secrets-allow.txt`: full hashes of reviewed commits whose history
+the scan skips, each with its reason. The test now builds its samples at
+run time, and the history is read once instead of once per pattern.
+
 ### Phase B — daemon and protocol (PR 2)
 
 12. `crates/mirqab-proto/src/{frame,code,stream,strings}.rs`: the frames
