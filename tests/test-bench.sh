@@ -8,7 +8,10 @@
 sandbox
 build_bins
 
-capture "$REPO/tools/bench-idle.sh" --bin "$BIN" --seconds 2
+# One clock tick (10 ms) over 2 s is 0.5 %, over the 0.3 % idle budget, so
+# the idle checks run 4 s (one tick is 0.25 %) and judge the better of two
+# runs: a single stray tick on a shared CI machine failed PR #12.
+capture "$REPO/tools/bench-idle.sh" --bin "$BIN" --seconds 4 --runs 2
 status_is "a short idle run is within budget" 0 "$STATUS"
 like "it prints the CPU share" "$OUTPUT" "no subscriber: cpu "
 like "and the verdict" "$OUTPUT" "within budget"
@@ -23,7 +26,7 @@ fi
 
 # With the tray registered on a private bus (plan 004).
 if command -v dbus-daemon >/dev/null 2>&1; then
-    capture "$REPO/tools/bench-idle.sh" --bin "$BIN" --seconds 2 --tray
+    capture "$REPO/tools/bench-idle.sh" --bin "$BIN" --seconds 4 --runs 2 --tray
     status_is "the tray on, the window closed: within budget" 0 "$STATUS"
     like "it measured the idle row" "$OUTPUT" "within budget"
 else
