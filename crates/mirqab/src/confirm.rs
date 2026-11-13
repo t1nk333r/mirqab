@@ -28,7 +28,7 @@ pub fn ask(would_do: &[String], yes: bool, dry_run: bool) -> Answer {
     }
     let stdin = std::io::stdin();
     if !stdin.is_terminal() {
-        eprintln!("{}", strings::CONFIRM_NEEDS_TERMINAL);
+        crate::out::err(strings::CONFIRM_NEEDS_TERMINAL);
         return Answer::No;
     }
     out::print(strings::CONFIRM_PROMPT);
@@ -37,7 +37,7 @@ pub fn ask(would_do: &[String], yes: bool, dry_run: bool) -> Answer {
     match reply.trim().to_ascii_lowercase().as_str() {
         "y" | "yes" => Answer::Go,
         _ => {
-            eprintln!("{}", strings::CONFIRM_DECLINED);
+            crate::out::err(strings::CONFIRM_DECLINED);
             Answer::No
         }
     }

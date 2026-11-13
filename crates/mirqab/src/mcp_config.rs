@@ -35,7 +35,7 @@ pub fn json_block() -> String {
 }
 
 fn usage(msg: &str) -> ExitCode {
-    eprintln!("{msg}");
+    crate::out::err(msg);
     ExitCode::from(EXIT_USAGE)
 }
 
@@ -68,7 +68,7 @@ pub fn run(args: Args) -> ExitCode {
         return ExitCode::SUCCESS;
     }
     let Some(argv) = argv else {
-        eprintln!("{}", strings::MCP_CONFIG_PRINT_ONLY);
+        crate::out::err(strings::MCP_CONFIG_PRINT_ONLY);
         return ExitCode::from(EXIT_FAILED);
     };
     match confirm::ask(&[argv.join(" ")], yes, dry_run) {
@@ -80,11 +80,11 @@ pub fn run(args: Args) -> ExitCode {
                 ExitCode::SUCCESS
             }
             Ok(out) => {
-                eprintln!("{}", strings::mcp_config_failed(out.stderr.trim()));
+                crate::out::err(&strings::mcp_config_failed(out.stderr.trim()));
                 ExitCode::from(EXIT_FAILED)
             }
             Err(e) => {
-                eprintln!("{}", strings::mcp_config_failed(&e.to_string()));
+                crate::out::err(&strings::mcp_config_failed(&e.to_string()));
                 ExitCode::from(EXIT_FAILED)
             }
         },

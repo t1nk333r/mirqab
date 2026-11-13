@@ -22,35 +22,35 @@ Prints the version, the socket, each stream's subscribers and interval, and what
 ## open
 
 ```
-mirqab open [TAB] [--window]
+mirqab open [TAB] [--window] [--dry-run]
 ```
 
-Shows the window, on TAB if given. --window opens a normal window instead of the popover.
+Shows the window, on TAB if given. --window opens a normal window instead of the popover. --dry-run prints what the daemon would do and changes nothing.
 
 ## toggle
 
 ```
-mirqab toggle [TAB]
+mirqab toggle [TAB] [--dry-run]
 ```
 
-Shows the window, or hides it if it is shown.
+Shows the window, or hides it if it is shown. --dry-run prints what the daemon would do and changes nothing.
 
 ## close
 
 ```
-mirqab close
+mirqab close [--dry-run]
 ```
 
-Hides the window.
+Hides the window. --dry-run prints what the daemon would do and changes nothing.
 
 ## history
 
 ```
-mirqab history SERIES... [--range R] [--json]
+mirqab history SERIES... [--range 1h|24h|7d|30d] [--json]
 mirqab history --list
 ```
 
-Prints the average and peak of each bucket of stored minutes. R is 1h (default), 24h, 7d or 30d. --list names the series history keeps.
+Prints the average and peak of each bucket of stored minutes. The range is 1h (default), 24h, 7d or 30d. --list names the series history keeps.
 
 ## load
 
@@ -100,7 +100,7 @@ Prints how to register `mirqab mcp` with CLIENT: the client's own command, or fo
 mirqab completions bash|zsh|fish
 ```
 
-Prints a completion script for the shell. For bash: mirqab completions bash > ~/.local/share/bash-completion/completions/mirqab
+Prints a completion script for the shell. For bash: `mirqab completions bash > ~/.local/share/bash-completion/completions/mirqab`. For zsh, write it to a file named `_mirqab` in a directory on `$fpath`, such as `~/.zfunc/_mirqab` with `fpath+=(~/.zfunc)` before `compinit`. For fish: `mirqab completions fish > ~/.config/fish/completions/mirqab.fish`.
 
 ## help
 
@@ -113,8 +113,8 @@ Prints this text, or one command's. --markdown prints every command as Markdown 
 
 ## Options for every command
 
-- `--socket PATH`: the daemon's socket (default $XDG_RUNTIME_DIR/mirqab/daemon.sock, or $MIRQAB_SOCKET)
-- `--help`: help for the command
-- `--version`: print the version
+- `--socket PATH`: the socket (default $MIRQAB_SOCKET, else $XDG_RUNTIME_DIR/mirqab/daemon.sock)
+- `-h, --help`: help for the command
+- `-V, --version`: print the version
 
-Exit codes: 0 done, 1 refused or failed, 2 no daemon, 3 needs confirmation (no terminal and no -y), 64 usage error.
+Exit codes: 0 done, 1 refused or failed, 2 no daemon, 3 not confirmed, 64 usage error.

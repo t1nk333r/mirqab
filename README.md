@@ -278,14 +278,16 @@ mirqab mcp-config claude
 ```
 
 Every command is described in `docs/cli.md` (made from `mirqab help
---markdown`). Shell completion: `mirqab completions bash` (or `zsh`,
-`fish`) prints a script, for example
+--markdown`). Shell completion: `mirqab completions bash|zsh|fish`
+prints a script. Install it where your shell looks:
 
 ```sh
 mirqab completions bash > ~/.local/share/bash-completion/completions/mirqab
+mirqab completions zsh > ~/.zfunc/_mirqab    # with fpath+=(~/.zfunc) before compinit
+mirqab completions fish > ~/.config/fish/completions/mirqab.fish
 ```
 
-Exit codes: 0 done, 1 refused or failed, 2 no daemon, 64 usage error.
+Exit codes: 0 done, 1 refused or failed, 2 no daemon, 3 not confirmed (see `mcp-config --write`), 64 usage error.
 
 ## Planned usage
 

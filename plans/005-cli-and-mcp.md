@@ -194,12 +194,27 @@ Part 1 (2026-11-14), where it differs from the plan:
   Rust toolchain to run the binary.
 - No colour is printed anywhere, so the `NO_COLOR` rule holds trivially;
   `tests/test-cli.sh` checks that piped output has no escape codes.
-- Every CLI line goes through `out::print`, which exits 0 when stdout is
-  gone: `println!` panicked on a closed pipe and the release profile
-  aborted (review of PR #10). The test hands mirqab a pipe whose reader is
-  already closed (`perl`), since Rust treats a closed stdout (EBADF) as
-  success. The daemon keeps `println!` for its one `ready` line: it must
-  not exit because a reader went away.
+- Every CLI line goes through `out.rs`: `println!` panicked on a closed
+  pipe and the release profile aborted (review of PR #10). A broken pipe
+  exits 0; any other failed write (a full disk under a redirect) prints a
+  message and exits 1, so a truncated file never looks like success;
+  stderr goes through `out::err`, which ignores a stderr that is gone
+  (review of PR #12). A `tools/lint.sh` rule bans `println!`, `print!`,
+  `eprintln!` and `eprint!` in `crates/mirqab/src` outside `out.rs`. The
+  test hands mirqab a pipe whose reader is already closed (`perl`), since
+  Rust treats a closed stdout (EBADF) as success, and writes to
+  `/dev/full`. The daemon's one `ready` line ignores a failed write: it
+  must not exit because no one reads its stdout.
+- The table has no separate flag list: completion reads each command's
+  flags and their values from its usage lines (`[--range 1h|24h|7d|30d]`
+  offers four words, `PATH` a file, `DIR` a directory), so the usage and
+  the completions cannot disagree (review of PR #12). The scripts find the
+  command as the first word that is not a flag or a flag's argument
+  (`mirqab --socket /x load`), and complete the shells after
+  `completions`, the commands after `help` and the items after `bar`.
+  fish uses `-x` on a flag with values: a plain `-r` also offered file
+  names. Each usage line carries its own summary; a line too wide to share
+  a row puts the summary under it.
 - **Unverified, resolved** (2026-11-14):
   - The newest MCP revision is 2026-07-28
     (https://modelcontextprotocol.io/specification, `schema.ts`

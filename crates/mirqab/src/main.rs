@@ -32,7 +32,7 @@ pub struct Args {
 }
 
 fn usage_error(msg: &str) -> ExitCode {
-    eprintln!("{msg}");
+    crate::out::err(msg);
     ExitCode::from(EXIT_USAGE)
 }
 
@@ -94,6 +94,7 @@ fn main() -> ExitCode {
                 out::print(&text);
                 ExitCode::SUCCESS
             }
+            None if topic.starts_with('-') => usage_error(&strings::unknown_option(&topic)),
             None => usage_error(&strings::unknown_command(&topic)),
         };
     }
@@ -107,6 +108,9 @@ fn main() -> ExitCode {
         "bar" => bar::run(args),
         // With no socket to name, the server still starts: each tool then
         // says there is no daemon, which the agent can tell the user.
+        "mcp" | "--mcp" if !args.rest.is_empty() => {
+            usage_error(&strings::unknown_option(&args.rest[0]))
+        }
         "mcp" | "--mcp" => mcp::run(
             &args
                 .socket
