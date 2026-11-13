@@ -19,13 +19,7 @@ pub struct PinnedCard {
 }
 
 impl PinnedCard {
-    /// `on_moved` runs with the card's id after Alt+Up or Alt+Down, so the
-    /// page can give it focus again once it is rebuilt.
-    pub fn new(
-        ctx: &Rc<Ctx>,
-        id: &'static str,
-        on_moved: Rc<dyn Fn(&'static str)>,
-    ) -> Option<PinnedCard> {
+    pub fn new(ctx: &Rc<Ctx>, id: &'static str) -> Option<PinnedCard> {
         let widget = tabs::card(id, ctx, true)?;
         let card = widget.card();
         card.root.set_focusable(true);
@@ -44,10 +38,13 @@ impl PinnedCard {
             let (Some(ctx), Ok(from)) = (weak.upgrade(), value.get::<String>()) else {
                 return false;
             };
-            if from == id {
+            let pinned = ctx.config.borrow().pinned.clone();
+            // Only another pinned card's id; anything else dropped here is
+            // not ours to write (review of PR #9).
+            if from == id || !pinned.contains(&from) {
                 return false;
             }
-            let list = home::dropped(&ctx.config.borrow().pinned, &from, id);
+            let list = home::dropped(&pinned, &from, id);
             ctx.set_setting("home.pinned", json!(list));
             true
         });
@@ -71,7 +68,6 @@ impl PinnedCard {
             let pinned = ctx.config.borrow().pinned.clone();
             let list = home::moved(&pinned, id, up);
             if list != pinned {
-                on_moved(id);
                 ctx.set_setting("home.pinned", json!(list));
             }
             glib::Propagation::Stop

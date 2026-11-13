@@ -399,18 +399,25 @@ impl Ctx {
         if !self.client.connected() {
             return;
         }
-        let seed = {
+        use mirqab_view::tabs::home;
+        let (seed, mark) = {
             let cfg = self.config.borrow();
-            mirqab_view::tabs::home::seed(&cfg.pinned, cfg.seeded)
+            (
+                home::seed(&cfg.pinned, cfg.seeded),
+                home::mark_seeded(&cfg.pinned, cfg.seeded),
+            )
         };
-        let Some(seed) = seed else { return };
-        {
-            let mut cfg = self.config.borrow_mut();
-            cfg.pinned = seed.clone();
-            cfg.seeded = true;
+        if seed.is_none() && !mark {
+            return;
         }
-        self.set_setting("home.pinned", json!(seed));
+        self.config.borrow_mut().seeded = true;
+        // Seeded first: a daemon gone between the two writes must not leave
+        // pins that a later emptying would refill (review of PR #9).
         self.set_setting("home.seeded", json!(true));
+        if let Some(seed) = seed {
+            self.config.borrow_mut().pinned = seed.clone();
+            self.set_setting("home.pinned", json!(seed));
+        }
     }
 
     pub fn refresh_status(self: &Rc<Self>) {

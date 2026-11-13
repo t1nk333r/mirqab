@@ -1,7 +1,8 @@
 //! The Home page (plan 003): the pinned cards on two columns, wide cards
 //! across both. It subscribes to the union of its cards' streams, and only
 //! while it is on screen; a config change rebuilds the grid and keeps the
-//! card widgets that stay pinned.
+//! card widgets that stay pinned, moved in place so their graphs stay
+//! mapped and keep their live history.
 
 use crate::app::Ctx;
 use crate::tabs::home::pinned_card::PinnedCard;
@@ -24,8 +25,37 @@ struct Page {
     subs: RefCell<Vec<Box<dyn Any>>>,
     mapped: Cell<bool>,
     first: Cell<bool>,
-    /// The card moved with the keyboard, to focus again after the rebuild.
-    refocus: Rc<Cell<Option<&'static str>>>,
+}
+
+/// Puts `items` on `grid` at (row, column, span), with the fewest changes:
+/// a child not in `items` is removed, a new one attached, and one already
+/// there moved through its layout child. Moving does not unparent, so the
+/// widget stays mapped (review of PR #9: removing and re-attaching every
+/// card unmapped each graph and cleared its live history).
+pub fn place(grid: &gtk::Grid, items: &[(gtk::Widget, (u32, u32, u32))]) {
+    let mut c = grid.first_child();
+    while let Some(child) = c {
+        c = child.next_sibling();
+        if !items.iter().any(|(w, _)| *w == child) {
+            grid.remove(&child);
+        }
+    }
+    let layout = grid.layout_manager();
+    for (w, (row, col, span)) in items {
+        if w.parent().as_ref() == Some(grid.upcast_ref()) {
+            if let Some(lc) = layout
+                .as_ref()
+                .map(|l| l.layout_child(w))
+                .and_then(|lc| lc.downcast::<gtk::GridLayoutChild>().ok())
+            {
+                lc.set_row(*row as i32);
+                lc.set_column(*col as i32);
+                lc.set_column_span(*span as i32);
+            }
+        } else {
+            grid.attach(w, *col as i32, *row as i32, *span as i32, 1);
+        }
+    }
 }
 
 impl Page {
@@ -52,36 +82,31 @@ impl Page {
             have.len() == ids.len() && have.iter().zip(&ids).all(|(c, id)| c.id == *id)
         };
         if !same {
-            while let Some(c) = self.grid.first_child() {
-                self.grid.remove(&c);
-            }
             let mut old = std::mem::take(&mut *self.cards.borrow_mut());
-            let refocus = Rc::clone(&self.refocus);
-            let on_moved: Rc<dyn Fn(&'static str)> = Rc::new(move |id| refocus.set(Some(id)));
             let mut built = Vec::new();
             for id in &ids {
                 let card = match old.iter().position(|c| c.id == *id) {
                     Some(i) => Some(old.remove(i)),
-                    None => PinnedCard::new(&ctx, id, Rc::clone(&on_moved)),
+                    None => PinnedCard::new(&ctx, id),
                 };
                 built.extend(card);
             }
             let shown: Vec<&cards::Card> = built.iter().filter_map(|c| cards::find(c.id)).collect();
-            for (c, (row, col, span)) in built.iter().zip(home::layout(&shown)) {
-                let w = &c.widget.card().root;
-                w.set_hexpand(true);
-                self.grid.attach(w, col as i32, row as i32, span as i32, 1);
-            }
+            let items: Vec<(gtk::Widget, (u32, u32, u32))> = built
+                .iter()
+                .zip(home::layout(&shown))
+                .map(|(c, at)| {
+                    let w = c.widget.card().root.clone();
+                    w.set_hexpand(true);
+                    (w.upcast(), at)
+                })
+                .collect();
+            place(&self.grid, &items);
             *self.cards.borrow_mut() = built;
         }
         let empty = self.cards.borrow().is_empty();
         self.empty.set_visible(empty);
         self.grid.set_visible(!empty);
-        if let Some(id) = self.refocus.take()
-            && let Some(c) = self.cards.borrow().iter().find(|c| c.id == id)
-        {
-            c.widget.card().root.grab_focus();
-        }
         let streams = home::streams(&wanted);
         if *self.streams.borrow() != streams {
             *self.streams.borrow_mut() = streams;
@@ -171,7 +196,6 @@ pub fn build(ctx: &Rc<Ctx>) -> gtk::Widget {
         subs: RefCell::new(Vec::new()),
         mapped: Cell::new(false),
         first: Cell::new(false),
-        refocus: Rc::new(Cell::new(None)),
     });
     page.rebuild();
 

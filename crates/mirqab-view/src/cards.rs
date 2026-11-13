@@ -33,7 +33,14 @@ pub fn find(id: &str) -> Option<&'static Card> {
 }
 
 /// The cards of `home.pinned` that exist, in the user's order. Unknown ids
-/// (a card a later version removed) are skipped, never an error.
+/// (a card a later version removed) are skipped, never an error; an id
+/// listed twice shows once, at its first place.
 pub fn pinned(ids: &[String]) -> Vec<&'static Card> {
-    ids.iter().filter_map(|id| find(id)).collect()
+    let mut out: Vec<&'static Card> = Vec::new();
+    for c in ids.iter().filter_map(|id| find(id)) {
+        if !out.iter().any(|o| o.id == c.id) {
+            out.push(c);
+        }
+    }
+    out
 }

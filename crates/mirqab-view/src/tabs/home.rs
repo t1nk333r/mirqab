@@ -12,6 +12,13 @@ pub fn seed(pinned: &[String], seeded: bool) -> Option<Vec<String>> {
     (!seeded && pinned.is_empty()).then(|| SEED.iter().map(|s| s.to_string()).collect())
 }
 
+/// Whether Home counts as seeded already: something is pinned (from a tab,
+/// before Home first opened) though the flag is unset. Otherwise emptying
+/// Home later would refill it (review of PR #9).
+pub fn mark_seeded(pinned: &[String], seeded: bool) -> bool {
+    !seeded && !pinned.is_empty()
+}
+
 /// `id` moved one place up (or down); unchanged at an end or when absent.
 pub fn moved(pinned: &[String], id: &str, up: bool) -> Vec<String> {
     let mut out = pinned.to_vec();

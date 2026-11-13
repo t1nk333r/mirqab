@@ -1,8 +1,8 @@
 //! `--selftest <tab>` (architecture §7.5, layer 3): window mode, build the
-//! page once the config is known, wait for the first event of the footer's `self` stream and for the
-//! page's first data (or 5 s),
-//! print the widget tree as JSON on stdout and exit 0; exit 1 with the
-//! reason on stderr when nothing arrived.
+//! page once the config is known, wait for the first event of the footer's
+//! `self` stream and for the page's first data (or 5 s), print the widget
+//! tree as JSON on stdout and exit 0; exit 1 with the reason on stderr when
+//! nothing arrived.
 
 use crate::app::Ctx;
 use gtk::glib;

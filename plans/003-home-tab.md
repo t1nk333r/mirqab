@@ -8,9 +8,12 @@
 - **Depends on**: 001, 002
 - **Category**: tab
 - **Planned at**: 2026-11-13, from the owner
-- **State**: DONE (2026-11-13). 125 Rust tests and 123 shell checks in
-  the affected suites (`test-rust.sh` and the four `test-ui-*.sh`) pass.
-  M1 is complete with this plan.
+- **State**: DONE (2026-11-13). Acceptance 1 to 3 are tested by
+  `tests/test-ui-home.sh` (seeded Home, pin and order stored in the
+  config, and no `system` subscriber after `close`). Acceptance 4 in part:
+  CI builds and tests from source in a clean `archlinux` container on every
+  push; showing the window there was not run (it has no display). M1 is
+  complete with this plan.
 
 ## Problem
 
@@ -147,16 +150,37 @@ Where it differs from the plan (2026-11-13):
   (Home's hidden empty state counted as shown).
 - The config test is in `crates/mirqab-core/src/config.rs`'s own tests,
   beside the other config tests, not in `crates/mirqab-core/tests/`.
-- Not automated: "with Home hidden and System shown, the daemon still has
-  exactly one `system` subscriber". The selftest builds one page per run;
-  Home drops its subscriptions on unmap like the System page does.
+- The pin control is not a `pinned` property set by the page: it reads
+  `home.pinned` at each press and follows every config change.
+
+From the review of PR #9 (2026-11-13):
+
+- A config change moves the cards that stay pinned through the grid's
+  layout children (`tabs::home::page::place`) instead of removing and
+  re-attaching every card, which unmapped each graph and cleared its live
+  history; a moved card keeps focus. A widget test checks that a swap and
+  an unpin leave the other graphs live with their points.
+- Something pinned from a tab before Home ever opened marks Home seeded
+  (`home::mark_seeded`), so emptying Home later never refills it; the
+  seeding writes `home.seeded` before `home.pinned`.
+- An id listed twice shows once. A drop is written only when the dropped
+  id is pinned.
+- `tests/test-ui-home.sh` checks the range pickers by their toggle buttons,
+  with System as the positive control, and the subscribers through
+  `mirqab status`: one while Home is shown, one with System shown instead,
+  none after `close`. The interface shares one daemon subscription per
+  stream among its pages, so "one" is what the daemon can tell; that Home
+  dropped its own handle is shown by the count reaching zero after
+  `close`.
 
 ## Checklist
 
-1. `crates/mirqab-view/src/cards.rs` (`CardSpec`, `all()`); `CARDS` in
+1. `crates/mirqab-view/src/cards.rs` (`CardSpec`, `all()`; built as
+   `Card`, see As built); `CARDS` in
    `crates/mirqab-view/src/tabs/system.rs`; the constructor table in
    `crates/mirqab-ui/src/tabs/mod.rs`; give each System card widget the
-   `compact` and `pinned` properties.
+   `compact` and `pinned` properties (built: `compact` at construction;
+   the pin control follows the config, see As built).
 2. `crates/mirqab-ui/src/widgets/card.rs`: the pin control, wired to
    `config.set`.
 3. `crates/mirqab-view/src/tabs/home.rs` (the view model and the tab's cards); `crates/mirqab-ui/src/tabs/home/{mod,page,pinned_card}.rs`.

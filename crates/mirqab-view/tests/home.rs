@@ -22,6 +22,10 @@ fn a_first_run_is_seeded_once() {
         "emptied by the user: stays empty"
     );
     assert_eq!(home::seed(&v(&["system.cpu"]), false), None);
+    // Pinned from a tab before Home opened: marked seeded, not seeded.
+    assert!(home::mark_seeded(&v(&["system.cpu"]), false));
+    assert!(!home::mark_seeded(&[], false));
+    assert!(!home::mark_seeded(&v(&["system.cpu"]), true));
     for id in home::SEED {
         assert!(cards::find(id).is_some(), "{id} is a card");
     }
@@ -66,6 +70,13 @@ fn unknown_and_unserved_cards_are_skipped_not_dropped() {
         "no system stream"
     );
     assert_eq!(home::streams(&shown), ["system"]);
+    let twice = cards::pinned(&v(&["system.cpu", "system.memory", "system.cpu"]));
+    let ids: Vec<&str> = twice.iter().map(|c| c.id).collect();
+    assert_eq!(
+        ids,
+        ["system.cpu", "system.memory"],
+        "a duplicate shows once"
+    );
     assert!(home::streams(&[]).is_empty());
 }
 
