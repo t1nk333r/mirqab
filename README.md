@@ -48,6 +48,7 @@ System) is done.
   `toggle [TAB]`, `close`, `history SERIES... [--range 1h|24h|7d|30d]
   [--json]`, `history --list`, `load [--json]` (CPU, load, memory, pressure
   and the thermal word), `sensors [--json]` (temperatures, GPUs and power),
+  `bar ITEM [--watch]` and `bar --list` (readings for a status bar),
   `help [COMMAND]`, `--help` and `--version`.
   Every command takes `--socket PATH`. `open`, `toggle` and `close` take
   `--dry-run`, which prints what the action would do.
@@ -210,6 +211,24 @@ Package power needs the root helper, which is a later plan. `sensors`
 says so only where the CPU's RAPL counter exists but cannot be read. A
 suspended GPU is reported as suspended, and nothing is read from it, so it
 is not woken.
+
+For a status bar, `mirqab bar ITEM` prints one reading as Waybar's JSON;
+`--watch` prints a line each time it changes, at most every 5 s (or
+`--interval SEC`, at least 2). Items: `cpu`, `mem`, `temp`, `gpu`, `load`
+and `combo` (the parts are the setting `bar.combo`). `--format plain`
+prints the text only. `contrib/waybar/README.md` has Waybar modules and
+`contrib/haseen/mirqab.bar/` a haseen bar widget.
+
+```sh
+mirqab bar combo --watch
+```
+
+To toggle the window from a key in Hyprland:
+
+```
+bind = SUPER, M, exec, mirqab toggle
+bind = SUPER SHIFT, M, exec, mirqab toggle system
+```
 
 Exit codes: 0 done, 1 refused or failed, 2 no daemon, 64 usage error.
 

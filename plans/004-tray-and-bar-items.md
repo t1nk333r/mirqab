@@ -10,7 +10,10 @@
 - **Depends on**: 001, 002
 - **Category**: integration
 - **Planned at**: 2026-11-13, from the owner
-- **State**: PLANNED
+- **State**: IN PROGRESS. Part 1 (`mirqab bar`, the haseen widget, the
+  Waybar example) implemented 2026-11-13; part 2 (the tray) next.
+- **Owner decisions** (2026-11-13): the tray uses `ksni` with `zbus` held
+  on 5.x; Unlicense goes on `cargo deny`'s allow-list for `ksni` only.
 
 ## Problem
 
@@ -188,6 +191,33 @@ machine with haseen and is not a CI gate here.
    `contrib/waybar/README.md`.
 6. Tests above; the `--tray` mode of `tools/bench-idle.sh`.
 7. README: tray, bar and keybinding examples for Hyprland.
+
+## As built
+
+Part 1 (2026-11-13), where it differs from the plan:
+
+- **Two pull requests.** Part 1 is `mirqab bar`, the haseen widget and the
+  Waybar example (checklist steps 4, 5, the bar half of 6 and 7); part 2
+  is the tray (steps 1 to 3 and the rest of 6).
+- The items are `crates/mirqab/src/bar/items.rs`, one function per item
+  from a `system` snapshot; `strings::BAR_ITEMS` is the table `--list`
+  prints. `temp` is the hottest CPU sensor, classed by the thermal word
+  (`cool`, `warm`, `hot`, `critical`); `gpu` the busiest awake GPU; a
+  reading with no value yet is `—`, class `unknown`. `combo` takes the
+  worst of its parts as `normal`, `high` or `critical` (`hot` counts as
+  high).
+- `bar.combo` is a config key (default `cpu`, `mem`, `temp`), validated
+  against the items; the CLI reads it with `config.get`.
+- `--watch` checks for a closed reader on every event (`poll` on stdout,
+  in `mirqab-core::sys`, the one module that may use `unsafe`), so a
+  reading that never changes cannot keep a dead bar's process alive.
+- Temperatures print in Celsius; `units.temperature` reaches the CLI with
+  plan 005.
+- The haseen widget validates with `haseen plugin validate` against
+  haseen's schema on the development machine; its one unmet requirement
+  there was `mirqab` not on `PATH` (not installed). `Widget.qml` passes
+  Qt 6's `qmllint` for syntax; haseen's own modules are not importable
+  outside haseen.
 
 ## Unverified
 

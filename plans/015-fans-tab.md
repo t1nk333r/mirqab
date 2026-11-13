@@ -198,6 +198,10 @@ has no `--root` string).
 
 ## Acceptance
 
+Owner decision (2026-11-13): this tab ships tested on fixtures and says
+so in its State line; the owner runs the hardware steps below on a
+suitable machine later, and they are recorded here when run.
+
 1. With the helper disabled, the GPU fan's speed shows and no control is
    offered; nothing runs as root.
 2. `mirqab helper enable --dry-run` changes nothing. Without `--dry-run`,

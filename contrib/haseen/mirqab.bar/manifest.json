@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 1,
+  "id": "mirqab.bar",
+  "name": "mirqab",
+  "version": "0.1.0",
+  "description": "mirqab's combo reading (CPU, memory, temperature by default) in the bar; a click toggles mirqab's window",
+  "kinds": ["bar-widget"],
+  "entry": {
+    "bar-widget": "Widget.qml"
+  },
+  "settings": {
+    "item": {
+      "type": "string",
+      "default": "combo",
+      "description": "The `mirqab bar` item to show (mirqab bar --list)"
+    },
+    "interval": {
+      "type": "integer",
+      "default": 5,
+      "description": "Seconds between readings; mirqab raises anything under 2"
+    }
+  },
+  "permissions": ["exec"],
+  "requires": {
+    "bins": ["mirqab"]
+  }
+}

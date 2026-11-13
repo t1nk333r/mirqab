@@ -1,5 +1,6 @@
 //! The few system calls std does not wrap: the peer's uid on a Unix socket,
-//! this process's uid, and adopting a socket systemd passed in. Each `unsafe`
+//! this process's uid, adopting a socket systemd passed in, and polling
+//! stdout for a closed reader. Each `unsafe`
 //! block is one libc call with its contract stated; nothing else in the
 //! daemon uses `unsafe` (CLAUDE.md "Style").
 #![allow(unsafe_code)]
@@ -68,4 +69,17 @@ pub fn listen_fd() -> Option<UnixListener> {
         std::env::remove_var("LISTEN_FDNAMES");
     }
     Some(listener)
+}
+
+/// Whether nobody reads stdout any more: the write end of a pipe whose
+/// reader closed reports an error on poll (`mirqab bar --watch`, plan 004).
+pub fn stdout_closed() -> bool {
+    let mut p = libc::pollfd {
+        fd: libc::STDOUT_FILENO,
+        events: 0,
+        revents: 0,
+    };
+    // SAFETY: one valid pollfd for the call's duration, a zero timeout.
+    let n = unsafe { libc::poll(&mut p, 1, 0) };
+    n > 0 && p.revents & (libc::POLLERR | libc::POLLHUP) != 0
 }

@@ -17,6 +17,8 @@ commands:
   history --list                        the series history keeps
   load [--json]                         CPU, load, memory, pressure and the thermal word
   sensors [--json]                      temperatures, GPUs and power
+  bar ITEM [--watch] [--interval SEC] [--format F]  one bar reading (F: waybar, plain, json)
+  bar --list                            the items `bar` knows
   help [COMMAND]                        this text, or one command's
 
 options for every command:
@@ -51,11 +53,17 @@ pub fn command_help(command: &str) -> Option<&'static str> {
         }
         "load" => {
             "usage: mirqab load [--json]\n\
-             CPU (averaged since the daemon's last minute), load averages, memory, swap, pressure and the thermal word.\n"
+             CPU (over the last seconds), load averages, memory, swap, pressure and the thermal word.\n"
         }
         "sensors" => {
             "usage: mirqab sensors [--json]\n\
              Every temperature sensor, each GPU, and package and battery power.\n"
+        }
+        "bar" => {
+            "usage: mirqab bar ITEM [--watch] [--interval SEC] [--format waybar|plain|json]\n       mirqab bar --list\n\
+             Prints one reading of ITEM for a status bar and exits. With --watch it prints a line each time the\n\
+             reading changes, at most once per interval (default 5 s, at least 2 s), until its output is closed.\n\
+             --format waybar (default) prints Waybar's JSON; plain the text only; json every field.\n"
         }
         "help" => "usage: mirqab help [COMMAND]\n",
         _ => return None,
@@ -507,6 +515,68 @@ pub fn power_line(package: Option<&str>, battery: Option<&str>, needs_helper: bo
     format!("{:<7} {}", "power", parts.join(", "))
 }
 
+// --- `mirqab bar` (plan 004) -------------------------------------------------
+
+/// The items `mirqab bar` serves, with a line each for `--list`.
+pub const BAR_ITEMS: &[(&str, &str)] = &[
+    ("cpu", "CPU busy percent"),
+    ("mem", "memory used, percent of total"),
+    (
+        "temp",
+        "the hottest CPU temperature, classed by the thermal word",
+    ),
+    ("gpu", "the busiest GPU's percent"),
+    ("load", "the one-minute load average"),
+    ("combo", "several items in one line (config bar.combo)"),
+];
+
+pub fn bar_unknown_item(item: &str) -> String {
+    format!("unknown bar item: {item} (mirqab bar --list names them)")
+}
+
+pub fn bar_bad_interval(v: &str) -> String {
+    format!("--interval takes whole seconds, not {v}")
+}
+
+pub fn bar_bad_format(v: &str) -> String {
+    format!("--format is waybar, plain or json, not {v}")
+}
+
+pub const BAR_NEEDS_ITEM: &str = "mirqab bar needs an item; mirqab bar --list names them";
+
+/// Bar texts: a whole percent, a temperature in degrees, a load average.
+pub fn bar_percent(p: f64) -> String {
+    format!("{}%", p.round() as i64)
+}
+
+pub fn bar_degrees(celsius: f64) -> String {
+    format!("{}\u{b0}", celsius.round() as i64)
+}
+
+pub fn bar_load(one: f64) -> String {
+    format!("{one:.1}")
+}
+
+pub fn bar_tip_cpu(busy: &str, user: &str, system: &str, iowait: &str) -> String {
+    format!("CPU {busy} (user {user}, system {system}, iowait {iowait})")
+}
+
+pub fn bar_tip_mem(used: &str, total: &str, available: &str) -> String {
+    format!("Memory {used} of {total}, {available} available")
+}
+
+pub fn bar_tip_temp(label: &str, temp: &str, word: &str) -> String {
+    format!("{label} {temp} ({word})")
+}
+
+pub fn bar_tip_gpu(name: &str, busy: &str) -> String {
+    format!("{name} {busy}")
+}
+
+pub fn bar_tip_load(one: f64, five: f64, fifteen: f64) -> String {
+    format!("Load {one:.2} {five:.2} {fifteen:.2}")
+}
+
 pub const PACKAGE_POWER_NEEDS_HELPER: &str = "package power needs the root helper (Fans tab)";
 pub const WATTS: &str = "W";
 
@@ -592,7 +662,8 @@ mod tests {
     #[test]
     fn every_command_in_the_usage_has_help() {
         for c in [
-            "daemon", "status", "open", "toggle", "close", "history", "load", "sensors", "help",
+            "daemon", "status", "open", "toggle", "close", "history", "load", "sensors", "bar",
+            "help",
         ] {
             assert!(
                 CLI_USAGE.contains(&format!("  {c}")),

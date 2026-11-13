@@ -2,6 +2,7 @@
 //! A hand-written argument parser keeps it small (plan 001, "Rejected":
 //! clap).
 
+mod bar;
 mod cli;
 mod daemon;
 mod elevate;
@@ -87,6 +88,7 @@ fn main() -> ExitCode {
         "status" | "open" | "toggle" | "close" | "history" | "load" | "sensors" => {
             cli::run(&command, args)
         }
+        "bar" => bar::run(args),
         other => usage_error(&strings::unknown_command(other)),
     }
 }
