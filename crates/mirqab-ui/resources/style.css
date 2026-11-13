@@ -1,0 +1,93 @@
+/* mirqab's stylesheet (architecture §7.3). libadwaita's style, recoloured,
+ * not replaced: rules here refer to variables only. Every variable's value
+ * comes from the token table (crates/mirqab-view/src/theme.rs), which the
+ * interface turns into a second stylesheet at a higher priority, with the
+ * user's theme.json and a followed token file on top. Sizes are in em.
+ *
+ * mirqab:tokens begin
+ * No colour is written in this file; the generated stylesheet sets them all.
+ * mirqab:tokens end
+ */
+
+window.mirqab {
+  background-color: var(--window-bg-color);
+  color: var(--window-fg-color);
+}
+
+window.mirqab.popover {
+  border-radius: var(--mirqab-radius-card);
+}
+
+.icon {
+  font-family: var(--mirqab-font-icon);
+  font-weight: normal;
+}
+
+.mirqab-sidebar {
+  background-color: var(--sidebar-bg-color);
+  color: var(--sidebar-fg-color);
+  min-width: var(--mirqab-sidebar-width);
+  padding: var(--mirqab-space-2);
+}
+
+.mirqab-tile {
+  border-radius: var(--mirqab-radius-tile);
+  padding: var(--mirqab-space-1);
+  min-width: 4em;
+  min-height: 0;
+}
+
+.mirqab-tile .icon {
+  font-size: 1.25em;
+}
+
+.mirqab-tile .caption {
+  font-size: 0.75em;
+}
+
+.mirqab-tile.active {
+  background-color: var(--accent-bg-color);
+  color: var(--accent-fg-color);
+}
+
+.mirqab-header {
+  padding: var(--mirqab-space-2) var(--mirqab-space-3);
+}
+
+.mirqab-page {
+  padding: 0 var(--mirqab-space-3) var(--mirqab-space-3);
+}
+
+.mirqab-footer {
+  padding: var(--mirqab-space-1) var(--mirqab-space-3);
+  border-top: 1px solid var(--mirqab-grid);
+}
+
+.mirqab-card {
+  border-radius: var(--mirqab-radius-card);
+  padding: var(--mirqab-space-3);
+}
+
+.mirqab-card-header {
+  margin-bottom: var(--mirqab-space-2);
+}
+
+.mirqab-badge {
+  background-color: var(--accent-bg-color);
+  color: var(--accent-fg-color);
+  border-radius: 1em;
+  padding: 0 0.4em;
+  font-size: 0.75em;
+}
+
+.mirqab-stat .value {
+  font-size: 1.3em;
+}
+
+/* Box spacing comes from here, never from a pixel count in Rust. */
+.mirqab-card-header,
+.mirqab-card-body,
+.mirqab-footer,
+.mirqab-header {
+  border-spacing: var(--mirqab-space-2);
+}

@@ -54,7 +54,8 @@ status_is "open --dry-run exits 0 without an interface" 0 "$STATUS"
 is "open --dry-run says what it would do" '{"event":"show","mode":"popover","tab":"system"}' "$(jq -c '.wouldDo[0]' <<<"$OUTPUT")"
 capture "$BIN/mirqab" open
 status_is "open without an interface exits 1" 1 "$STATUS"
-like "and says why" "$OUTPUT" "no interface is running"
+like "and says why" "$OUTPUT" "could not start mirqab-ui.service"
+like "through the stubbed systemctl, never the real one" "$OUTPUT" "STUB-CALLED: systemctl --user start mirqab-ui.service"
 
 # History: the file is made in the sandbox's state dir; no minute has passed.
 like "status reports history on" "$("$BIN/mirqab" status --json | jq -c .history)" '"enabled":true'

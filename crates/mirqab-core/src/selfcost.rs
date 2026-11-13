@@ -45,6 +45,22 @@ pub fn cpu_ticks(stat: &str) -> Option<u64> {
     Some(utime + stime)
 }
 
+/// The first `model name` in `/proc/cpuinfo`, trimmed.
+pub fn cpu_model(cpuinfo: &str) -> Option<String> {
+    cpuinfo
+        .lines()
+        .filter_map(|l| l.split_once(':'))
+        .find(|(k, _)| k.trim() == "model name")
+        .map(|(_, v)| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+}
+
+/// Whole seconds of uptime, the first field of `/proc/uptime`.
+pub fn uptime_sec(uptime: &str) -> Option<u64> {
+    let secs: f64 = uptime.split_whitespace().next()?.parse().ok()?;
+    (secs.is_finite() && secs >= 0.0).then_some(secs as u64)
+}
+
 /// (VmRSS in bytes, Threads) from `status`.
 pub fn rss_and_threads(status: &str) -> (u64, u32) {
     let mut rss = 0;

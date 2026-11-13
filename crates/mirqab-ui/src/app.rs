@@ -1,0 +1,309 @@
+//! Start-up and the life of the process (plan 001, "Interface shell"): the
+//! stylesheet and colour scheme, the client, the `ui` events (show, hide,
+//! toggle, config-changed), and the exit timer: 60 s after the window hides
+//! the process quits (architecture §4).
+
+use crate::client::{Client, Subscription};
+use crate::style::Style;
+use crate::window::Window;
+use adw::prelude::*;
+use gtk::glib;
+use mirqab_proto::stream::{self, UiEvent};
+use mirqab_proto::strings;
+use mirqab_view::config::{Mode, UiConfig};
+use mirqab_view::shell::{self, TABS, Tile};
+use serde_json::{Value, json};
+use std::cell::RefCell;
+use std::path::PathBuf;
+use std::rc::Rc;
+use std::time::Duration;
+
+pub const APP_ID: &str = "io.github.t1nk333r.mirqab";
+
+/// What the command line asked for.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Opts {
+    pub socket: Option<PathBuf>,
+    pub window: bool,
+    pub tab: Option<String>,
+    pub background: bool,
+    pub selftest: Option<String>,
+    pub help: bool,
+}
+
+impl Opts {
+    pub fn parse(args: &[String]) -> Result<Opts, String> {
+        let mut o = Opts::default();
+        let mut it = args.iter();
+        while let Some(a) = it.next() {
+            let mut value = |name: &str| {
+                it.next()
+                    .cloned()
+                    .ok_or_else(|| strings::missing_value(name))
+            };
+            match a.as_str() {
+                "--socket" => o.socket = Some(PathBuf::from(value("--socket")?)),
+                "--window" => o.window = true,
+                "--tab" => o.tab = Some(value("--tab")?),
+                "--background" => o.background = true,
+                "--selftest" => o.selftest = Some(value("--selftest")?),
+                "--help" | "-h" => o.help = true,
+                other => return Err(strings::ui_unknown_option(other)),
+            }
+        }
+        Ok(o)
+    }
+}
+
+/// Shared by the window, the pages and the event handlers.
+pub struct Ctx {
+    pub app: adw::Application,
+    pub client: Client,
+    pub style: Rc<Style>,
+    pub config: RefCell<UiConfig>,
+    /// The last `status` reply, for Settings' daemon section.
+    pub status: RefCell<Value>,
+    window: RefCell<Option<Rc<Window>>>,
+    exit_timer: RefCell<Option<glib::SourceId>>,
+    hold: RefCell<Option<gtk::gio::ApplicationHoldGuard>>,
+    ui_sub: RefCell<Option<Subscription>>,
+    config_listeners: RefCell<Vec<Box<dyn Fn() -> bool>>>,
+}
+
+/// The exit delay: 60 s, or `MIRQAB_UI_EXIT_MS` when `MIRQAB_TEST=1`.
+fn exit_delay() -> Duration {
+    if std::env::var("MIRQAB_TEST").as_deref() == Ok("1")
+        && let Some(ms) = std::env::var("MIRQAB_UI_EXIT_MS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+    {
+        return Duration::from_millis(ms);
+    }
+    Duration::from_secs(60)
+}
+
+impl Ctx {
+    pub fn new(app: &adw::Application, socket: PathBuf) -> Rc<Ctx> {
+        let display = gtk::gdk::Display::default().expect("a display");
+        let style = Style::install(&display);
+        let ctx = Rc::new(Ctx {
+            app: app.clone(),
+            client: Client::new(socket),
+            style,
+            config: RefCell::new(UiConfig::default()),
+            status: RefCell::new(Value::Null),
+            window: RefCell::new(None),
+            exit_timer: RefCell::new(None),
+            hold: RefCell::new(Some(app.hold())),
+            ui_sub: RefCell::new(None),
+            config_listeners: RefCell::new(Vec::new()),
+        });
+        let weak = Rc::downgrade(&ctx);
+        ctx.client.on_state(move |client| {
+            let Some(ctx) = weak.upgrade() else { return };
+            if client.connected() {
+                ctx.refresh_config();
+                ctx.refresh_status();
+            }
+            if let Some(w) = ctx.window() {
+                w.footer.set_notice(&if client.connected() {
+                    String::new()
+                } else {
+                    strings::reconnecting(client.retry_in())
+                });
+                w.refresh_tiles(&ctx);
+            }
+        });
+        let weak = Rc::downgrade(&ctx);
+        let sub = ctx.client.subscribe_with(
+            stream::UI,
+            0,
+            false,
+            json!({"role": "ui", "pid": std::process::id()}),
+            Rc::new(move |data: &Value| {
+                let Some(ctx) = weak.upgrade() else { return };
+                if let Ok(ev) = serde_json::from_value::<UiEvent>(data.clone()) {
+                    ctx.event(ev);
+                }
+            }),
+        );
+        *ctx.ui_sub.borrow_mut() = Some(sub);
+        ctx
+    }
+
+    fn event(self: &Rc<Self>, ev: UiEvent) {
+        match ev {
+            UiEvent::Show { tab, mode } => {
+                self.show(tab.as_deref(), mode.as_deref().and_then(Mode::parse));
+            }
+            UiEvent::Hide => self.hide(),
+            UiEvent::Toggle { tab } => {
+                if self.window().is_some_and(|w| w.is_visible()) {
+                    self.hide();
+                } else {
+                    self.show(tab.as_deref(), None);
+                }
+            }
+            UiEvent::ConfigChanged => self.refresh_config(),
+        }
+    }
+
+    pub fn window(&self) -> Option<Rc<Window>> {
+        self.window.borrow().clone()
+    }
+
+    /// The sidebar's tiles now.
+    pub fn tiles(&self) -> Vec<Tile> {
+        shell::sidebar(
+            TABS,
+            &self.client.capabilities(),
+            &self.config.borrow().hidden,
+        )
+    }
+
+    pub fn current_tab(&self) -> String {
+        self.window()
+            .map(|w| w.current())
+            .unwrap_or_else(|| shell::DEFAULT_TAB.to_string())
+    }
+
+    /// Shows the window on `tab` (or where it was), in `mode` (or the
+    /// configured one). A different mode builds a new window.
+    pub fn show(self: &Rc<Self>, tab: Option<&str>, mode: Option<Mode>) {
+        if let Some(id) = self.exit_timer.borrow_mut().take() {
+            id.remove();
+        }
+        let mode = mode.unwrap_or(self.config.borrow().mode);
+        let tab = tab
+            .filter(|t| *t == "settings" || shell::find(t).is_some())
+            .map(str::to_string)
+            .unwrap_or_else(|| self.current_tab());
+        let reuse = self.window().filter(|w| {
+            w.mode == mode || (mode == Mode::Popover && !gtk4_layer_shell::is_supported())
+        });
+        let w = match reuse {
+            Some(w) => w,
+            None => {
+                if let Some(old) = self.window.borrow_mut().take() {
+                    old.hide();
+                    old.win.destroy();
+                }
+                let w = Window::new(self, mode);
+                let weak = Rc::downgrade(self);
+                w.win.connect_close_request(move |_| {
+                    if let Some(ctx) = weak.upgrade() {
+                        ctx.hide();
+                    }
+                    glib::Propagation::Stop
+                });
+                *self.window.borrow_mut() = Some(Rc::clone(&w));
+                w
+            }
+        };
+        w.show_tab(self, &tab);
+        w.present(self);
+    }
+
+    /// Hides the window, drops its pages, and starts the exit timer.
+    pub fn hide(self: &Rc<Self>) {
+        if let Some(w) = self.window() {
+            w.hide();
+        }
+        if self.exit_timer.borrow().is_some() {
+            return;
+        }
+        let weak = Rc::downgrade(self);
+        // mirqab:ui-timeout
+        let id = glib::timeout_add_local_once(exit_delay(), move || {
+            if let Some(ctx) = weak.upgrade() {
+                ctx.exit_timer.borrow_mut().take();
+                ctx.quit();
+            }
+        });
+        *self.exit_timer.borrow_mut() = Some(id);
+    }
+
+    pub fn quit(&self) {
+        *self.ui_sub.borrow_mut() = None;
+        self.client.close();
+        self.hold.borrow_mut().take();
+        self.app.quit();
+    }
+
+    pub fn stop_daemon(self: &Rc<Self>) {
+        let weak = Rc::downgrade(self);
+        self.client.request("shutdown", Value::Null, move |_| {
+            if let Some(ctx) = weak.upgrade() {
+                ctx.quit();
+            }
+        });
+    }
+
+    /// Runs `f` after every config or status change (Settings re-reads its
+    /// rows) until it returns false (its page is gone).
+    pub fn on_config(&self, f: impl Fn() -> bool + 'static) {
+        self.config_listeners.borrow_mut().push(Box::new(f));
+    }
+
+    fn config_changed(&self) {
+        let listeners = std::mem::take(&mut *self.config_listeners.borrow_mut());
+        let kept: Vec<_> = listeners.into_iter().filter(|f| f()).collect();
+        let mut current = self.config_listeners.borrow_mut();
+        let added = std::mem::take(&mut *current);
+        *current = kept;
+        current.extend(added);
+    }
+
+    pub fn refresh_config(self: &Rc<Self>) {
+        let weak = Rc::downgrade(self);
+        self.client.request("config.get", Value::Null, move |r| {
+            let (Some(ctx), Ok(v)) = (weak.upgrade(), r) else {
+                return;
+            };
+            ctx.set_config(UiConfig::from_json(&v));
+        });
+    }
+
+    fn set_config(self: &Rc<Self>, cfg: UiConfig) {
+        let changed_style = {
+            let old = self.config.borrow();
+            old.scheme != cfg.scheme || old.follow != cfg.follow
+        };
+        *self.config.borrow_mut() = cfg;
+        let cfg = self.config.borrow().clone();
+        if changed_style {
+            self.style
+                .apply(cfg.scheme, cfg.follow.as_ref().map(PathBuf::from));
+        }
+        if let Some(w) = self.window() {
+            w.refresh_tiles(self);
+        }
+        self.config_changed();
+    }
+
+    pub fn refresh_status(self: &Rc<Self>) {
+        let weak = Rc::downgrade(self);
+        self.client.request("status", Value::Null, move |r| {
+            if let (Some(ctx), Ok(v)) = (weak.upgrade(), r) {
+                *ctx.status.borrow_mut() = v;
+                ctx.config_changed();
+            }
+        });
+    }
+
+    /// `config.set`; a refusal shows in the footer.
+    pub fn set_setting(self: &Rc<Self>, key: &str, value: Value) {
+        let weak = Rc::downgrade(self);
+        self.client.request(
+            "config.set",
+            json!({"key": key, "value": value}),
+            move |r| {
+                if let (Some(ctx), Err(e)) = (weak.upgrade(), r)
+                    && let Some(w) = ctx.window()
+                {
+                    w.footer.set_notice(&strings::setting_failed(&e.message));
+                }
+            },
+        );
+    }
+}

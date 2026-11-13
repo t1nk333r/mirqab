@@ -37,7 +37,7 @@ defaults:
 env:
   ARCH_PACKAGES: >-
     base-devel rust pkgconf gtk4 libadwaita gtk4-layer-shell sqlite dbus
-    shellcheck jq git systemd cargo-deny gitleaks
+    shellcheck jq git systemd cargo-deny gitleaks desktop-file-utils
   CARGO_TERM_COLOR: never
 
 jobs:

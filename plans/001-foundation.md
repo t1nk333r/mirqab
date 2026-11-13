@@ -15,8 +15,8 @@
   pass on the branch, and `tests/run.sh` 93/93. Phase B (daemon and
   protocol) implemented 2026-11-13: `tests/run.sh --affected` 140/140.
   Phase C (history) implemented 2026-11-13: 152/152. Phase D part 1 (the
-  view crate) implemented 2026-11-13: 154/154. Phase D part 2 and phase E
-  open.
+  view crate) implemented 2026-11-13: 154/154. Phase D part 2 (the window)
+  implemented 2026-11-13. Phase E open.
 
 ## Problem
 
@@ -783,6 +783,83 @@ above:
   positions: a hash inside a string literal in Rust, not after `{:` or
   `:` (`{n:#06b}`); in CSS, a hash after a colon once the selector up to
   the last `{` is cut away (`#cafe {` and `button:hover #id` pass).
+
+Phase D as built, part 2 (2026-11-13), where it differs from the steps
+above:
+
+- `mirqab-ui` is a library and a thin `main.rs`, so `tests/widgets.rs` can
+  build its widgets.
+- **One placeholder module, not sixteen.** `tabs/placeholder.rs` builds
+  the empty state for any tab whose plan has not landed; `tabs::build`
+  sends every tab but Settings to it, and each tab's plan adds its own
+  `tabs/<tab>/page.rs` and its arm there. Sixteen identical files would
+  have carried nothing.
+- **A gap is a second contour, not a second node.** The Tests table asked
+  for one stroke node per run. Architecture §7.4 asks for the node count
+  not to grow with the data, so the graph draws every run as a contour of
+  one path: one stroke node and one fill node whatever the gaps, plus one
+  stroke for peaks. The widget test counts the path's move-to operations.
+- **No colour in `style.css`.** The token block is empty: the generated
+  stylesheet sets every variable from `theme.rs`, so there is one source
+  and nothing to keep in step. Box spacing is CSS `border-spacing`; no
+  pixel count is written in Rust.
+- `client.rs` exposes a `Source` trait (`subscribe`, `subscribe_live`)
+  that widgets take, so the widget test passes a fake. Handles of one
+  stream are merged into the daemon's one subscription per stream.
+- The interface starts with `--background` from `mirqab-ui.service` and
+  waits hidden for the queued event; run by hand without it, it shows the
+  window. `--selftest` and `MIRQAB_TEST=1` run with
+  `G_APPLICATION_NON_UNIQUE`, so tests need no session bus.
+- **The daemon side of `open`** (step 30): with no interface attached,
+  `ui.show` and `ui.toggle` run `systemctl --user start
+  mirqab-ui.service` through `exec.rs`, queue the event, and the daemon
+  sends it right after the interface's `ui` subscribe reply. Concurrent
+  opens start the unit once; the latest event wins. 5 s without an
+  interface is `unavailable` (`MIRQAB_UI_START_MS` under `MIRQAB_TEST`);
+  a unit that fails to start is `failed`, with
+  `systemctl --user import-environment WAYLAND_DISPLAY` as the hint.
+  `ui.hide` with no interface is done. The fallback that spawns
+  `mirqab-ui` with the caller's environment (Unverified, below) moves to
+  plan 020, which owns the session setup.
+- The `self` stream gains `machine` (`cpuModel` from `proc/cpuinfo`, read
+  once; `uptimeSec` from `proc/uptime`) for the footer's machine line.
+- The footer has no "health shortcut" logic yet: the button opens Support,
+  which plan 019 fills. The `/` shortcut waits for the first page with a
+  search field.
+- Step 31, measured on the development machine (Hyprland, a 2560×1440
+  monitor) with the release build, the window open on Home and the footer
+  updating every 2 s, after 5 s: **73 MiB resident with GTK's default
+  renderer, 50 MiB with `GSK_RENDERER=cairo`**, both 0 % CPU over 15 s
+  (no clock tick). `mirqab-ui.service` sets the Cairo renderer. Release
+  binaries: `mirqab` 754 KiB, `mirqab-ui` 674 KiB; `ldd` on `mirqab`
+  names no GTK, GLib or libadwaita library.
+- Popover on Hyprland: the layer surface comes up 58 em wide (696 px at a
+  12 px font) at the top-right anchor with namespace `mirqab`, and the
+  link order needed no `LD_PRELOAD`. Sixteen tiles are taller than 40 em,
+  so the sidebar scrolls. Closing on focus loss is wired to `is-active`
+  going from true to false; the owner's check on Hyprland is still open.
+- Deferred review items done here: the colour rule (part 1); the `live`
+  rule now reads all of `crates/mirqab-ui/src` but `client.rs` and
+  `widgets/graph.rs`, for `subscribe_live` or a `"live"` parameter, so a
+  wrapped call cannot slip past; the timer rule skips `use` lines, takes a
+  marker at the end of the line, allows a frame callback only as
+  `ui-timeout` and refuses a `mirqab:sample` under 1000 ms; the link rule
+  knows the `-sys` crates, Pango, gdk-pixbuf and graphene, reads build and
+  dev dependencies, and the Cargo.toml rule sees `package = "gtk4"`;
+  re-subscribing forces at most one immediate sample a second; a new
+  `live.intervalMs` re-floors open live subscriptions; an earlier
+  interface is restored when the latest disconnects; fd 3 from socket
+  activation is close-on-exec; a `config.json` that is a symlink is
+  written through, and a dangling one refused.
+- `deny.toml` allows `Apache-2.0 WITH LLVM-exception` for
+  `target-lexicon` only: a build-time dependency of GTK's `-sys` crates.
+- The blur rule reads `src/` and `resources/`, not `tests/`, which names
+  `BlurNode` to check that none is drawn.
+- CI installs `desktop-file-utils` for the `.desktop` check.
+- The Broadway check (Unverified, below) holds on the development machine:
+  `gtk4-broadwayd` starts as the user with no display, and the socket it
+  announces is `broadway<N+1>.socket`, so `start_broadway` waits for its
+  "Listening on" line instead of guessing the name.
 
 ### Phase E — budget and handover (PR 5)
 

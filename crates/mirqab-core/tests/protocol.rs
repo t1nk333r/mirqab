@@ -332,9 +332,12 @@ fn the_interface_hears_actions_and_config_changes() {
     let mut cli = Client::connect(&d);
     ui.hello();
     cli.hello();
+    // Hiding with no interface is done: nothing is shown. (Showing starts
+    // the unit through systemctl; crates/mirqab/tests/cli.rs covers that
+    // with a stub, which an in-process server cannot put on PATH.)
     assert_eq!(
-        cli.call("action", None, json!({"name": "ui.show", "args": {}})),
-        Err("unavailable".into())
+        cli.call("action", None, json!({"name": "ui.hide"})),
+        Ok(json!({"done": [{"event": "hide"}]}))
     );
     ui.call("subscribe", Some("ui"), json!({"role": "ui", "pid": 4321}))
         .unwrap();
@@ -398,6 +401,97 @@ fn the_interface_hears_actions_and_config_changes() {
         .unwrap()["interval"],
         2000
     );
+}
+
+#[test]
+fn an_earlier_interface_is_restored_when_the_latest_leaves() {
+    let d = start("uirestore");
+    let mut first = Client::connect(&d);
+    let mut cli = Client::connect(&d);
+    first.hello();
+    cli.hello();
+    first
+        .call("subscribe", Some("ui"), json!({"role": "ui", "pid": 1111}))
+        .unwrap();
+    {
+        let mut second = Client::connect(&d);
+        second.hello();
+        second
+            .call("subscribe", Some("ui"), json!({"role": "ui", "pid": 2222}))
+            .unwrap();
+        assert_eq!(
+            cli.call("status", None, Value::Null).unwrap()["ui"]["pid"],
+            2222
+        );
+    }
+    // The second interface's connection is closed; the daemon notices on
+    // its next read.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let pid = cli.call("status", None, Value::Null).unwrap()["ui"]["pid"].clone();
+        if pid == 1111 {
+            break;
+        }
+        assert!(Instant::now() < deadline, "still {pid}");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    cli.call("action", None, json!({"name": "ui.hide"}))
+        .unwrap();
+    assert_eq!(first.event("ui").unwrap(), json!({"event": "hide"}));
+}
+
+#[test]
+fn a_new_live_interval_applies_to_open_live_subscriptions() {
+    let d = start("refloor");
+    let mut c = Client::connect(&d);
+    let mut cli = Client::connect(&d);
+    c.hello();
+    cli.hello();
+    c.call(
+        "subscribe",
+        Some("self"),
+        json!({"interval": 1000, "live": true}),
+    )
+    .unwrap();
+    assert_eq!(cli.interval("self"), 1000);
+    cli.call(
+        "config.set",
+        None,
+        json!({"key": "live.intervalMs", "value": 3000}),
+    )
+    .unwrap();
+    assert_eq!(cli.interval("self"), 3000);
+    cli.call(
+        "config.set",
+        None,
+        json!({"key": "live.intervalMs", "value": 1000}),
+    )
+    .unwrap();
+    assert_eq!(cli.interval("self"), 1000, "back to what was asked");
+}
+
+#[test]
+fn re_subscribing_cannot_beat_the_floor() {
+    let d = start("resub");
+    let mut c = Client::connect(&d);
+    c.hello();
+    let t = Instant::now();
+    let mut events = 0;
+    // Re-subscribing asks for a sample at once each time; at most one a
+    // second may be taken (review of phase B: 21 events a second).
+    while t.elapsed() < Duration::from_millis(2500) {
+        c.send("subscribe", Some("fake"), json!({"interval": 2000}));
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    c.stream
+        .set_read_timeout(Some(Duration::from_millis(300)))
+        .unwrap();
+    while let Some(f) = c.frame() {
+        if matches!(f, ServerFrame::Event(_)) {
+            events += 1;
+        }
+    }
+    assert!((1..=4).contains(&events), "{events} events in 2.5 s");
 }
 
 #[test]

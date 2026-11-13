@@ -41,6 +41,7 @@ SCRATCH=""
 _cleanup_scratch() {
     # A daemon a test left running dies with its sandbox.
     [[ -z ${DAEMON_PID:-} ]] || { kill "$DAEMON_PID" 2>/dev/null || true; wait "$DAEMON_PID" 2>/dev/null || true; }
+    [[ -z ${BROADWAY_PID:-} ]] || { kill "$BROADWAY_PID" 2>/dev/null || true; wait "$BROADWAY_PID" 2>/dev/null || true; }
     [[ -z ${MIRQAB_RUN_DIR:-} || ! -d $MIRQAB_RUN_DIR ]] || rm -rf -- "$MIRQAB_RUN_DIR"
     [[ -z $SCRATCH || ! -d $SCRATCH ]] || rm -rf -- "$SCRATCH"
 }
@@ -157,4 +158,45 @@ stop_daemon() {
     kill "$DAEMON_PID" 2>/dev/null || true
     wait "$DAEMON_PID" 2>/dev/null || true
     DAEMON_PID=""
+}
+
+# start_broadway — run gtk4-broadwayd on a free display number in the
+# sandbox (architecture §7.5) and point GTK at it: GDK_BACKEND=broadway,
+# BROADWAY_DISPLAY, GSK_RENDERER=cairo, GTK_A11Y=none. Sets BROADWAY_PID;
+# stop_broadway or the scratch cleanup ends it. Returns 1 when
+# gtk4-broadwayd is missing or does not come up.
+start_broadway() {
+    command -v gtk4-broadwayd >/dev/null 2>&1 || { echo "start_broadway: gtk4-broadwayd not found" >&2; return 1; }
+    local n i
+    # Display N listens on TCP port 8080 + N and on a socket in the runtime
+    # dir, which is the sandbox's: a number another broadwayd holds makes it
+    # exit, and the next number is tried.
+    for ((i = 0; i < 20; i++)); do
+        n=$((RANDOM % 900 + 50))
+        gtk4-broadwayd ":$n" >"$SANDBOX/broadway.log" 2>&1 &
+        BROADWAY_PID=$!
+        local j
+        for ((j = 0; j < 100; j++)); do
+            grep -q '^Listening on ' "$SANDBOX/broadway.log" 2>/dev/null && break
+            kill -0 "$BROADWAY_PID" 2>/dev/null || break
+            sleep 0.05
+        done
+        if grep -q '^Listening on ' "$SANDBOX/broadway.log" 2>/dev/null; then
+            export GDK_BACKEND=broadway BROADWAY_DISPLAY=":$n" GSK_RENDERER=cairo GTK_A11Y=none
+            return 0
+        fi
+        kill "$BROADWAY_PID" 2>/dev/null || true
+        wait "$BROADWAY_PID" 2>/dev/null || true
+        BROADWAY_PID=""
+    done
+    cat "$SANDBOX/broadway.log" >&2 || true
+    return 1
+}
+
+stop_broadway() {
+    [[ -n ${BROADWAY_PID:-} ]] || return 0
+    kill "$BROADWAY_PID" 2>/dev/null || true
+    wait "$BROADWAY_PID" 2>/dev/null || true
+    BROADWAY_PID=""
+    unset GDK_BACKEND BROADWAY_DISPLAY
 }

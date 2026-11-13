@@ -21,6 +21,13 @@ allow = [
 ]
 confidence-threshold = 0.9
 
+# target-lexicon reaches the build through system-deps (GTK's -sys crates
+# find their libraries with it). It runs at build time only and is not in
+# the binaries; the LLVM exception only widens Apache-2.0.
+[[licenses.exceptions]]
+crate = "target-lexicon"
+allow = ["Apache-2.0 WITH LLVM-exception"]
+
 [licenses.private]
 # The workspace's own crates are not published; their licence is LICENSE.
 ignore = true

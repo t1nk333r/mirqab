@@ -84,6 +84,7 @@ fn self_data(ui: Option<UiCost>) -> SelfData {
         ui,
         subscribers: BTreeMap::new(),
         uptime_sec: 60,
+        machine: Default::default(),
     }
 }
 

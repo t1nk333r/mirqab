@@ -75,7 +75,12 @@ plant "an unmarked timeout" crates/mirqab-ui/src/window.rs 'fn x() { glib::timeo
 plant "an unmarked tick callback" crates/mirqab-ui/src/widgets/pill.rs 'fn x(w: &W) { w.add_tick_callback(f); }' "timer without"
 plant "a literal label" crates/mirqab-ui/src/widgets/footer.rs 'let l = gtk::Label::new(Some("Settings"));' "string literal in a widget call"
 plant "a literal title" crates/mirqab-ui/src/window.rs 'w.set_title(Some("mirqab"));' "string literal in a widget call"
-plant "live from a page" crates/mirqab-ui/src/tabs/system/page.rs 'fn x() { client.subscribe("system", 1000, live); }' "a page passes live"
+plant "subscribe_live from a page" crates/mirqab-ui/src/tabs/system/page.rs 'fn x() { client.subscribe_live("system", f); }' "live sampling asked for outside widgets/graph.rs"
+plant "a live param from a card" crates/mirqab-ui/src/widgets/card.rs 'let p = json!({"interval": 1000, "live": true});' "live sampling asked for outside widgets/graph.rs"
+plant "a live param on a wrapped call" crates/mirqab-ui/src/app.rs "$(printf '%s\n' 'c.subscribe_with(' '    "system",' '    json!({' '        "live": true' '    }),' ');')" "live sampling asked for outside widgets/graph.rs"
+plant "an unmarked frame callback with a sample marker" crates/mirqab-ui/src/widgets/pill.rs "$(printf '%s\n' '// mirqab:sample' 'w.add_tick_callback(f);')" "frame callback not marked ui-timeout"
+plant "a sampler under a second" crates/mirqab-ui/src/widgets/clock.rs "$(printf '%s\n' '// mirqab:sample' 'glib::timeout_add_local(Duration::from_millis(500), f);')" "a mirqab:sample timer under 1000 ms"
+plant "a renamed toolkit dependency" crates/mirqab-view/Cargo.toml 'ui = { package = "gtk4", version = "0.11" }' "toolkit dependency"
 
 # A marker on the line above, with blank lines between, still counts; a
 # marker two statements up does not.
@@ -103,6 +108,24 @@ status_is "a hash that is not a colour value passes" 0 "$STATUS"
 is "and reports nothing" "" "$OUTPUT"
 plant "a hex value after a selector with an id" crates/mirqab-ui/resources/style.css '#cafe { color: #abcdef; }' "colour literal outside the token block"
 plant "a hex inside a longer string" crates/mirqab-ui/src/widgets/x.rs 'let css = "color: #abcdef;";' "colour literal outside the token table"
+
+# The graph and the client may name live sampling; a use line, a marker at
+# the end of the line, and a one-second sampler pass.
+t="$(tree allowed)"
+mkdir -p "$t/crates/mirqab-ui/src/widgets"
+printf '%s\n' 'fn x() { source.subscribe_live("system", f); }' >"$t/crates/mirqab-ui/src/widgets/graph.rs"
+printf '%s\n' 'fn subscribe_live() { params["live"] = json!(true); }' >"$t/crates/mirqab-ui/src/client.rs"
+cat >"$t/crates/mirqab-ui/src/timers.rs" <<'EOF'
+use gtk::glib::timeout_add_local_once;
+fn a() { glib::timeout_add_local_once(d, f); } // mirqab:ui-timeout
+// mirqab:sample
+fn b() { glib::timeout_add_local(Duration::from_millis(1_000), f); }
+// mirqab:ui-timeout
+fn c() { w.add_tick_callback(f); }
+EOF
+capture "$REPO/tools/lint.sh" --rules "$t"
+status_is "the graph, the client, use lines, trailing markers and 1 s samplers pass" 0 "$STATUS"
+is "and report nothing" "" "$OUTPUT"
 
 # An empty string may be set; it carries no words to translate.
 t="$(tree empty)"

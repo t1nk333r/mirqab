@@ -116,8 +116,19 @@ pub fn remove_path(path: &Path, dry_run: bool) -> Result<Value, ActError> {
 }
 
 /// Writes `contents` to `path` atomically: a temporary file beside it, then a
-/// rename, so a reader never sees half a file.
+/// rename, so a reader never sees half a file. When `path` is a symlink (a
+/// config kept in a dotfiles repository), the file it points to is replaced
+/// and the link stays; a dangling link is refused.
 pub fn write_file(path: &Path, contents: &[u8], dry_run: bool) -> Result<Value, ActError> {
+    let resolved;
+    let path = match std::fs::symlink_metadata(path) {
+        Ok(meta) if meta.file_type().is_symlink() => {
+            resolved = std::fs::canonicalize(path)
+                .map_err(|e| ActError::Failed(format!("{}: {e}", path.display())))?;
+            resolved.as_path()
+        }
+        _ => path,
+    };
     let entry = json!({"write": path.display().to_string(), "bytes": contents.len()});
     if dry_run {
         return Ok(entry);
@@ -177,6 +188,31 @@ mod tests {
         );
         remove_path(&d.join("sub"), false).unwrap();
         assert!(!d.join("sub").exists());
+        remove_path(&d, false).unwrap();
+    }
+
+    #[test]
+    fn a_symlink_is_written_through_and_kept() {
+        let d = scratch("link");
+        std::fs::create_dir_all(d.join("dotfiles")).unwrap();
+        std::fs::write(d.join("dotfiles/config.json"), "{}").unwrap();
+        std::os::unix::fs::symlink("dotfiles/config.json", d.join("config.json")).unwrap();
+        let w = write_file(&d.join("config.json"), b"{\"a\":1}", false).unwrap();
+        assert!(
+            w["write"]
+                .as_str()
+                .unwrap()
+                .ends_with("dotfiles/config.json")
+        );
+        let meta = std::fs::symlink_metadata(d.join("config.json")).unwrap();
+        assert!(meta.file_type().is_symlink(), "the link stays a link");
+        assert_eq!(
+            std::fs::read_to_string(d.join("dotfiles/config.json")).unwrap(),
+            "{\"a\":1}"
+        );
+        std::os::unix::fs::symlink("nowhere.json", d.join("dangling.json")).unwrap();
+        assert!(write_file(&d.join("dangling.json"), b"{}", false).is_err());
+        assert!(!d.join("nowhere.json").exists());
         remove_path(&d, false).unwrap();
     }
 

@@ -21,6 +21,18 @@ pub struct SelfData {
     /// Subscribers per stream.
     pub subscribers: BTreeMap<String, u32>,
     pub uptime_sec: u64,
+    /// The footer's machine line (plan 001 phase D).
+    #[serde(default)]
+    pub machine: Machine,
+}
+
+/// The machine the daemon runs on, for the footer: what `/proc/cpuinfo`
+/// calls the CPU and how long the machine has been up.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Machine {
+    pub cpu_model: Option<String>,
+    pub uptime_sec: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

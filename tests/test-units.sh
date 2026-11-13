@@ -29,3 +29,18 @@ status_is "a broken ExecStart fails verify" 1 "$STATUS"
 like "the socket is private" "$(<"$REPO/dist/mirqab.socket")" "SocketMode=0600"
 like "the daemon tells systemd when it is ready" "$(<"$REPO/dist/mirqab.service")" "Type=notify"
 like "the window never restarts itself" "$(<"$REPO/dist/mirqab-ui.service")" "Restart=no"
+
+# The launcher entry (plan 001 step 30): valid, opens a window (a launcher has
+# no anchor for a popover), and names the application id.
+if command -v desktop-file-validate >/dev/null 2>&1; then
+    capture desktop-file-validate "$REPO/dist/mirqab.desktop"
+    status_is "mirqab.desktop validates" 0 "$STATUS"
+    is "and reports nothing" "" "$OUTPUT"
+else
+    not_ok "desktop-file-validate is installed (desktop-file-utils)"
+fi
+desktop="$(<"$REPO/dist/mirqab.desktop")"
+like "the launcher opens a window" "$desktop" "Exec=mirqab open --window"
+like "its window class is the application id" "$desktop" "StartupWMClass=io.github.t1nk333r.mirqab"
+like "its icon is the application id" "$desktop" "Icon=io.github.t1nk333r.mirqab"
+like "the unit starts the window hidden" "$(<"$REPO/dist/mirqab-ui.service")" "mirqab-ui --background"
