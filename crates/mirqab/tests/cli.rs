@@ -239,6 +239,70 @@ fn a_unit_that_fails_to_start_is_reported() {
 }
 
 #[test]
+fn a_fixture_daemon_keeps_history_beside_its_socket() {
+    let d = start("fixturehist");
+    let out = mirqab(&d, &["status", "--json"]);
+    let status: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let path = status["history"]["path"].as_str().unwrap().to_string();
+    assert_eq!(
+        std::path::Path::new(&path),
+        d.socket.parent().unwrap().join("history.db")
+    );
+    assert!(
+        !d.dir.join("state/mirqab").exists(),
+        "nothing in XDG_STATE_HOME"
+    );
+}
+
+#[test]
+fn a_second_daemon_cannot_share_a_history_file() {
+    let dir = PathBuf::from("/tmp").join(format!("mqc-hist2-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let run = dir.join("run");
+    std::fs::create_dir_all(&run).unwrap();
+    std::fs::set_permissions(&run, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let daemon = |sock: &str| {
+        Command::new(BIN)
+            .args(["daemon", "--socket"])
+            .arg(run.join(sock))
+            .env("XDG_RUNTIME_DIR", &run)
+            .env("XDG_CONFIG_HOME", dir.join("config"))
+            .env("XDG_STATE_HOME", dir.join("state"))
+            .env("HOME", &dir)
+            .env_remove("NOTIFY_SOCKET")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap()
+    };
+    let mut first = daemon("a.sock");
+    let mut ready = String::new();
+    BufReader::new(first.stdout.take().unwrap())
+        .read_line(&mut ready)
+        .unwrap();
+    assert!(ready.starts_with("ready "), "{ready}");
+    let out = output_within(
+        Command::new(BIN)
+            .args(["daemon", "--socket"])
+            .arg(run.join("b.sock"))
+            .env("XDG_RUNTIME_DIR", &run)
+            .env("XDG_CONFIG_HOME", dir.join("config"))
+            .env("XDG_STATE_HOME", dir.join("state"))
+            .env("HOME", &dir)
+            .env_remove("NOTIFY_SOCKET"),
+    );
+    assert_eq!(out.status.code(), Some(1));
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("in use by another mirqab daemon"),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let _ = first.kill();
+    let _ = first.wait();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn a_second_daemon_refuses_the_socket() {
     let d = start("twice");
     let out = Command::new(BIN)

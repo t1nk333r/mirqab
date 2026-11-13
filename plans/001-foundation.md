@@ -16,7 +16,15 @@
   protocol) implemented 2026-11-13: `tests/run.sh --affected` 140/140.
   Phase C (history) implemented 2026-11-13: 152/152. Phase D part 1 (the
   view crate) implemented 2026-11-13: 154/154. Phase D part 2 (the window)
-  implemented 2026-11-13. Phase E open.
+  implemented 2026-11-13: 237/237. Phase E (budget) implemented
+  2026-11-13: 247/247.
+  **Measured 2026-11-13** with `tools/bench-idle.sh`, release build, on
+  the development machine (a desktop, 8-core AMD Ryzen, 16 threads):
+  no subscriber, **0.000 % of one core over 60 s, 5.0 MiB RSS, 1 context
+  switch**; subscribed to `system` live at 1 s, **0.000 %, 5.0 MiB, 288
+  context switches**. Below one clock tick (10 ms) in the minute both
+  times. The open window: 50 MiB with the Cairo renderer (73 MiB with
+  GTK's default), 0 % CPU idle.
 
 ## Problem
 
@@ -874,6 +882,23 @@ above:
 33. Record the measured numbers in this plan's State line, with the date
     and the machine class. Update `README.md` ("Status") and
     `plans/README.md`.
+
+Phase E as built (2026-11-13), where it differs from the steps above:
+
+- `tools/bench-idle.sh` holds the subscription with `socat` (a shell has
+  no Unix-socket client; plan 005's `--watch` commands come later). CI
+  installs `socat`. It counts context switches over every thread
+  (`/proc/<pid>/task/*/status`), not the main thread's alone, and takes
+  `--seconds`, `--runs`, `--max-cpu`, `--max-rss` and `--bin` so
+  `tests/test-bench.sh` can check it in seconds. Exit 1 is over budget,
+  2 is could not measure, 64 a usage error.
+- The CI step runs on every push to `main` and on pull requests that
+  touch `crates/`: best of three, idle and `--subscribe system --live`.
+- The deferrals from the review of phase C: a second lock,
+  `<history>.lock`, refuses a second daemon on another socket that would
+  share the history file; and `mirqab daemon --root DIR` (any root but
+  `/`) keeps its history and config beside its socket, so fixture numbers
+  never reach the user's history or config.
 
 ## Unverified
 

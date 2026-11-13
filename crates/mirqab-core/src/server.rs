@@ -141,8 +141,10 @@ struct SelfShared {
 }
 
 struct Inner {
-    /// Held, never read: the lock is released when the process ends.
+    /// Held, never read: the locks are released when the process ends.
     _lock: std::fs::File,
+    /// `<history>.lock`: one daemon per history file, whatever its socket.
+    _history_lock: Option<std::fs::File>,
     root: Root,
     socket: PathBuf,
     started: Instant,
@@ -274,10 +276,15 @@ pub fn default_socket() -> Option<PathBuf> {
 /// this lock, so only one serves and writes history (review of plan 001
 /// phase B, deferred to phase C).
 fn take_lock(socket: &Path) -> Result<std::fs::File, ListenError> {
-    if let Some(dir) = socket.parent().filter(|d| !d.as_os_str().is_empty()) {
+    lock_beside(socket)
+}
+
+/// Takes `<path>.lock` with `File::try_lock`; held means AlreadyRunning.
+fn lock_beside(target: &Path) -> Result<std::fs::File, ListenError> {
+    if let Some(dir) = target.parent().filter(|d| !d.as_os_str().is_empty()) {
         mkdir_private(dir).map_err(ListenError::Failed)?;
     }
-    let path = PathBuf::from(format!("{}.lock", socket.display()));
+    let path = PathBuf::from(format!("{}.lock", target.display()));
     let file = std::fs::OpenOptions::new()
         .create(true)
         .truncate(false)
@@ -295,6 +302,17 @@ fn take_lock(socket: &Path) -> Result<std::fs::File, ListenError> {
 
 pub fn listen(opts: Options) -> Result<Server, ListenError> {
     let lock = take_lock(&opts.socket)?;
+    // A second daemon on another socket must not share the history file
+    // (review of phase C, deferred to phase E).
+    let history_lock = match &opts.history {
+        None => None,
+        Some(h) => Some(lock_beside(h).map_err(|e| match e {
+            ListenError::AlreadyRunning => {
+                ListenError::Failed(strings::history_in_use(&h.display().to_string()))
+            }
+            other => other,
+        })?),
+    };
     let (listener, activated) = match sys::listen_fd() {
         Some(l) => (l, true),
         None => (bind(&opts.socket)?, false),
@@ -355,6 +373,7 @@ pub fn listen(opts: Options) -> Result<Server, ListenError> {
     }
     let inner = Arc::new(Inner {
         _lock: lock,
+        _history_lock: history_lock,
         root: opts.root,
         socket: opts.socket,
         started,

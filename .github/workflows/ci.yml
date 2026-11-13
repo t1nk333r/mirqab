@@ -37,7 +37,7 @@ defaults:
 env:
   ARCH_PACKAGES: >-
     base-devel rust pkgconf gtk4 libadwaita gtk4-layer-shell sqlite dbus
-    shellcheck jq git systemd cargo-deny gitleaks desktop-file-utils
+    shellcheck jq git systemd cargo-deny gitleaks desktop-file-utils socat
   CARGO_TERM_COLOR: never
 
 jobs:
@@ -104,6 +104,21 @@ jobs:
               args=(--affected --committed "$BASE_SHA")
           fi
           runuser -u ci -- env CI=1 HOME=/home/ci CARGO_HOME="$HOME/.cargo" tests/run.sh "${args[@]}"
+      - name: tools/bench-idle.sh
+        # The daemon's budget (architecture §9.1): idle, and with a live
+        # subscription, best of three 60 s runs on this noisy shared runner.
+        # On a pull request only when it touches crates/.
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          if [[ $GITHUB_EVENT_NAME == pull_request ]] &&
+              ! git diff --name-only "$BASE_SHA" HEAD -- crates/ | grep -q .; then
+              echo "no change under crates/: skipped"
+              exit 0
+          fi
+          bench() { runuser -u ci -- env HOME=/home/ci CARGO_HOME="$HOME/.cargo" tools/bench-idle.sh --runs 3 "$@"; }
+          bench
+          bench --subscribe system --live
 
   docs:
     runs-on: ubuntu-latest
