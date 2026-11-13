@@ -93,8 +93,12 @@ pub struct TempRow {
 pub struct PowerCard {
     pub package: Option<String>,
     pub battery: Option<String>,
-    /// No package reading: Linux needs root for it (plan 015's helper).
+    /// RAPL is there but needs root (plan 015's helper), as the daemon
+    /// says; not merely a missing first reading (review of PR #8).
     pub needs_helper: bool,
+    /// The machine has a package counter, so the graph has something to
+    /// draw once readable.
+    pub rapl: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -118,7 +122,9 @@ pub fn thermal_tone(state: &str, throttling: bool) -> Tone {
         (_, true) | ("critical", _) => Tone::Error,
         ("hot", _) => Tone::Warning,
         ("warm", _) => Tone::Neutral,
-        _ => Tone::Success,
+        ("cool", _) => Tone::Success,
+        // A state this version does not know is not good news.
+        _ => Tone::Neutral,
     }
 }
 
@@ -299,14 +305,21 @@ pub fn view(d: &SystemData, unit: TempUnit) -> SystemView {
             .as_ref()
             .and_then(|p| p.battery_watts)
             .map(|w| format!("{w:.1} {}", s::WATTS)),
-        needs_helper: d.power.as_ref().is_none_or(|p| p.package_watts.is_none()),
+        needs_helper: d.power.as_ref().is_some_and(|p| p.needs_helper),
+        rapl: d
+            .power
+            .as_ref()
+            .is_some_and(|p| p.source == "rapl" || p.source == "both"),
     };
     SystemView {
         overview,
         cpu,
         memory,
         pressure,
-        gpus: d.gpus.iter().map(|g| gpu_card(g, unit)).collect(),
+        // History keeps two GPUs (`gpu_graph`); a third card would never
+        // be built, and the page would rebuild its cards on every event
+        // (review of PR #8).
+        gpus: d.gpus.iter().take(2).map(|g| gpu_card(g, unit)).collect(),
         temps,
         power,
     }
@@ -348,9 +361,11 @@ pub fn pressure_graph(series: &'static str) -> GraphSpec {
     GraphSpec {
         series,
         live: match series {
-            "psi.cpu" => |v| v["pressure"]["cpu"]["some10"].as_f64(),
-            "psi.memory" => |v| v["pressure"]["memory"]["some10"].as_f64(),
-            _ => |v| v["pressure"]["io"]["some10"].as_f64(),
+            // some60, as the card's number and history store (review of
+            // PR #8: the live line was some10).
+            "psi.cpu" => |v| v["pressure"]["cpu"]["some60"].as_f64(),
+            "psi.memory" => |v| v["pressure"]["memory"]["some60"].as_f64(),
+            _ => |v| v["pressure"]["io"]["some60"].as_f64(),
         },
         scale: PERCENT,
     }

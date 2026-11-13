@@ -35,7 +35,7 @@ like "the thermal word" "$(texts)" "Cool"
 like "the memory line" "$(texts)" "17 GB of 67 GB"
 like "a temperature group" "$(texts)" "Tctl"
 like "both GPUs" "$(texts)" "AMD GPU (card1)"
-like "the helper line where package power is unknown" "$(texts)" "package power needs the root helper"
+unlike "no helper line where RAPL is readable" "$(texts)" "package power needs the root helper"
 is "graphs are present" 1 "$(q '[.. | objects | select(.type == "MirqabGraph")] | length > 0 | if . then 1 else 0 end')"
 
 selftest root-minimal
