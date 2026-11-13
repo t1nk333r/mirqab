@@ -172,11 +172,15 @@ fn subscribe_brings_events_and_unsubscribe_stops_them() {
     let mut c = Client::connect(&d);
     c.hello();
     let t = Instant::now();
-    let r = c.call("subscribe", Some("self"), json!({})).unwrap();
-    assert_eq!(r, json!({"stream": "self", "interval": 2000}));
+    // A long interval, so "the first event does not wait for it" has a wide
+    // margin on a busy CI runner (a 1 s bound against 2 s failed there).
+    let r = c
+        .call("subscribe", Some("self"), json!({"interval": 5000}))
+        .unwrap();
+    assert_eq!(r, json!({"stream": "self", "interval": 5000}));
     let data = c.event("self").expect("a first event at once");
     assert!(
-        t.elapsed() < Duration::from_secs(1),
+        t.elapsed() < Duration::from_secs(4),
         "the first event does not wait an interval"
     );
     // The first sample on root-desktop is the golden file, uptime aside.

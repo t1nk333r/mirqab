@@ -474,7 +474,7 @@ values cover.
 
 64 series × 43,200 minutes = 2.76 M rows. The budget is **40 MiB** (owner,
 2026-11-13) for the file and its write-ahead log together. Measured
-(plan 001, "Phase C as built"): 38.2 MiB with one series in four holding
+(plan 001, "Phase C as built"): 38.4 MiB with one series in four holding
 byte counts, packed by the daily compaction (§6.3); 43.3 MB never
 compacted. A test fills 30 days the way the writer does and checks the
 size without a manual checkpoint.

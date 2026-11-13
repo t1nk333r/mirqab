@@ -647,7 +647,7 @@ Phase C as built (2026-11-13), where it differs from the steps above:
   **Budget: 40 MiB** for the file and its write-ahead log (owner,
   2026-11-13, choosing it over 48 MB without compaction and over byte
   series in KiB). Measured with the log and no manual checkpoint, the last
-  day written one transaction a minute: 40,017,920 bytes (38.2 MiB).
+  day written one transaction a minute: 40,295,008 bytes (38.4 MiB).
 - `history.query` returns unscaled values, `[unixSeconds, avg, max]` per
   bucket, and omits empty buckets. Buckets align to `EPOCH`, which is on a
   2-hour boundary, so every range's buckets start on the hour.

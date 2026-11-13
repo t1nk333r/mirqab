@@ -369,7 +369,9 @@ impl History {
             })
             .optional()?;
         Ok(match last.and_then(|v| v.parse::<i64>().ok()) {
-            Some(t) => now - t >= 86_400,
+            // A stamp from the future (the clock jumped ahead, then was set
+            // right) would hold compaction off until the clock caught up.
+            Some(t) => t > now || now - t >= 86_400,
             None => {
                 self.conn.execute(
                     "INSERT OR REPLACE INTO meta (key, value) VALUES ('compacted', ?1)",

@@ -111,8 +111,11 @@ fn fill_range(h: &History, keys: &[i64], minutes: i64, end_ago: i64) {
         let mut stmt = tx
             .prepare("INSERT OR REPLACE INTO sample (series, ts, v) VALUES (?1, ?2, ?3)")
             .unwrap();
-        for m in 0..minutes {
-            let ts = history::minute(NOW) - end_ago - minutes + m;
+        for i in 0..minutes {
+            let ts = history::minute(NOW) - end_ago - minutes + i;
+            // Values vary with the minute itself, not the loop index, so a
+            // fill one minute at a time writes the same values as one long one.
+            let m = ts.rem_euclid(1_000_000);
             for id in keys {
                 let v = if id % 4 == 0 {
                     17_000_000_000 + m * 4096 + id
@@ -204,6 +207,8 @@ fn compaction_is_due_a_day_after_the_last_one_even_across_restarts() {
     assert!(h.compaction_due(NOW + 86_400).unwrap());
     h.compact(NOW + 86_400).unwrap();
     assert!(!h.compaction_due(NOW + 86_401).unwrap());
+    // The clock was set back after that compaction: due, not held off.
+    assert!(h.compaction_due(NOW).unwrap());
 }
 
 #[test]
