@@ -13,8 +13,11 @@
 - **State**: DONE (2026-11-14). Part 1 (the CLI frame; PR #12) and part 2
   (the MCP server, plan ids, the ancestry guard, `mcp-config`). Acceptance
   2 (an MCP client the owner configures lists the tools) is an owner step.
-  The end-to-end confirm-flow test lands with the first acting tool
-  (plan 007's `kill_port`); its parts are tested here.
+  No tool acts yet, so rules 2 (the daemon re-computes before acting) and
+  5 (the `event` record) and acceptance 3 (the confirm-flow test with a
+  recording `act`) moved to plan 007's `kill_port`, the first acting
+  tool, with the rest of its checklist step 6; the parts (plan ids, the
+  ancestry walk) are tested here.
 
 ## Problem
 
@@ -230,12 +233,21 @@ Part 1 (2026-11-14), where it differs from the plan:
     `destructiveHint`, `idempotentHint`, `openWorldHint` (`schema.ts`
     `ToolAnnotations`); `structuredContent` with a text copy for older
     clients.
-  - Client registration, from each tool's own `--help` on the
-    development machine: `claude mcp add mirqab -- mirqab --mcp`;
-    `codex mcp add mirqab -- mirqab --mcp` (it writes
-    `~/.codex/config.toml`); `gemini mcp add mirqab mirqab --mcp`;
-    `opencode mcp add --global mirqab -- mirqab --mcp`; Cursor reads
-    `~/.cursor/mcp.json` (`cursor-agent mcp --help`). So `mcp-config`
+  - Client registration, from each tool's own `mcp add --help` on the
+    development machine (2026-11-14), registered for the user rather
+    than one project:
+    - `claude mcp add --scope user mirqab -- mirqab mcp`; the help says
+      `-s, --scope <scope> ... (local, user, or project) (default:
+      "local")`, and local binds the current directory;
+    - `codex mcp add mirqab -- mirqab mcp`; it writes
+      `~/.codex/config.toml`;
+    - `gemini mcp add -s user mirqab mirqab mcp`; the help says
+      `[choices: "user", "project"] [default: "project"]`;
+    - `opencode mcp add --global mirqab -- mirqab mcp`; the help says
+      `opencode mcp add [flags] <name> [<command...>]` and `--global
+      Write to the global config instead of the project config`, and the
+      wizard is opt-in;
+    - Cursor reads `~/.cursor/mcp.json` (`cursor-agent mcp --help`). So `mcp-config`
     prints the client's own command and `--write` runs it, instead of
     mirqab editing another program's file.
 
@@ -245,9 +257,19 @@ Part 2 (2026-11-14), where it differs from the plan:
   `initialize` for 2025-11-25, 2025-06-18 and 2025-03-26 (an unknown
   version gets 2025-11-25), and serves 2026-07-28 requests by their
   `_meta` version, with `server/discover`; any other `_meta` version is
-  -32022 with the supported list. Every result carries `resultType`.
-  `ping` is answered; notifications are read and not answered; malformed
-  JSON is -32700 and the server stays up.
+  -32022 with the supported list (a version that is not a string is
+  echoed as sent). A 2026-07-28 request must carry
+  `io.modelcontextprotocol/clientCapabilities` as an object in `_meta`,
+  or it is -32602. A request with no `_meta` version is served as a
+  legacy one: the server keeps no session, so it cannot tell whether
+  `initialize` came first. Every result carries `resultType`;
+  `server/discover` and `tools/list` also carry `ttlMs: 0` and
+  `cacheScope: "public"` (`CacheableResult`). `ping` is answered;
+  notifications are read and not answered; a response from the client
+  is dropped, since the server sends no requests. Malformed JSON and
+  bytes that are not UTF-8 are -32700, a line over 8 MiB is skipped with
+  -32600, and the server stays up. 2025-03-26's batches (a JSON array)
+  are refused with -32600: no client sends them (review of PR #13).
 - The server connects to the daemon for each tool call instead of holding
   one connection: a daemon restarted between calls is found again. With
   no socket to name (no `XDG_RUNTIME_DIR`) it still starts, and each tool
@@ -255,14 +277,15 @@ Part 2 (2026-11-14), where it differs from the plan:
 - **No acting tool yet**, so the confirm flow's parts are in
   `mirqab-core`, tested on their own: `plan.rs` (single-use plan ids, a
   120 s expiry, only targets that were planned and are still there) and
-  `guard.rs` (the caller's ancestry from `proc/<pid>/stat`, through
-  `Root`). The first acting tool (plan 007) wires them in, with the
+  `guard.rs` (the caller's ancestry from `proc/<pid>/stat`, read as
+  bytes because a command name may hold any byte, through `Root`). The first acting tool (plan 007) wires them in, with the
   `event` record of rule 5.
 - `mcp-config CLIENT` prints the client's own command (`claude`, `codex`,
   `gemini`, `opencode`) or the JSON block (`cursor`, `json`). `--write`
   runs the command after the confirm flow (`confirm.rs`: `--dry-run`
-  stops, `-y` goes, a terminal is asked `[y/N]`, otherwise exit 3); for a
-  client configured by file it refuses. mirqab never edits another
+  stops, `-y` goes, `[y/N]` is asked only when stdin and stdout are
+  both terminals, otherwise exit 3); for a client configured by file it
+  refuses. mirqab never edits another
   program's file. The registered command is `mirqab mcp`, found on `PATH`.
 - The modules are `crates/mirqab/src/{mcp/{mod,rpc,tools},confirm,
   mcp_config}.rs`; the CLI stayed one file (`cli.rs`).

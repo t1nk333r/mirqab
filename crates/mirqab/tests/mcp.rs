@@ -92,11 +92,25 @@ impl Server {
         input.flush().unwrap();
     }
 
-    fn ask(&mut self, msg: Value) -> Value {
-        self.send(&msg.to_string());
+    fn send_bytes(&mut self, bytes: &[u8]) {
+        let input = self.input.as_mut().unwrap();
+        input.write_all(bytes).unwrap();
+        input.flush().unwrap();
+    }
+
+    fn next(&mut self) -> Value {
         let mut line = String::new();
         self.output.read_line(&mut line).unwrap();
         serde_json::from_str(&line).unwrap_or_else(|_| panic!("not JSON: {line}"))
+    }
+
+    /// Sends a request and reads the reply, which must be the reply to it:
+    /// a stray line from an earlier message fails here.
+    fn ask(&mut self, msg: Value) -> Value {
+        self.send(&msg.to_string());
+        let reply = self.next();
+        assert_eq!(reply["id"], msg["id"], "the reply to {msg}: {reply}");
+        reply
     }
 }
 
@@ -127,6 +141,7 @@ fn a_legacy_client_initializes_lists_and_reads_the_load() {
     assert_eq!(init["result"]["protocolVersion"], "2025-06-18", "{init}");
     assert_eq!(init["result"]["serverInfo"]["name"], "mirqab");
     assert!(init["result"]["capabilities"]["tools"].is_object());
+    assert_eq!(init["result"]["resultType"], "complete");
     s.send(r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#);
 
     let list = s.ask(json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list"}));
@@ -200,6 +215,23 @@ fn a_modern_client_discovers_and_an_unknown_version_is_refused() {
     let refused = s.ask(old);
     assert_eq!(refused["error"]["code"], -32022, "{refused}");
     assert_eq!(refused["error"]["data"]["requested"], "1900-01-01");
+
+    let mut number = modern(4, "ping", json!({}));
+    number["params"]["_meta"]["io.modelcontextprotocol/protocolVersion"] = json!(20260728);
+    let by_number = s.ask(number);
+    assert_eq!(by_number["error"]["code"], -32022, "{by_number}");
+    assert_eq!(by_number["error"]["data"]["requested"], 20260728);
+
+    let mut bare = modern(5, "tools/list", json!({}));
+    bare["params"]["_meta"]
+        .as_object_mut()
+        .unwrap()
+        .remove("io.modelcontextprotocol/clientCapabilities");
+    let no_caps = s.ask(bare);
+    assert_eq!(
+        no_caps["error"]["code"], -32602,
+        "no capabilities: {no_caps}"
+    );
     assert!(
         refused["error"]["data"]["supported"]
             .as_array()
@@ -212,13 +244,23 @@ fn a_modern_client_discovers_and_an_unknown_version_is_refused() {
 fn bad_input_is_an_error_and_the_server_stays_up() {
     let mut s = Server::start(std::path::Path::new("/nonexistent/mirqab.sock"));
     s.send("{not json");
-    let mut line = String::new();
-    s.output.read_line(&mut line).unwrap();
-    let e: Value = serde_json::from_str(&line).unwrap();
+    let e = s.next();
     assert_eq!(
         (e["error"]["code"].clone(), e["id"].clone()),
         (json!(-32700), Value::Null)
     );
+    // Bytes that are not UTF-8 are a parse error too, and the server goes
+    // on reading (review of PR #13: it used to stop).
+    s.send_bytes(b"\xff\xfe\n");
+    let e = s.next();
+    assert_eq!(
+        (e["error"]["code"].clone(), e["id"].clone()),
+        (json!(-32700), Value::Null)
+    );
+    // A response from the client is not answered: the next line back is
+    // the ping's.
+    s.send(r#"{"jsonrpc":"2.0","id":9,"result":{}}"#);
+    s.ask(json!({"jsonrpc": "2.0", "id": 1, "method": "ping"}));
     let unknown = s.ask(json!({"jsonrpc": "2.0", "id": 2, "method": "tools/call",
         "params": {"name": "kill_everything", "arguments": {}}}));
     assert_eq!(unknown["error"]["code"], -32602);

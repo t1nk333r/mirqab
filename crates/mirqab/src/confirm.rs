@@ -27,7 +27,10 @@ pub fn ask(would_do: &[String], yes: bool, dry_run: bool) -> Answer {
         return Answer::Go;
     }
     let stdin = std::io::stdin();
-    if !stdin.is_terminal() {
+    // The question needs someone to see it as well as to answer it: with
+    // stdout piped, the prompt would vanish and the read would wait
+    // (review of PR #13).
+    if !stdin.is_terminal() || !std::io::stdout().is_terminal() {
         crate::out::err(strings::CONFIRM_NEEDS_TERMINAL);
         return Answer::No;
     }

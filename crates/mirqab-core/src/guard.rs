@@ -23,11 +23,18 @@ pub fn ancestry(root: &Root, pid: u32) -> Vec<u32> {
 }
 
 /// The parent pid from `proc/<pid>/stat`: the field after the command,
-/// whose parentheses may hold spaces and parentheses.
+/// whose parentheses may hold spaces, parentheses and any byte a process
+/// set with `prctl`, so the line is read as bytes (review of PR #13: a
+/// command name that was not UTF-8 ended the walk early).
 fn parent(root: &Root, pid: u32) -> Option<u32> {
-    let stat = root.read(&format!("proc/{pid}/stat")).ok()?;
-    let rest = &stat[stat.rfind(')')? + 1..];
-    rest.split_whitespace().nth(1)?.parse().ok()
+    let stat = root.read_bytes(&format!("proc/{pid}/stat")).ok()?;
+    let rest = &stat[stat.iter().rposition(|&b| b == b')')? + 1..];
+    std::str::from_utf8(rest)
+        .ok()?
+        .split_whitespace()
+        .nth(1)?
+        .parse()
+        .ok()
 }
 
 #[cfg(test)]
@@ -56,6 +63,19 @@ mod tests {
             ],
         );
         assert_eq!(ancestry(&root, 900), [900, 850, 400]);
+        act::remove_path(&d, false).unwrap();
+    }
+
+    #[test]
+    fn a_command_name_that_is_not_utf8_does_not_end_the_walk() {
+        let (root, d) = tree("bytes", &[(400, "zsh", 1)]);
+        act::write_file(
+            &d.join("proc/900/stat"),
+            b"900 (a\xff) b) S 400 1 1 0 -1\n",
+            false,
+        )
+        .unwrap();
+        assert_eq!(ancestry(&root, 900), [900, 400]);
         act::remove_path(&d, false).unwrap();
     }
 

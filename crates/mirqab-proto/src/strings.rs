@@ -540,6 +540,8 @@ pub fn mcp_unsupported(version: &str) -> String {
 pub const MCP_BAD_REQUEST: &str = "Invalid request";
 pub const MCP_PARSE_ERROR: &str = "Parse error";
 pub const MCP_TOO_LONG: &str = "Request too long";
+pub const MCP_NO_CAPABILITIES: &str =
+    "_meta must carry io.modelcontextprotocol/clientCapabilities as an object";
 
 pub fn mcp_unknown_method(method: &str) -> String {
     format!("Method not found: {method}")

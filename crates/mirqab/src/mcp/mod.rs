@@ -4,8 +4,9 @@
 //! It serves both eras of the protocol. A client of revision 2025-11-25 or
 //! earlier opens with `initialize`; a client of 2026-07-28 sends each
 //! request with `_meta["io.modelcontextprotocol/protocolVersion"]` and may
-//! ask `server/discover` first. Every result carries `resultType`, which
-//! older clients ignore; `server/discover` and `tools/list` also say how
+//! ask `server/discover` first. A request with no version in `_meta` is
+//! served as a legacy one. Every result carries `resultType`, which older
+//! clients ignore; `server/discover` and `tools/list` also say how
 //! long a client may cache them (`ttlMs`, `cacheScope`).
 
 mod rpc;
@@ -23,6 +24,7 @@ pub const MODERN: &str = "2026-07-28";
 /// The revisions served after `initialize`, newest first.
 pub const LEGACY: &[&str] = &["2025-11-25", "2025-06-18", "2025-03-26"];
 const META_VERSION: &str = "io.modelcontextprotocol/protocolVersion";
+const META_CAPABILITIES: &str = "io.modelcontextprotocol/clientCapabilities";
 /// The longest line read; a longer one is skipped with an error, so a
 /// client cannot make the server hold an unbounded line (review of PR #13).
 const MAX_LINE: usize = 8 << 20;
@@ -40,16 +42,26 @@ fn server_info() -> Value {
 /// The answer to one request.
 pub fn handle(socket: &Path, id: Value, method: &str, params: &Value) -> Value {
     // A modern request names its version; one this server does not serve
-    // is refused with the list it does (MCP 2026-07-28, -32022).
-    if let Some(v) = params.pointer("/_meta").and_then(|m| m.get(META_VERSION)) {
-        let v = v.as_str().unwrap_or_default();
-        if v != MODERN {
+    // is refused with the list it does (MCP 2026-07-28, -32022). It must
+    // also carry its capabilities (-32602 without them). A request with no
+    // version is served as a legacy one: the server keeps no session, so
+    // it cannot tell whether `initialize` came first, and does not try.
+    let meta = params.get("_meta");
+    if let Some(v) = meta.and_then(|m| m.get(META_VERSION)) {
+        if v.as_str() != Some(MODERN) {
+            let shown = v.as_str().map_or_else(|| v.to_string(), str::to_string);
             return rpc::error(
                 id,
                 rpc::UNSUPPORTED_VERSION,
-                &strings::mcp_unsupported(v),
+                &strings::mcp_unsupported(&shown),
                 Some(json!({"supported": supported(), "requested": v})),
             );
+        }
+        if !meta
+            .and_then(|m| m.get(META_CAPABILITIES))
+            .is_some_and(Value::is_object)
+        {
+            return rpc::error(id, rpc::INVALID_PARAMS, strings::MCP_NO_CAPABILITIES, None);
         }
     }
     match method {
@@ -59,6 +71,7 @@ pub fn handle(socket: &Path, id: Value, method: &str, params: &Value) -> Value {
             rpc::result(
                 id,
                 json!({
+                    "resultType": "complete",
                     "protocolVersion": version,
                     "capabilities": {"tools": {}},
                     "serverInfo": server_info(),
