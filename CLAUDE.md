@@ -161,7 +161,7 @@ it; a second reviewer reviews the review. A documentation writer updates
 ## Style
 
 - Rust: edition 2024, `cargo fmt`, clippy clean, no `unsafe` outside
-  `root.rs`, `uevent.rs` and the helper's syscalls, each with a
+  `root.rs`, `sys.rs`, `uevent.rs` and the helper's syscalls, each with a
   `// SAFETY:` comment (GObject subclassing in `mirqab-ui` uses the
   `glib` macros, not hand-written `unsafe`). No async runtime of our
   own: the daemon uses std threads, the interface GLib's main loop. Errors are values with one of

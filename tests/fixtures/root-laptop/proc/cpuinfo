@@ -1,0 +1,48 @@
+processor	: 0
+vendor_id	: ExampleVendor
+model name	: Example Laptop CPU 8-Core
+cpu MHz		: 3000.000
+cpu cores	: 8
+
+processor	: 1
+vendor_id	: ExampleVendor
+model name	: Example Laptop CPU 8-Core
+cpu MHz		: 3000.000
+cpu cores	: 8
+
+processor	: 2
+vendor_id	: ExampleVendor
+model name	: Example Laptop CPU 8-Core
+cpu MHz		: 3000.000
+cpu cores	: 8
+
+processor	: 3
+vendor_id	: ExampleVendor
+model name	: Example Laptop CPU 8-Core
+cpu MHz		: 3000.000
+cpu cores	: 8
+
+processor	: 4
+vendor_id	: ExampleVendor
+model name	: Example Laptop CPU 8-Core
+cpu MHz		: 3000.000
+cpu cores	: 8
+
+processor	: 5
+vendor_id	: ExampleVendor
+model name	: Example Laptop CPU 8-Core
+cpu MHz		: 3000.000
+cpu cores	: 8
+
+processor	: 6
+vendor_id	: ExampleVendor
+model name	: Example Laptop CPU 8-Core
+cpu MHz		: 3000.000
+cpu cores	: 8
+
+processor	: 7
+vendor_id	: ExampleVendor
+model name	: Example Laptop CPU 8-Core
+cpu MHz		: 3000.000
+cpu cores	: 8
+

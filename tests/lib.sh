@@ -39,6 +39,8 @@ MIRQAB_SCRATCH_PARENT="${TMPDIR:-/tmp}"
 
 SCRATCH=""
 _cleanup_scratch() {
+    # A daemon a test left running dies with its sandbox.
+    [[ -z ${DAEMON_PID:-} ]] || { kill "$DAEMON_PID" 2>/dev/null || true; wait "$DAEMON_PID" 2>/dev/null || true; }
     [[ -z $SCRATCH || ! -d $SCRATCH ]] || rm -rf -- "$SCRATCH"
 }
 trap _cleanup_scratch EXIT
@@ -115,4 +117,39 @@ capture() {
     OUTPUT="$("$@" 2>&1)"
     STATUS=$?
     set -e
+}
+
+# build_bins — build the workspace's binaries once per test file; sets BIN to
+# the directory that holds them.
+build_bins() {
+    [[ -n ${BIN:-} ]] && return 0
+    cargo build --locked --quiet --manifest-path "$REPO/Cargo.toml" --bins
+    BIN="$CARGO_TARGET_DIR/debug"
+}
+
+# start_daemon ROOT — run `mirqab daemon` on the fixture tree ROOT (a name
+# under tests/fixtures or a path) in the sandbox; waits for its `ready` line
+# and sets DAEMON_PID and MIRQAB_SOCKET. stop_daemon ends it; the scratch
+# cleanup on exit ends it too.
+start_daemon() {
+    local root=$1 line=""
+    [[ $root == /* ]] || root="$FIXTURES/$root"
+    build_bins
+    export MIRQAB_SOCKET="$XDG_RUNTIME_DIR/mirqab/daemon.sock"
+    mkfifo "$SANDBOX/daemon.out"
+    "$BIN/mirqab" daemon --root "$root" >"$SANDBOX/daemon.out" 2>"$SANDBOX/daemon.err" &
+    DAEMON_PID=$!
+    # The fifo blocks until the daemon opens it; its first line is `ready`.
+    if ! read -r -t 10 line <"$SANDBOX/daemon.out" || [[ $line != "ready $MIRQAB_SOCKET" ]]; then
+        echo "start_daemon: no ready line (got '$line'):" >&2
+        cat "$SANDBOX/daemon.err" >&2 || true
+        return 1
+    fi
+}
+
+stop_daemon() {
+    [[ -n ${DAEMON_PID:-} ]] || return 0
+    kill "$DAEMON_PID" 2>/dev/null || true
+    wait "$DAEMON_PID" 2>/dev/null || true
+    DAEMON_PID=""
 }

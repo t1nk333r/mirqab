@@ -12,7 +12,9 @@
 - **Planned at**: 2026-11-13, from the owner
 - **State**: IN PROGRESS. Phase A (skeleton and gates) implemented
   2026-11-13: `tools/lint.sh`, `tools/check-docs.sh`, `tools/secrets.sh`
-  pass on the branch, and `tests/run.sh` 93/93. Phases B to E open.
+  pass on the branch, and `tests/run.sh` 93/93. Phase B (daemon and
+  protocol) implemented 2026-11-13: `tests/run.sh --affected` 140/140.
+  Phases C to E open.
 
 ## Problem
 
@@ -532,6 +534,35 @@ squash merge leaves `e72bfef` out of `main`, and is removed then.
     `tests/golden/ui.json`.
 19. Tests: `proto` units, `tests/protocol.rs`, `tests/root.rs`,
     `tests/test-cli.sh`, `tests/test-units.sh`, the fixtures.
+
+Phase B as built (2026-11-13), where it differs from the steps above:
+
+- Three system calls std does not wrap live in
+  `crates/mirqab-core/src/sys.rs`, the one `unsafe` file of the daemon
+  besides `root.rs`: the peer's uid (`SO_PEERCRED`), `getuid`, and
+  adopting systemd's socket (`LISTEN_FDS`). Each block has a `SAFETY`
+  comment. CLAUDE.md's `unsafe` list gains `sys.rs`.
+- `act::signal` runs `kill -s SIG -- PID` through `exec.rs` instead of
+  calling kill(2), so it needs no `unsafe`; a signal is a rare,
+  user-started action. It refuses pid 0 and 1, the daemon itself and a
+  process of another uid now; the cgroup and compositor refusals of
+  architecture §5.4 come with the actions that need them (plans 006–008).
+- `selfcost.rs` reads `CLK_TCK` from `proc/self/auxv` (`AT_CLKTCK`)
+  through `Root`, falling back to 100, instead of calling `sysconf`.
+- `open`, `toggle` and `close` are the actions `ui.show`, `ui.toggle`
+  and `ui.hide`, so they take `--dry-run` like every other action. Without
+  an attached interface they reply `unavailable` until phase D starts one.
+- CLI exit codes: 0 done, 1 refused or failed, 2 no daemon, 64 usage.
+- "`open system` produces a `ui` event" is tested in Rust
+  (`crates/mirqab/tests/cli.rs`), which can hold a socket as the
+  interface; a shell has no Unix-socket client without adding one.
+  `tests/test-cli.sh` covers exit codes, help and `status --json`.
+- `tests/test-units.sh` runs `systemd-analyze verify --user
+  --recursive-errors=no` with a short runtime directory (a long one
+  overflows the socket path). The helper unit and the `.desktop` file
+  arrive with plan 015 and phase D, and their checks with them.
+- The config's keys are checked by hand in `config.rs`; a test checks
+  that `share/mirqab/config.schema.json` names the same keys and defaults.
 
 ### Phase C — history (PR 3)
 

@@ -1,0 +1,10 @@
+[Unit]
+Description=mirqab window
+Documentation=https://github.com/t1nk333r/mirqab
+PartOf=graphical-session.target
+After=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/mirqab-ui
+Restart=no

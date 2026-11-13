@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/t1nk333r/mirqab/share/mirqab/config.schema.json",
+  "title": "mirqab config.json",
+  "description": "~/.config/mirqab/config.json. The daemon is the only writer; change it with config.set. Mirrors crates/mirqab-core/src/config.rs.",
+  "type": "object",
+  "properties": {
+    "window": {
+      "type": "object",
+      "properties": {
+        "mode": {"enum": ["popover", "window"], "default": "popover"},
+        "anchor": {"enum": ["top-left", "top", "top-right", "bottom-left", "bottom", "bottom-right"], "default": "top-right"},
+        "marginEm": {"type": "number", "minimum": 0, "maximum": 10, "default": 0.5},
+        "widthEm": {"type": "number", "minimum": 30, "maximum": 120, "default": 58},
+        "heightEm": {"type": "number", "minimum": 20, "maximum": 80, "default": 40}
+      }
+    },
+    "live": {
+      "type": "object",
+      "properties": {
+        "intervalMs": {"type": "integer", "minimum": 1000, "maximum": 5000, "default": 1000, "description": "Interval of a live graph on screen; nothing else uses it."}
+      }
+    },
+    "theme": {
+      "type": "object",
+      "properties": {
+        "follow": {"type": ["string", "null"], "default": null, "description": "A desktop's token file to follow."},
+        "accent": {"type": ["string", "null"], "default": null},
+        "scheme": {"enum": ["dark", "light", "system"], "default": "dark"}
+      }
+    },
+    "units": {
+      "type": "object",
+      "properties": {
+        "temperature": {"enum": ["c", "f"], "default": "c"},
+        "clock": {"enum": ["auto", "12", "24"], "default": "auto"}
+      }
+    },
+    "home": {
+      "type": "object",
+      "properties": {
+        "pinned": {"type": "array", "items": {"type": "string"}, "default": []}
+      }
+    },
+    "tabs": {
+      "type": "object",
+      "properties": {
+        "hidden": {"type": "array", "items": {"type": "string"}, "default": []}
+      }
+    }
+  }
+}

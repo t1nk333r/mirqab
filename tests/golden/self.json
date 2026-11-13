@@ -1,0 +1,6 @@
+{
+  "daemon": {"cpu": 0.0, "rssBytes": 3145728, "threads": 4},
+  "ui": null,
+  "subscribers": {"self": 1},
+  "uptimeSec": 0
+}

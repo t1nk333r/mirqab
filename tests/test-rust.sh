@@ -4,6 +4,7 @@
 # run under Broadway in tests/test-ui-widgets.sh (plan 001 phase D).
 # mirqab:covers crates/mirqab-proto/** crates/mirqab-core/** crates/mirqab-view/**
 # mirqab:covers crates/mirqab-fand/** crates/mirqab/** crates/mirqab-ui/**
+# mirqab:covers tests/fixtures/** tests/golden/** share/mirqab/config.schema.json
 # mirqab:covers-shared
 
 sandbox

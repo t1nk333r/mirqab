@@ -1,0 +1,11 @@
+[Unit]
+Description=mirqab system monitor socket
+Documentation=https://github.com/t1nk333r/mirqab
+
+[Socket]
+ListenStream=%t/mirqab/daemon.sock
+SocketMode=0600
+DirectoryMode=0700
+
+[Install]
+WantedBy=sockets.target

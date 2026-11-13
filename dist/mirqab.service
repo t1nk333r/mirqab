@@ -1,0 +1,14 @@
+[Unit]
+Description=mirqab system monitor daemon
+Documentation=https://github.com/t1nk333r/mirqab
+Requires=mirqab.socket
+After=mirqab.socket
+
+[Service]
+Type=notify
+ExecStart=/usr/bin/mirqab daemon
+Restart=on-failure
+RestartSec=2
+
+[Install]
+Also=mirqab.socket

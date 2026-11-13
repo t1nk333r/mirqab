@@ -1,14 +1,90 @@
-//! `mirqab`: the daemon, the CLI and later the MCP server and tray
-//! (architecture §3). Phase B of plan 001 adds the daemon and the commands.
+//! `mirqab`: the daemon and the CLI in one binary (architecture §3, §11).
+//! A hand-written argument parser keeps it small (plan 001, "Rejected":
+//! clap).
 
-fn main() {
-    println!("mirqab {}", mirqab_core::proto::VERSION);
+mod cli;
+mod daemon;
+mod elevate;
+
+use mirqab_core::proto::strings;
+use std::path::PathBuf;
+use std::process::ExitCode;
+
+/// Exit codes: 0 done; 1 the daemon refused or failed; 2 no daemon; 64 a
+/// usage error.
+pub const EXIT_FAILED: u8 = 1;
+pub const EXIT_NO_DAEMON: u8 = 2;
+pub const EXIT_USAGE: u8 = 64;
+
+/// The socket every command may name, and what is left for the command.
+pub struct Args {
+    pub socket: Option<PathBuf>,
+    pub rest: Vec<String>,
 }
 
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn has_a_version() {
-        assert!(!mirqab_core::proto::VERSION.is_empty());
+fn usage_error(msg: &str) -> ExitCode {
+    eprintln!("{msg}");
+    ExitCode::from(EXIT_USAGE)
+}
+
+fn main() -> ExitCode {
+    let mut socket = None;
+    let mut rest = Vec::new();
+    let mut help = false;
+    let mut it = std::env::args().skip(1);
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--socket" => match it.next() {
+                Some(v) => socket = Some(PathBuf::from(v)),
+                None => return usage_error(&strings::missing_value("--socket")),
+            },
+            "-h" | "--help" => help = true,
+            "-V" | "--version" => {
+                println!("{} {}", strings::APP_NAME, mirqab_core::proto::VERSION);
+                return ExitCode::SUCCESS;
+            }
+            _ => rest.push(a),
+        }
+    }
+    let command = if rest.is_empty() {
+        String::new()
+    } else {
+        rest.remove(0)
+    };
+
+    // `mirqab`, `mirqab --help`, `mirqab help [COMMAND]`, `mirqab COMMAND --help`.
+    if command.is_empty() {
+        print!("{}", strings::CLI_USAGE);
+        return if help {
+            ExitCode::SUCCESS
+        } else {
+            ExitCode::from(EXIT_USAGE)
+        };
+    }
+    let topic = match (command.as_str(), help) {
+        ("help", true) if rest.is_empty() => Some("help".to_string()),
+        ("help", _) => Some(rest.first().cloned().unwrap_or_default()),
+        (c, true) => Some(c.to_string()),
+        _ => None,
+    };
+    if let Some(topic) = topic {
+        if topic.is_empty() {
+            print!("{}", strings::CLI_USAGE);
+            return ExitCode::SUCCESS;
+        }
+        return match strings::command_help(&topic) {
+            Some(text) => {
+                print!("{text}");
+                ExitCode::SUCCESS
+            }
+            None => usage_error(&strings::unknown_command(&topic)),
+        };
+    }
+
+    let args = Args { socket, rest };
+    match command.as_str() {
+        "daemon" => daemon::run(args),
+        "status" | "open" | "toggle" | "close" => cli::run(&command, args),
+        other => usage_error(&strings::unknown_command(other)),
     }
 }
