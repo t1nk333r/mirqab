@@ -250,6 +250,29 @@ Part 1 (2026-11-13), where it differs from the plan:
 - The restart advice's pressure condition uses the sampler's own last 60
   minutes of memory `some60`, not a history query.
 
+From the review of PR #7 (2026-11-13):
+
+- A suspended GPU is never woken: its sensor chip under `class/hwmon` is
+  skipped (`root-laptop` carries one as a trap), and `nvidia-smi` runs
+  only while no NVIDIA card is suspended (`gpu::nvidia_wanted`). After a
+  failed or empty `nvidia-smi` it waits 60 s.
+- `gpu.N` series are keyed by the card's place among all cards, in the
+  minute writer as in the live means; a suspended card leaves its slot
+  empty. Cards without a PCI vendor (simpledrm, vkms, USB display
+  adapters) are not GPUs.
+- `get` uses the youngest baseline 1–90 s old, and otherwise takes its own
+  second reading 200 ms later; with history off it averaged since the
+  daemon started. A subscription's first event reads against the minute
+  baseline when that is 1–90 s old.
+- Package watts: None for a decrease with no known wrap point and above
+  2 kW (a counter reset read as 62 kW). Battery watts take the absolute
+  value. `power.needsHelper` is true only where RAPL exists and cannot be
+  read, and only then does the CLI name the helper.
+- Left for a follow-up: reading static sensor files (labels, limits,
+  `cpu_capacity`) once at probe and slow sensors (disks) every 10 s; CPUs
+  brought online after the probe; matching `nvidia-smi` rows by PCI bus
+  id.
+
 Part 2 (2026-11-13), where it differs from the plan:
 
 - Memory "cache" is available − free, so used, cache and free add up to

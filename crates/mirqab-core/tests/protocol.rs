@@ -208,7 +208,22 @@ fn the_system_stream_matches_its_golden_file() {
     // The first sample has no previous reading, so no CPU percent yet.
     let golden: Value =
         serde_json::from_str(include_str!("../../../tests/golden/system.json")).unwrap();
-    assert_eq!(c.event("system").unwrap(), golden);
+    let mut got = c.event("system").unwrap();
+    // A slow start can make the probe's baseline over 1 s old, and the
+    // first event then reads against it: on a fixture nothing moved, so
+    // the rates are 0 instead of null.
+    for (group, key) in [
+        ("mem", "pageInPerSec"),
+        ("mem", "pageOutPerSec"),
+        ("mem", "swapInPerSec"),
+        ("mem", "swapOutPerSec"),
+        ("power", "packageWatts"),
+    ] {
+        if got[group][key] == json!(0.0) {
+            got[group][key] = Value::Null;
+        }
+    }
+    assert_eq!(got, golden);
 }
 
 #[test]

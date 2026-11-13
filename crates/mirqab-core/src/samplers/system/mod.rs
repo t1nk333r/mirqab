@@ -38,6 +38,14 @@ const LIVE_STALE: Duration = Duration::from_secs(10);
 /// `nvidia-smi` is a process spawn; it runs at most this often, so a 1 s
 /// live stream repeats the GPU fields every other event (plan 002).
 const NVIDIA_EVERY: Duration = Duration::from_secs(2);
+/// After a failed or empty `nvidia-smi` (no driver: nouveau, vfio), wait
+/// this long before the next try (review of PR #7).
+const NVIDIA_RETRY: Duration = Duration::from_secs(60);
+/// A baseline younger than this gives no useful rate; older than the
+/// minute gap, a stale one (review of PR #7).
+const BASELINE_MIN: Duration = Duration::from_secs(1);
+/// How long `get` waits for a second reading when no baseline fits.
+const SNAPSHOT_GAP: Duration = Duration::from_millis(200);
 /// Restart advice (plan 002): uptime over 30 days, or over 7 with swap more
 /// than half full or memory pressure above 10 % for the last hour.
 const ADVICE_UPTIME: u64 = 30 * 86_400;
@@ -103,6 +111,17 @@ fn wall_now() -> u64 {
         .unwrap_or(0)
 }
 
+/// Whether `nvidia-smi` should run again, given when it last ran and
+/// whether that found nothing.
+fn nvidia_due(last: Option<(Instant, bool)>, now: Instant) -> bool {
+    match last {
+        None => true,
+        Some((at, empty)) => {
+            now.saturating_duration_since(at) >= if empty { NVIDIA_RETRY } else { NVIDIA_EVERY }
+        }
+    }
+}
+
 fn hottest(data: &SystemData, kind: &str) -> Option<f64> {
     data.temps
         .iter()
@@ -116,12 +135,16 @@ impl System {
         Self::default()
     }
 
-    fn nvidia_rows(&mut self, now: Instant) -> Vec<NvidiaRow> {
-        if !self.has_nvidia {
+    fn nvidia_rows(&mut self, root: &Root, now: Instant) -> Vec<NvidiaRow> {
+        if !self.has_nvidia || !gpu::nvidia_wanted(root) {
             return Vec::new();
         }
+        let last = self
+            .nvidia
+            .as_ref()
+            .map(|(at, rows)| (*at, rows.is_empty()));
         match &self.nvidia {
-            Some((at, rows)) if now.duration_since(*at) < NVIDIA_EVERY => rows.clone(),
+            Some((_, rows)) if !nvidia_due(last, now) => rows.clone(),
             _ => {
                 let rows = gpu::query_nvidia();
                 self.nvidia = Some((now, rows.clone()));
@@ -186,7 +209,7 @@ impl System {
             _ => temps::throttling_by_clock(&temps, mhz_avg, self.mhz_max),
         };
         let thermal = temps::thermal(&temps, throttling);
-        let nvidia = self.nvidia_rows(cur.at);
+        let nvidia = self.nvidia_rows(root, cur.at);
         let gpus = gpu::read(root, &nvidia);
         let package = match (prev.and_then(|p| p.energy), cur.energy) {
             (Some((p, _)), Some((n, max))) => power::watts(p, n, max, secs).map(cpu::round1),
@@ -219,6 +242,7 @@ impl System {
                 package_watts: package,
                 battery_watts: battery,
                 source: source.to_string(),
+                needs_helper: power::needs_helper(root),
             }),
             uptime_sec: uptime,
             boot_time: cur.stat.btime,
@@ -347,13 +371,13 @@ impl System {
         }
         put("temp.cpu", mean("temp.cpu", hottest(&data, "cpu")));
         put("temp.gpu", mean("temp.gpu", hottest(&data, "gpu")));
-        for (n, g) in data
-            .gpus
-            .iter()
-            .filter(|g| !g.suspended)
-            .take(2)
-            .enumerate()
-        {
+        // Keyed by the card's place among all cards, as `accumulate` and
+        // the page are; a suspended card is skipped, not renumbered
+        // (review of PR #7).
+        for (n, g) in data.gpus.iter().take(2).enumerate() {
+            if g.suspended {
+                continue;
+            }
             let busy = ["gpu.0.busy", "gpu.1.busy"][n];
             put(busy, mean(busy, g.busy_percent));
             put(
@@ -373,6 +397,17 @@ impl System {
         }
         self.minute_prev = Some((cur, wall));
         out
+    }
+}
+
+impl System {
+    /// The minute baseline when it is 1–90 s old.
+    fn minute_baseline(&self, now: Instant) -> Option<Reading> {
+        let (r, _) = self.minute_prev.as_ref()?;
+        let age = now.saturating_duration_since(r.at);
+        (BASELINE_MIN..=Duration::from_secs(MAX_MINUTE_GAP_SECS))
+            .contains(&age)
+            .then(|| r.clone())
     }
 }
 
@@ -416,27 +451,68 @@ impl Sampler for System {
 
     fn sample(&mut self, root: &Root, now: Instant) -> Value {
         let cur = Reading::take(root, now, &self.cpu_ids);
+        // Without a recent live baseline (the first event of a
+        // subscription), the minute one when it is fresh enough.
         let prev = self
             .live
             .take()
-            .filter(|p| now.duration_since(p.at) <= LIVE_STALE);
+            .filter(|p| now.duration_since(p.at) <= LIVE_STALE)
+            .or_else(|| self.minute_baseline(now));
         let data = self.build(root, &cur, prev.as_ref());
         self.accumulate(&data);
         self.live = Some(cur);
         serde_json::to_value(data).unwrap_or(Value::Null)
     }
 
-    /// `get`: rates against the minute baseline, which it does not move,
-    /// so a `get` cannot shorten a subscriber's window (review of plan 001
-    /// phase B).
+    /// `get`: rates against the youngest of the live and minute baselines,
+    /// neither of which it moves, so a `get` cannot shorten a subscriber's
+    /// window (review of plan 001 phase B).
+    /// With no baseline 1–90 s old (history off, or after a sleep), it
+    /// takes its own second reading 200 ms later (review of PR #7: it
+    /// averaged since the daemon started).
     fn snapshot(&mut self, root: &Root, now: Instant) -> Value {
-        let cur = Reading::take(root, now, &self.cpu_ids);
-        let prev = self.minute_prev.as_ref().map(|(r, _)| r.clone());
-        let data = self.build(root, &cur, prev.as_ref());
+        let young = |r: &Reading| {
+            let age = now.saturating_duration_since(r.at);
+            (BASELINE_MIN..=Duration::from_secs(MAX_MINUTE_GAP_SECS)).contains(&age)
+        };
+        let prev = self
+            .live
+            .iter()
+            .chain(self.minute_prev.iter().map(|(r, _)| r))
+            .filter(|r| young(r))
+            .min_by_key(|r| now.saturating_duration_since(r.at))
+            .cloned();
+        let (prev, cur) = match prev {
+            Some(p) => (p, Reading::take(root, now, &self.cpu_ids)),
+            None => {
+                let first = Reading::take(root, now, &self.cpu_ids);
+                std::thread::sleep(SNAPSHOT_GAP);
+                (
+                    first,
+                    Reading::take(root, now + SNAPSHOT_GAP, &self.cpu_ids),
+                )
+            }
+        };
+        let data = self.build(root, &cur, Some(&prev));
         serde_json::to_value(data).unwrap_or(Value::Null)
     }
 
     fn minute(&mut self, root: &Root) -> Vec<(&'static str, i64)> {
         self.minute_at(root, wall_now(), Instant::now())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_failed_nvidia_smi_waits_a_minute() {
+        let t = Instant::now();
+        assert!(nvidia_due(None, t));
+        assert!(!nvidia_due(Some((t, false)), t + Duration::from_secs(1)));
+        assert!(nvidia_due(Some((t, false)), t + Duration::from_secs(2)));
+        assert!(!nvidia_due(Some((t, true)), t + Duration::from_secs(30)));
+        assert!(nvidia_due(Some((t, true)), t + Duration::from_secs(60)));
     }
 }

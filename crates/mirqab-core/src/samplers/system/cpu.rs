@@ -130,7 +130,7 @@ pub fn cpulist(text: &str) -> Vec<u32> {
         match part.split_once('-') {
             Some((a, b)) => {
                 if let (Ok(a), Ok(b)) = (a.parse::<u32>(), b.parse::<u32>()) {
-                    out.extend(a..=b.min(a + 4095));
+                    out.extend(a..=b.min(a.saturating_add(4095)));
                 }
             }
             None => out.extend(part.parse::<u32>().ok()),

@@ -221,7 +221,10 @@ fn print_sensors(v: &Value) {
     if let Some(p) = &d.power {
         let pk = p.package_watts.map(watts);
         let bt = p.battery_watts.map(watts);
-        println!("{}", strings::power_line(pk.as_deref(), bt.as_deref()));
+        println!(
+            "{}",
+            strings::power_line(pk.as_deref(), bt.as_deref(), p.needs_helper)
+        );
     }
 }
 
