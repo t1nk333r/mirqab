@@ -13,6 +13,8 @@ commands:
   open [TAB] [--window]                 show the window, on TAB
   toggle [TAB]                          show the window, or hide it if it is shown
   close                                 hide the window
+  history SERIES... [--range R] [--json]  stored minutes (R: 1h, 24h, 7d, 30d; default 1h)
+  history --list                        the series history keeps
   help [COMMAND]                        this text, or one command's
 
 options for every command:
@@ -41,6 +43,10 @@ pub fn command_help(command: &str) -> Option<&'static str> {
              Shows the window, or hides it if it is shown.\n"
         }
         "close" => "usage: mirqab close\nHides the window.\n",
+        "history" => {
+            "usage: mirqab history SERIES... [--range R] [--json]\n       mirqab history --list\n\
+             Prints the average and peak of each bucket of stored minutes. R is 1h (default), 24h, 7d or 30d.\n"
+        }
         "help" => "usage: mirqab help [COMMAND]\n",
         _ => return None,
     })
@@ -133,7 +139,9 @@ mod tests {
 
     #[test]
     fn every_command_in_the_usage_has_help() {
-        for c in ["daemon", "status", "open", "toggle", "close", "help"] {
+        for c in [
+            "daemon", "status", "open", "toggle", "close", "history", "help",
+        ] {
             assert!(
                 CLI_USAGE.contains(&format!("  {c}")),
                 "{c} missing from usage"

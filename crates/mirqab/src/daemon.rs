@@ -3,6 +3,7 @@
 
 use crate::{Args, EXIT_FAILED, EXIT_USAGE};
 use mirqab_core::config::Config;
+use mirqab_core::history::History;
 use mirqab_core::proto::strings;
 use mirqab_core::server::{self, ListenError, Options};
 use mirqab_core::{Root, sys};
@@ -77,6 +78,7 @@ pub fn run(args: Args) -> ExitCode {
         root,
         config_path: Config::default_path(),
         samplers: Vec::new(),
+        history: Some(History::default_path()),
     }) {
         Ok(s) => s,
         Err(ListenError::AlreadyRunning) => {

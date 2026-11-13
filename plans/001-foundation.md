@@ -14,7 +14,7 @@
   2026-11-13: `tools/lint.sh`, `tools/check-docs.sh`, `tools/secrets.sh`
   pass on the branch, and `tests/run.sh` 93/93. Phase B (daemon and
   protocol) implemented 2026-11-13: `tests/run.sh --affected` 140/140.
-  Phases C to E open.
+  Phase C (history) implemented 2026-11-13: 152/152. Phases D and E open.
 
 ## Problem
 
@@ -626,6 +626,36 @@ Deferred, each to where the code it guards is written:
 23. `history.query` and `history.events` methods; CLI `mirqab history
     <series> [--range R] [--json]` and `mirqab history --list`.
 24. `tests/history.rs`; `tests/golden/system.json` (core shape).
+
+Phase C as built (2026-11-13), where it differs from the steps above:
+
+- **The 40 MB budget is tight, and holds only with two storage changes.**
+  Measured by `crates/mirqab-core/tests/history.rs` on the development
+  machine (SQLite 3.54.0, 4 KiB pages), 64 series × 43,200 minutes:
+  - 43.4 MB written minute by minute with small values. Each series' run of
+    rows grows in the middle of the `(series, ts)` key, so pages split half
+    full; architecture §6.2's 35 MB assumed packed pages.
+  - 44.7 MB with half the series holding byte counts in the tens of
+    gigabytes (6-byte integers), packed except for the last day.
+  - 42.0 MB after storing minutes from 2026-01-01 instead of 1970
+    (`history::EPOCH`: a 3-byte integer for 15 years, not 4 bytes).
+  - **39.1 MB** with one series in four holding byte counts, which is
+    §6.1's mix (memory, swap, VRAM, network and disk bytes; the rest
+    percentages, temperatures, speeds and counts). The test fills that mix.
+  The two changes: the epoch, and `History::compact` (`VACUUM`) once a day
+  from the minute writer, which packs the split pages. A machine with many
+  network interfaces and disks fills more byte series and can pass 40 MB;
+  owner question: raise the budget to 48 MB, or store byte series in KiB.
+- `history.query` returns unscaled values, `[unixSeconds, avg, max]` per
+  bucket, and omits empty buckets. Buckets align to `EPOCH`, which is on a
+  2-hour boundary, so every range's buckets start on the hour.
+- A memory minute stores the mean of the live samples taken during it when
+  there were any, else one point sample (architecture §6.3).
+- A minute whose counter baseline is more than 90 s old stores no CPU
+  value: the machine slept or the daemon stalled.
+- `history.list` (the series history keeps) backs `mirqab history --list`;
+  `mirqab history SERIES… [--range R] [--json]` prints one bucket a line.
+  Plan 005 owns the rest of the read commands.
 
 ### Phase D — interface shell (PR 4)
 

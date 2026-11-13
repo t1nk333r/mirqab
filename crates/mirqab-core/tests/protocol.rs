@@ -69,6 +69,7 @@ fn start(name: &str) -> Daemon {
         root: Root::new(fixture("root-desktop")),
         config_path: dir.join("config/mirqab/config.json"),
         samplers: vec![Box::new(Fake), Box::new(Missing)],
+        history: None,
     })
     .expect("listens");
     std::thread::spawn(move || server.serve());
@@ -158,10 +159,10 @@ fn hello_comes_first_with_the_capabilities() {
     let d = start("hello");
     let mut c = Client::connect(&d);
     let caps = c.hello();
-    assert_eq!(caps, ["fake", "self", "ui"]);
+    assert_eq!(caps, ["fake", "self", "system", "ui"]);
     assert_eq!(
         c.call("capabilities", None, Value::Null).unwrap(),
-        json!(["fake", "self", "ui"])
+        json!(["fake", "self", "system", "ui"])
     );
 }
 
@@ -190,6 +191,18 @@ fn subscribe_brings_events_and_unsubscribe_stops_them() {
         .set_read_timeout(Some(Duration::from_millis(2600)))
         .unwrap();
     assert!(c.event("self").is_none(), "no event after unsubscribe");
+}
+
+#[test]
+fn the_system_stream_matches_its_golden_file() {
+    let d = start("system");
+    let mut c = Client::connect(&d);
+    c.hello();
+    c.call("subscribe", Some("system"), json!({})).unwrap();
+    // The first sample has no previous reading, so no CPU percent yet.
+    let golden: Value =
+        serde_json::from_str(include_str!("../../../tests/golden/system.json")).unwrap();
+    assert_eq!(c.event("system").unwrap(), golden);
 }
 
 #[test]

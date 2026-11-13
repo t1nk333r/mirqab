@@ -92,6 +92,36 @@ fn print_status(v: &Value) {
     );
 }
 
+/// One line per bucket: unix time, series, average and peak; or, with
+/// `--list`, one series per line.
+fn print_history(v: &Value, list: bool) {
+    if list {
+        for s in v.as_array().into_iter().flatten() {
+            println!(
+                "{}\t{}",
+                s["key"].as_str().unwrap_or("?"),
+                s["unit"].as_str().unwrap_or("")
+            );
+        }
+        return;
+    }
+    for (key, s) in v["series"].as_object().into_iter().flatten() {
+        if s.is_null() {
+            eprintln!("mirqab: history keeps no series named {key}");
+            continue;
+        }
+        let unit = s["unit"].as_str().unwrap_or("");
+        for p in s["points"].as_array().into_iter().flatten() {
+            println!(
+                "{}\t{key}\tavg {:.2}\tmax {:.2}\t{unit}",
+                p[0].as_i64().unwrap_or(0),
+                p[1].as_f64().unwrap_or(0.0),
+                p[2].as_f64().unwrap_or(0.0)
+            );
+        }
+    }
+}
+
 pub fn run(command: &str, args: Args) -> ExitCode {
     let Some(socket) = args.socket.clone().or_else(server::default_socket) else {
         eprintln!(
@@ -107,9 +137,19 @@ pub fn run(command: &str, args: Args) -> ExitCode {
     let mut window = false;
     let mut dry_run = false;
     let mut tab = None;
-    for a in &args.rest {
+    let mut list = false;
+    let mut range = "1h".to_string();
+    let mut series: Vec<String> = Vec::new();
+    let mut it = args.rest.iter();
+    while let Some(a) = it.next() {
         match a.as_str() {
-            "--json" if command == "status" => json_out = true,
+            "--json" if command == "status" || command == "history" => json_out = true,
+            "--list" if command == "history" => list = true,
+            "--range" if command == "history" => match it.next() {
+                Some(r) => range = r.clone(),
+                None => return usage(&strings::missing_value("--range")),
+            },
+            s if command == "history" && !s.starts_with('-') => series.push(s.to_string()),
             "--window" if command == "open" => window = true,
             "--dry-run" if command != "status" => dry_run = true,
             s if !s.starts_with('-')
@@ -121,8 +161,15 @@ pub fn run(command: &str, args: Args) -> ExitCode {
             other => return usage(&strings::unknown_option(other)),
         }
     }
+    if command == "history" && !list && series.is_empty() {
+        return usage(strings::command_help("history").unwrap_or_default());
+    }
     let req = match command {
         "status" => Request::new(1, "status"),
+        "history" if list => Request::new(1, "history.list"),
+        "history" => {
+            Request::new(1, "history.query").with_params(json!({"series": series, "range": range}))
+        }
         _ => {
             let (name, args) = match command {
                 "open" => (
@@ -140,7 +187,9 @@ pub fn run(command: &str, args: Args) -> ExitCode {
         Ok(v) => {
             if command == "status" && !json_out {
                 print_status(&v);
-            } else if command == "status" || dry_run {
+            } else if command == "history" && !json_out {
+                print_history(&v, list);
+            } else if command == "status" || command == "history" || dry_run {
                 println!("{v}");
             }
             ExitCode::SUCCESS
