@@ -277,6 +277,11 @@ fn the_menu_follows_hidden_tabs_when_the_host_shows_it() {
         !after.contains("\"System\""),
         "hidden without a click: {after}"
     );
+    // The rest stays: an unreachable daemon would empty the tab list too.
+    assert!(
+        after.contains("\"Home\"") && after.contains("\"Quit daemon\""),
+        "{after}"
+    );
 }
 
 #[test]
