@@ -14,9 +14,40 @@ use serde_json::{Value, json};
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::process::ExitCode;
+use std::time::{Duration, Instant};
 
 const DEFAULT_SECS: u64 = 5;
 const MIN_SECS: u64 = 2;
+/// An hour: past it a bar would show its first reading all day.
+const MAX_SECS: u64 = 3600;
+/// Events come at the shortest interval any subscriber asked for, so the
+/// bar holds a changed reading back until its own interval has passed,
+/// less this, so jitter does not skip every other event.
+const SLACK: Duration = Duration::from_millis(250);
+
+/// Whether a changed reading may print now: always after a reading with no
+/// value (the first real one should not wait), otherwise once `secs` (less
+/// the slack) have passed since the last line (review of PR #10: with the
+/// window open live, `--interval 5` printed every second).
+struct Throttle {
+    last_emit: Option<Instant>,
+    last_unknown: bool,
+}
+
+impl Throttle {
+    fn allow(&self, now: Instant, secs: u64) -> bool {
+        match self.last_emit {
+            None => true,
+            Some(_) if self.last_unknown => true,
+            Some(at) => now.saturating_duration_since(at) + SLACK >= Duration::from_secs(secs),
+        }
+    }
+
+    fn emitted(&mut self, now: Instant, unknown: bool) {
+        self.last_emit = Some(now);
+        self.last_unknown = unknown;
+    }
+}
 
 fn usage(msg: &str) -> ExitCode {
     eprintln!("{msg}");
@@ -47,8 +78,9 @@ fn parse(rest: &[String]) -> Result<Option<Opts>, ExitCode> {
                     .next()
                     .ok_or_else(|| usage(&strings::missing_value("--interval")))?;
                 secs = v
-                    .parse()
-                    .map_err(|_| usage(&strings::bar_bad_interval(v)))?;
+                    .parse::<u64>()
+                    .map_err(|_| usage(&strings::bar_bad_interval(v)))?
+                    .min(MAX_SECS);
             }
             "--format" => {
                 let v = it
@@ -89,7 +121,8 @@ fn combo_parts(socket: &std::path::Path) -> Vec<String> {
         .unwrap_or_else(|| items::COMBO_DEFAULT.iter().map(|s| s.to_string()).collect())
 }
 
-fn reading_line(o: &Opts, combo: &[String], data: &Value) -> String {
+/// The output line and whether it carries no value yet.
+fn reading_line(o: &Opts, combo: &[String], data: &Value) -> (String, bool) {
     let d: SystemData = serde_json::from_value(data.clone()).unwrap_or_default();
     // Known items always read; `parse` refused the others.
     let r = items::read(&o.item, &d, combo).unwrap_or(items::Reading {
@@ -98,7 +131,7 @@ fn reading_line(o: &Opts, combo: &[String], data: &Value) -> String {
         class: "unknown",
         percentage: None,
     });
-    format::line(o.format, &o.item, &r)
+    (format::line(o.format, &o.item, &r), r.class == "unknown")
 }
 
 /// Prints `line`; false once stdout is closed.
@@ -125,7 +158,7 @@ pub fn run(args: Args) -> ExitCode {
     if !o.watch {
         return match call(&socket, Request::new(1, "get").with_stream(stream::SYSTEM)) {
             Ok(v) => {
-                emit(&reading_line(&o, &combo, &v));
+                emit(&reading_line(&o, &combo, &v).0);
                 ExitCode::SUCCESS
             }
             Err(e) => crate::cli::exit_for(&socket, e),
@@ -144,13 +177,17 @@ fn watch(o: &Opts, combo: &[String], socket: &std::path::Path) -> ExitCode {
     };
     let req = Request::new(1, "subscribe")
         .with_stream(stream::SYSTEM)
-        .with_params(json!({"interval": o.secs * 1000}));
+        .with_params(json!({"interval": o.secs.saturating_mul(1000)}));
     if (&conn).write_all(&frame::encode(&req)).is_err() {
         no_daemon(socket, "the connection closed");
         return ExitCode::from(EXIT_NO_DAEMON);
     }
     let mut reader = BufReader::new(&conn);
     let mut last = String::new();
+    let mut throttle = Throttle {
+        last_emit: None,
+        last_unknown: false,
+    };
     let mut line = String::new();
     loop {
         line.clear();
@@ -171,19 +208,66 @@ fn watch(o: &Opts, combo: &[String], socket: &std::path::Path) -> ExitCode {
                 }
             }
             Ok(ServerFrame::Event(ev)) if ev.stream == stream::SYSTEM => {
-                let out = reading_line(o, combo, &ev.data);
-                if out != last {
+                let (out, unknown) = reading_line(o, combo, &ev.data);
+                let now = Instant::now();
+                if out != last && throttle.allow(now, o.secs) {
                     if !emit(&out) {
                         return ExitCode::SUCCESS;
                     }
+                    throttle.emitted(now, unknown);
                     last = out;
                 } else if mirqab_core::sys::stdout_closed() {
-                    // Checked on every event, so an unchanged reading cannot
-                    // keep a closed bar's process alive.
+                    // Checked on every event that prints nothing, held back
+                    // or unchanged, so it cannot keep a closed bar's process
+                    // alive.
                     return ExitCode::SUCCESS;
                 }
             }
             _ => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_changed_reading_waits_for_the_interval_unless_the_last_had_no_value() {
+        let t0 = Instant::now();
+        let mut t = Throttle {
+            last_emit: None,
+            last_unknown: false,
+        };
+        assert!(t.allow(t0, 5), "the first line");
+        t.emitted(t0, false);
+        assert!(!t.allow(t0 + Duration::from_secs(1), 5), "held back at 1 s");
+        assert!(
+            !t.allow(t0 + Duration::from_millis(4700), 5),
+            "still held at 4.7 s"
+        );
+        assert!(
+            t.allow(t0 + Duration::from_millis(4800), 5),
+            "jitter allowed"
+        );
+        // After a value, a reading with no value is held like any change.
+        t.emitted(t0, true);
+        assert!(
+            t.allow(t0 + Duration::from_secs(1), 5),
+            "after a reading with no value, the first real one goes at once"
+        );
+    }
+
+    #[test]
+    fn the_interval_is_clamped_to_two_seconds_and_an_hour() {
+        let secs = |v: &str| {
+            parse(&["cpu".into(), "--interval".into(), v.into()])
+                .ok()
+                .flatten()
+                .map(|o| o.secs)
+        };
+        assert_eq!(secs("1"), Some(MIN_SECS));
+        assert_eq!(secs("99999999999999999"), Some(MAX_SECS));
+        assert_eq!(secs("7"), Some(7));
     }
 }

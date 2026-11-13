@@ -19,6 +19,13 @@ capture "$BIN/mirqab" bar nope
 status_is "an unknown item is a usage error" 64 "$STATUS"
 capture "$BIN/mirqab" bar cpu --format xml
 status_is "an unknown format is a usage error" 64 "$STATUS"
+capture "$BIN/mirqab" bar cpu --interval soon
+status_is "a bad interval is a usage error" 64 "$STATUS"
+capture "$BIN/mirqab" bar cpu --interval
+status_is "a missing interval is a usage error" 64 "$STATUS"
+export MIRQAB_SOCKET="$XDG_RUNTIME_DIR/mirqab/daemon.sock"
+capture timeout 10 "$BIN/mirqab" bar cpu --watch
+status_is "--watch with no daemon exits 2" 2 "$STATUS"
 
 # A copy of root-desktop, so the watch case can swap counters under it.
 ROOT="$SANDBOX/root"
@@ -42,15 +49,27 @@ capture "$BIN/mirqab" bar temp
 is "temperature class from the thermal word" cool "$(jq -r .class <<<"$OUTPUT")"
 unlike "no markup in the text" "$(jq -r .text <<<"$OUTPUT")" "<"
 
+# status_until JQ WANT — poll `status --json` up to 5 s for JQ to be WANT.
+status_until() {
+    local v=""
+    for _ in $(seq 50); do
+        v="$("$BIN/mirqab" status --json 2>/dev/null | jq -r "$1")"
+        [[ $v == "$2" ]] && break
+        sleep 0.1
+    done
+    printf '%s' "$v"
+}
+
 # --watch: one line for an unchanged reading; a second once the CPU
 # counters move; an interval of 1 s is raised to the 2 s floor.
 "$BIN/mirqab" bar cpu --watch --interval 1 --format plain >"$SANDBOX/watch.out" &
 watcher=$!
-sleep 1
-is "the interval is raised to 2 s" 2000 "$("$BIN/mirqab" status --json | jq -r '.streams.system.intervalMs')"
+is "the interval is raised to 2 s" 2000 "$(status_until '.streams.system.intervalMs' 2000)"
 sleep 4
 is "one line while unchanged" 1 "$(wc -l <"$SANDBOX/watch.out" | tr -d ' ')"
-cp "$FIXTURES/root-desktop.t1/proc/stat" "$ROOT/proc/stat"
+# Swapped in whole, so the sampler never reads half a file.
+cp "$FIXTURES/root-desktop.t1/proc/stat" "$ROOT/proc/stat.new"
+mv "$ROOT/proc/stat.new" "$ROOT/proc/stat"
 sleep 5
 kill "$watcher" 2>/dev/null || true
 wait "$watcher" 2>/dev/null || true
@@ -64,6 +83,6 @@ start=$SECONDS
 timeout 20 "$BIN/mirqab" bar mem --watch --format plain | head -1 >/dev/null
 is "a closed pipe ends --watch" 0 "${PIPESTATUS[0]}"
 ((SECONDS - start < 15)) && ok || not_ok "it ended within a few intervals"
-is "no subscriber is left" 0 "$("$BIN/mirqab" status --json | jq -r '.streams.system.subscribers')"
+is "no subscriber is left" 0 "$(status_until '.streams.system.subscribers' 0)"
 
 stop_daemon

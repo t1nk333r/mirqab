@@ -28,6 +28,11 @@ fi
 W="$REPO/contrib/waybar/README.md"
 json="$(awk '/^```json$/{on=1; next} /^```$/{on=0} on' "$W")"
 is "the Waybar snippet is valid JSON" true "$(jq -r 'type == "object"' <<<"$json" 2>/dev/null)"
-for item in $(jq -r '.[].exec | split(" ")[2]' <<<"$json"); do
+# The item is the word after `bar`, wherever flags stand.
+for item in $(jq -r '.[].exec | split(" ") | .[(index("bar") + 1)]' <<<"$json"); do
     like "the Waybar example's item $item is known" " $known " " $item "
 done
+# Waybar restarts a continuous exec only with restart-interval, and reads
+# text as markup unless escape is set.
+is "every --watch module restarts" 0 "$(jq '[.[] | select((.exec | test("--watch")) and (."restart-interval" | type) != "number")] | length' <<<"$json")"
+is "every module escapes its text" 0 "$(jq '[.[] | select(.escape != true)] | length' <<<"$json")"
