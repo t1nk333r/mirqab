@@ -134,6 +134,7 @@ name = "mirqab-view"
 version = "0.1.0"
 dependencies = [
  "mirqab-proto",
+ "serde_json",
 ]
 
 [[package]]

@@ -133,6 +133,111 @@ pub fn status_lines(
     out
 }
 
+// --- The interface (plan 001 phase D) -------------------------------------
+
+/// The value shown where a number is missing (no sample yet, or none
+/// possible on this machine).
+pub const NO_VALUE: &str = "\u{2014}";
+
+/// Byte units, SI (1 kB = 1000 B) as GNOME shows sizes.
+pub const BYTE_UNITS: [&str; 6] = ["B", "kB", "MB", "GB", "TB", "PB"];
+pub const PER_SECOND: &str = "/s";
+pub const PERCENT: &str = "%";
+pub const DEGREES_C: &str = "\u{b0}C";
+pub const DEGREES_F: &str = "\u{b0}F";
+
+/// A duration of whole units: `45s`, `12m`, `5h 12m`, `3d 4h`.
+pub fn duration_parts(days: u64, hours: u64, minutes: u64, seconds: u64) -> String {
+    if days > 0 {
+        format!("{days}d {hours}h")
+    } else if hours > 0 {
+        format!("{hours}h {minutes}m")
+    } else if minutes > 0 {
+        format!("{minutes}m")
+    } else {
+        format!("{seconds}s")
+    }
+}
+
+/// A tab's name, on its sidebar tile and as its page title.
+pub fn tab_label(id: &str) -> Option<&'static str> {
+    Some(match id {
+        "home" => "Home",
+        "apps" => "Apps",
+        "system" => "System",
+        "fans" => "Fans",
+        "disk" => "Disk",
+        "network" => "Network",
+        "devices" => "Devices",
+        "battery" => "Battery",
+        "volume" => "Volume",
+        "ports" => "Ports",
+        "agents" => "Agents",
+        "awake" => "Awake",
+        "time" => "Time",
+        "weather" => "Weather",
+        "trends" => "Trends",
+        "support" => "Support",
+        "settings" => "Settings",
+        _ => return None,
+    })
+}
+
+/// The placeholder on a tab whose plan has not landed yet.
+pub fn placeholder_title(tab: &str) -> String {
+    format!("{} is not built yet", tab_label(tab).unwrap_or(tab))
+}
+
+pub fn placeholder_body(plan: u32) -> String {
+    format!("Plan {plan:03} fills this tab.")
+}
+
+/// The footer's cost line: daemon and interface together.
+pub fn footer_cost(cpu: &str, memory: &str) -> String {
+    format!("self {cpu} \u{b7} {memory}")
+}
+
+/// The footer's tooltip: the two processes apart.
+pub fn footer_cost_detail(daemon: (&str, &str), ui: Option<(&str, &str)>) -> String {
+    let mut out = format!("daemon {} \u{b7} {}", daemon.0, daemon.1);
+    if let Some((cpu, mem)) = ui {
+        out.push_str(&format!("\ninterface {cpu} \u{b7} {mem}"));
+    }
+    out
+}
+
+/// The machine line in the footer: CPU model and uptime.
+pub fn machine_line(cpu_model: Option<&str>, uptime: Option<&str>) -> String {
+    match (cpu_model, uptime) {
+        (Some(c), Some(u)) => format!("{c} \u{b7} up {u}"),
+        (Some(c), None) => c.to_string(),
+        (None, Some(u)) => format!("up {u}"),
+        (None, None) => String::new(),
+    }
+}
+
+pub const DISCONNECTED: &str = "Not connected to the daemon";
+pub fn reconnecting(seconds: u64) -> String {
+    format!("Not connected to the daemon; trying again in {seconds} s")
+}
+pub const POPOVER_UNSUPPORTED: &str =
+    "This compositor has no layer shell, so mirqab opens as a window";
+
+pub const THEME_FILE: &str = "theme.json";
+pub const FOLLOWED_THEME_FILE: &str = "the followed theme file";
+
+pub fn theme_not_object(source: &str) -> String {
+    format!("{source} is not a JSON object; it is ignored")
+}
+
+pub fn theme_unknown_token(source: &str, name: &str) -> String {
+    format!("{source}: unknown token '{name}'")
+}
+
+pub fn theme_invalid_value(source: &str, name: &str, value: &str) -> String {
+    format!("{source}: '{name}' has an invalid value {value}")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
