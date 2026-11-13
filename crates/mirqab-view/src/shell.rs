@@ -175,3 +175,20 @@ pub fn short_cpu_model(model: &str) -> String {
         .collect();
     words.join(" ")
 }
+
+/// One line of a `wouldDo` list for the confirmation dialog: the entry's
+/// fields as `key value`, sorted by key (serde_json keeps objects sorted).
+pub fn would_do_line(entry: &serde_json::Value) -> String {
+    match entry {
+        serde_json::Value::Object(map) => map
+            .iter()
+            .map(|(k, v)| match v {
+                serde_json::Value::String(s) => format!("{k} {s}"),
+                other => format!("{k} {other}"),
+            })
+            .collect::<Vec<_>>()
+            .join(", "),
+        serde_json::Value::String(s) => s.clone(),
+        other => other.to_string(),
+    }
+}

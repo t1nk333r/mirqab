@@ -10,12 +10,11 @@ and no paid tier.
 
 ## Status
 
-Phases A to C of the foundation exist (plan 001): the workspace, the
-development gates, the daemon with its socket protocol and the CLI, and
-history. Phase D part 1 is in as well: the view crate
-(`crates/mirqab-view`), with number formatting, the theme token table, the
-icon glyphs, graph geometry and the sidebar model. Its tests need no
-display. Nothing is on screen yet; the window comes in part 2.
+Phases A to D of the foundation exist (plan 001): the workspace, the
+development gates, the daemon with its socket protocol and the CLI,
+history, the view crate (`crates/mirqab-view`, with number formatting, the
+theme token table, the icon glyphs, graph geometry and the sidebar model;
+its tests need no display) and the window (`crates/mirqab-ui`).
 
 - The daemon (`mirqab daemon`) serves a private Unix socket at
   `$XDG_RUNTIME_DIR/mirqab/daemon.sock`, or at `$MIRQAB_SOCKET` or
@@ -32,15 +31,23 @@ display. Nothing is on screen yet; the window comes in part 2.
 - The CLI has `daemon`, `status [--json]`, `open [TAB] [--window]`,
   `toggle [TAB]`, `close`, `history SERIES... [--range 1h|24h|7d|30d]
   [--json]`, `history --list`, `help [COMMAND]`, `--help` and `--version`.
-  Every command takes `--socket PATH`.
+  Every command takes `--socket PATH`. `open`, `toggle` and `close` take
+  `--dry-run`, which prints what the action would do.
 - Theme tokens can be overridden in `~/.config/mirqab/theme.json`, one
-  key per CSS variable name. The view crate checks the file; no program
-  applies it until the window exists.
-- There is no window yet. `mirqab-ui` only prints its version, so `open`,
-  `toggle` and `close` fail with `unavailable: no interface is running`
-  and exit 1. They take `--dry-run`, which prints what the action would do.
-- Not built yet: the System tab and the other tabs, the window, the MCP
-  server and the root helper. `mirqab-fand` only prints its version.
+  key per CSS variable name. The view crate checks the file, and the
+  window applies it and reloads it when the file changes.
+- The window is `mirqab-ui`. `mirqab open` starts it through
+  `mirqab-ui.service`. On a compositor with wlr-layer-shell, such as
+  Hyprland, it is a popover anchored to a screen corner (the top right by
+  default). Elsewhere, or with `--window`, it is a normal window. The
+  sidebar has sixteen tabs. A tab whose plan has not landed shows a
+  placeholder. The footer shows mirqab's own CPU and memory, the machine
+  line, and a Settings button. Escape or `mirqab close` hides the window,
+  and the process quits 60 s after it was last hidden. The `.desktop`
+  entry opens a window.
+- Not built yet: the content of the tabs (each one is a placeholder until
+  its plan lands), the MCP server and the root helper. `mirqab-fand` only
+  prints its version.
 
 The config is `~/.config/mirqab/config.json` (under `$XDG_CONFIG_HOME` when
 set), its keys are listed in `share/mirqab/config.schema.json`, the daemon
@@ -103,21 +110,31 @@ In another shell, `mirqab status` reads from it. With no daemon running,
 `status` exits 2 and says how to start one.
 
 To run the daemon as a user service, copy the units in `dist/` to
-`~/.config/systemd/user/`. No package installs them yet. Enable both
-units: the service starts the daemon at login, so history is kept even
-when no client is connected.
+`~/.config/systemd/user/`. No package installs them yet. Enable the socket
+and the service: the service starts the daemon at login, so history is
+kept even when no client is connected. Copy `mirqab-ui.service` too, but
+do not enable it. `mirqab open` starts it when needed.
 
 ```sh
 mkdir -p ~/.config/systemd/user
-cp dist/mirqab.socket dist/mirqab.service ~/.config/systemd/user/
+cp dist/mirqab.socket dist/mirqab.service dist/mirqab-ui.service ~/.config/systemd/user/
 systemctl --user enable --now mirqab.socket mirqab.service
 mirqab status
+mirqab open
 ```
 
 Stop a daemon you started by hand first; only one can hold the socket.
-The service runs `/usr/bin/mirqab daemon`, so install the binary there or
-change `ExecStart=` in your copy. `mirqab-ui.service` is for the window and
-is not needed yet.
+The units run `/usr/bin/mirqab daemon` and `/usr/bin/mirqab-ui`, so
+install the binaries there or change `ExecStart=` in your copies.
+
+If `mirqab open` reports that it could not start `mirqab-ui.service`, the
+unit cannot see the display. Run this, then try `mirqab open` again:
+
+```sh
+systemctl --user import-environment WAYLAND_DISPLAY
+```
+
+The setting lasts until the end of the login session.
 
 Stored history is read with `mirqab history`. This prints the last hour of
 `cpu.total`, one bucket a minute:

@@ -1,6 +1,16 @@
 {
-  "daemon": {"cpu": 0.0, "rssBytes": 3145728, "threads": 4},
+  "daemon": {
+    "cpu": 0.0,
+    "rssBytes": 3145728,
+    "threads": 4
+  },
   "ui": null,
-  "subscribers": {"self": 1},
-  "uptimeSec": 0
+  "subscribers": {
+    "self": 1
+  },
+  "uptimeSec": 0,
+  "machine": {
+    "cpuModel": "Example Desktop CPU 16-Core",
+    "uptimeSec": 3600
+  }
 }

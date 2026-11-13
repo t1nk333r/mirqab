@@ -6,6 +6,7 @@
 pub use mirqab_proto as proto;
 
 pub mod cards;
+pub mod config;
 pub mod format;
 pub mod graph;
 pub mod icons;

@@ -21,6 +21,9 @@ err() { printf 'lint: %s\n' "$*" >&2; fail=1; }
 
 # The crates that must never name or link the toolkit (architecture §3).
 HEADLESS=(mirqab-proto mirqab-core mirqab mirqab-fand mirqab-view)
+# The toolkit's crates, by package name (a renamed dependency keeps its
+# package name in Cargo.toml and in cargo tree).
+TOOLKIT_RE='gtk4|gdk4|gsk4|glib|gio|libadwaita|cairo-rs|gtk4-layer-shell|glib-sys|gobject-sys|gio-sys|gtk4-sys|gdk4-sys|gsk4-sys|pango|pango-sys|gdk-pixbuf|gdk-pixbuf-sys|graphene-rs|graphene-sys|cairo-sys-rs|libadwaita-sys|gtk4-layer-shell-sys'
 # The one file allowed to say sudo or pkexec, and the fixed helper scripts
 # under dist/ that architecture §8 lists (none yet). Exact paths: the same
 # file name in another crate is not exempt.
@@ -79,7 +82,7 @@ grep_rules() {
             hits "toolkit named in a headless crate (§3)"
         for c in "${dirs[@]}"; do
             [[ -f $c/Cargo.toml ]] || continue
-            grep -nE '^(gtk4|gdk4|gsk4|glib|gio|libadwaita|cairo-rs|gtk4-layer-shell)\b' "$c/Cargo.toml" |
+            grep -nE "^($TOOLKIT_RE)\b|package[[:space:]]*=[[:space:]]*\"($TOOLKIT_RE)\"" "$c/Cargo.toml" |
                 sed "s#^#$c/Cargo.toml:#" | hits "toolkit dependency in a headless crate (§3)"
         done
 
@@ -116,29 +119,59 @@ grep_rules() {
         fi
 
         # §7.4: no blur, no shaders, no GL.
-        if [[ -d crates/mirqab-ui ]]; then
+        # The widget tests name BlurNode to check that none is drawn, so the
+        # rule reads the sources and the stylesheet, not crates/*/tests.
+        local draw=()
+        for f in crates/mirqab-ui/src crates/mirqab-ui/resources; do [[ -d $f ]] && draw+=("$f"); done
+        if ((${#draw[@]})); then
             grep -rnE 'push_blur|BlurNode|blur\(|backdrop-filter|ShaderNode|GLShader|GLArea' \
-                --include='*.rs' --include='*.css' crates/mirqab-ui |
+                --include='*.rs' --include='*.css' "${draw[@]}" |
                 hits "blur, shader or GL (§7.4)"
         fi
 
-        # §7.2: every timer says whether it is a one-shot or a sampler.
+        # §7.2: every timer says whether it is a one-shot or a sampler, on
+        # the line above or at the end of its own line; `use` lines name a
+        # function, they start no timer. A frame callback may only be a
+        # one-shot transition, and a repeating sampler with a literal
+        # interval may not go under 1000 ms (review of PR #1).
+        local timer_awk='
+            /^[[:space:]]*(pub[[:space:]]+)?use[[:space:]]/ { prev = $0; next }
+            /timeout_add|timeout_future|interval_stream|add_tick_callback/ {
+                if ($0 ~ /\/\/ mirqab:ui-timeout/ || prev ~ /\/\/ mirqab:ui-timeout/) m = "ui"
+                else if ($0 ~ /\/\/ mirqab:sample/ || prev ~ /\/\/ mirqab:sample/) m = "sample"
+                else m = ""
+                if (want == "marker" && (m == "" || (m == "sample" && $0 ~ /add_tick_callback/)))
+                    print f ":" NR ":" $0
+                if (want == "floor" && m == "sample") {
+                    v = $0
+                    if (sub(/.*from_millis\(/, "", v)) {
+                        sub(/\).*/, "", v); gsub(/_/, "", v)
+                        if (v ~ /^[0-9]+$/ && v + 0 < 1000) print f ":" NR ":" $0
+                    }
+                }
+            }
+            # Only a line that is all comment marks the next line: a trailing
+            # marker belongs to its own line (review of PR #5).
+            /[^[:space:]]/ { prev = ($0 ~ /^[[:space:]]*\/\//) ? $0 : "" }'
         rs_files crates/mirqab-ui/src | while IFS= read -r f; do
-            awk -v f="$f" '
-                /timeout_add|add_tick_callback/ && prev !~ /\/\/ mirqab:(ui-timeout|sample)/ { print f ":" NR ":" $0 }
-                /[^[:space:]]/ { prev = $0 }
-            ' "$f"
-        done | hits "timer without a mirqab:ui-timeout or mirqab:sample marker (§7.2)"
+            awk -v f="$f" -v want=marker "$timer_awk" "$f"
+        done | hits "timer without a mirqab:ui-timeout or mirqab:sample marker, or a frame callback not marked ui-timeout (§7.2)"
+        rs_files crates/mirqab-ui/src | while IFS= read -r f; do
+            awk -v f="$f" -v want=floor "$timer_awk" "$f"
+        done | hits "a mirqab:sample timer under 1000 ms (§7.2)"
 
         # §7.2: user-visible strings come from mirqab_proto::strings.
         rs_files crates/mirqab-ui/src |
             xargs -r grep -HnE '(Label::new|set_label|set_title|set_subtitle|set_text|set_tooltip_text|set_description)\(\s*(Some\(\s*)?"[^"]' |
             hits "string literal in a widget call; use mirqab_proto::strings (§7.2)"
 
-        # §5.3: only the Graph widget asks for live sampling.
-        rs_files crates/mirqab-ui/src/tabs |
-            xargs -r grep -HnE 'subscribe.*\blive\b|\blive\b.*subscribe' |
-            hits "a page passes live to subscribe; only widgets/graph.rs may (§5.3)"
+        # §5.3: only the Graph widget asks for live sampling. The client
+        # defines `subscribe_live` and the `"live"` parameter; everything else
+        # in the interface may name neither, however a call is wrapped.
+        rs_files crates/mirqab-ui/src |
+            grep -vxE 'crates/mirqab-ui/src/(client|widgets/graph)\.rs' |
+            xargs -r grep -HnE 'subscribe_live|"live"' |
+            hits "live sampling asked for outside widgets/graph.rs (§5.3)"
     )
     [[ ! -s $viol ]]
 }
@@ -154,12 +187,14 @@ fi
 tree_rule() {
     local c out
     for c in "$@"; do
-        if ! out="$(cargo tree --locked -p "$c" -e normal --prefix none 2>&1)"; then
+        # Build and dev dependencies count too: a test or build script that
+        # links GTK would put it in the crate's build.
+        if ! out="$(cargo tree --locked -p "$c" -e normal,build,dev --prefix none 2>&1)"; then
             err "cargo tree -p $c failed: $(tail -n1 <<<"$out") (§3)"
             continue
         fi
         linked="$(awk '{ print $1 }' <<<"$out" |
-            grep -xE 'gtk4|gdk4|gsk4|glib|gio|libadwaita|cairo-rs|gtk4-layer-shell' | sort -u || true)"
+            grep -xE "$TOOLKIT_RE" | sort -u || true)"
         [[ -z $linked ]] || err "$c links the toolkit: $(paste -sd' ' <<<"$linked") (§3)"
     done
 }

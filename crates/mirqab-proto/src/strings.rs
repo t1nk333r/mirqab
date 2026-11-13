@@ -98,8 +98,14 @@ pub fn ready(socket: &str) -> String {
     format!("ready {socket}")
 }
 
-pub fn no_interface() -> &'static str {
-    "no interface is running"
+pub fn interface_start_failed(why: &str) -> String {
+    format!(
+        "could not start mirqab-ui.service ({why}); if the unit cannot see the display, run: systemctl --user import-environment WAYLAND_DISPLAY"
+    )
+}
+
+pub fn interface_did_not_attach() -> &'static str {
+    "mirqab-ui.service started but the interface did not connect within 5 s; see: journalctl --user -u mirqab-ui.service"
 }
 
 pub fn config_broken(why: &str) -> String {
@@ -226,6 +232,10 @@ pub const POPOVER_UNSUPPORTED: &str =
 pub const THEME_FILE: &str = "theme.json";
 pub const FOLLOWED_THEME_FILE: &str = "the followed theme file";
 
+pub fn theme_unreadable(path: &str, why: &str) -> String {
+    format!("{path} could not be read ({why}); it is ignored")
+}
+
 pub fn theme_not_object(source: &str) -> String {
     format!("{source} is not a JSON object; it is ignored")
 }
@@ -237,6 +247,131 @@ pub fn theme_unknown_token(source: &str, name: &str) -> String {
 pub fn theme_invalid_value(source: &str, name: &str, value: &str) -> String {
     format!("{source}: '{name}' has an invalid value {value}")
 }
+
+// --- Window chrome and Settings (plan 001 phase D, part 2) ----------------
+
+pub const PINNED: &str = "Keep open";
+pub const MORE: &str = "More";
+pub const HEALTH: &str = "Health";
+pub const OPEN_AS_WINDOW: &str = "Open as a window";
+pub const OPEN_AS_POPOVER: &str = "Open as a popover";
+pub const STOP_DAEMON: &str = "Stop the daemon";
+pub const CLOSE: &str = "Close";
+pub const RANGE: &str = "Range";
+pub const PIN_TO_HOME: &str = "Pin to Home";
+pub const UNPIN_FROM_HOME: &str = "Unpin from Home";
+pub const CANCEL: &str = "Cancel";
+pub const CONFIRM: &str = "Go ahead";
+pub const SIDEBAR: &str = "Tabs";
+
+/// A range picker's button. The range ids read as labels in English; a
+/// translation maps them here.
+#[allow(clippy::needless_match)]
+pub fn range_label(range: &str) -> &str {
+    match range {
+        "2m" => "2m",
+        "1h" => "1h",
+        "24h" => "24h",
+        "7d" => "7d",
+        "30d" => "30d",
+        other => other,
+    }
+}
+
+/// A graph's accessible description: its series and latest value.
+pub fn graph_summary(series: &str, latest: Option<&str>) -> String {
+    match latest {
+        Some(v) => format!("{series}, latest {v}"),
+        None => format!("{series}, no data yet"),
+    }
+}
+
+pub const SETTINGS_WINDOW: &str = "Window";
+pub const SETTINGS_OPENS_AS: &str = "Opens as";
+pub const SETTINGS_POPOVER: &str = "Popover";
+pub const SETTINGS_WINDOW_MODE: &str = "Window";
+pub const SETTINGS_CORNER: &str = "Corner";
+pub const SETTINGS_APPEARANCE: &str = "Appearance";
+pub const SETTINGS_COLOURS: &str = "Colours";
+pub const SETTINGS_FOLLOW: &str = "Follow a theme file";
+pub const SETTINGS_UNITS: &str = "Units";
+pub const SETTINGS_TEMPERATURE: &str = "Temperature";
+pub const SETTINGS_CLOCK: &str = "Clock";
+pub const SETTINGS_LIVE: &str = "Live graphs";
+pub const SETTINGS_LIVE_INTERVAL: &str = "Update every (ms)";
+pub const SETTINGS_LIVE_HINT: &str =
+    "How often a graph on screen updates. Nothing else samples this often.";
+pub const SETTINGS_TABS: &str = "Tabs";
+pub const SETTINGS_DAEMON: &str = "Daemon";
+pub const SETTINGS_VERSION: &str = "Version";
+pub const SETTINGS_SOCKET: &str = "Socket";
+pub const SETTINGS_HISTORY: &str = "History";
+pub const SETTINGS_HELPER: &str = "Root helper";
+pub const SETTINGS_HELPER_NONE: &str = "Not installed";
+pub const HISTORY_OFF: &str = "Off";
+
+pub fn anchor_label(anchor: &str) -> &str {
+    match anchor {
+        "top-right" => "Top right",
+        "top" => "Top",
+        "top-left" => "Top left",
+        "bottom-right" => "Bottom right",
+        "bottom" => "Bottom",
+        "bottom-left" => "Bottom left",
+        other => other,
+    }
+}
+
+pub fn scheme_label(scheme: &str) -> &str {
+    match scheme {
+        "dark" => "Dark",
+        "light" => "Light",
+        "system" => "Follow the desktop",
+        other => other,
+    }
+}
+
+pub fn temperature_label(unit: &str) -> &str {
+    match unit {
+        "c" => "Celsius",
+        "f" => "Fahrenheit",
+        other => other,
+    }
+}
+
+pub fn clock_label(clock: &str) -> &str {
+    match clock {
+        "auto" => "Automatic",
+        "12" => "12-hour",
+        "24" => "24-hour",
+        other => other,
+    }
+}
+
+pub fn setting_failed(why: &str) -> String {
+    format!("Could not save the setting: {why}")
+}
+
+pub fn selftest_no_event(tab: &str) -> String {
+    format!("mirqab-ui: --selftest {tab}: no event from the daemon within 5 s")
+}
+
+pub fn ui_unknown_option(option: &str) -> String {
+    format!("mirqab-ui: unknown option '{option}'")
+}
+
+pub const UI_USAGE: &str = "\
+usage: mirqab-ui [--socket PATH] [--window] [--tab TAB] [--background]
+       mirqab-ui --selftest TAB
+
+The window. It is started by `mirqab open` through mirqab-ui.service and
+quits 60 s after the window was last hidden.
+  --socket PATH   the daemon's socket
+  --window        open as a normal window instead of the popover
+  --tab TAB       open on TAB
+  --background    start without showing the window (the unit does this)
+  --selftest TAB  build TAB in a window, print its widget tree as JSON, exit
+";
 
 #[cfg(test)]
 mod tests {

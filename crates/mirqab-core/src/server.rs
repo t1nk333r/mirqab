@@ -15,13 +15,14 @@
 //! writing to a socket.
 
 use crate::config::{Config, SetError};
+use crate::exec;
 use crate::history::{self, History};
-use crate::proto::stream::{self, ProcessCost, SelfData, UiCost, UiEvent};
+use crate::proto::stream::{self, Machine, ProcessCost, SelfData, UiCost, UiEvent};
 use crate::proto::{Code, Event, Hello, PROTOCOL, Reply, Request, ServerFrame, frame, strings};
 use crate::root::Root;
 use crate::sampler::Sampler;
 use crate::samplers::system_core::SystemCore;
-use crate::selfcost::Meter;
+use crate::selfcost::{self, Meter};
 use crate::sys;
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
@@ -38,6 +39,13 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 pub const FLOOR_MS: u64 = 2000;
 /// Frames queued for one client before it is dropped (plan 001).
 pub const QUEUE: usize = 256;
+/// The systemd user unit that runs the interface (architecture §3).
+pub const UI_UNIT: &str = "mirqab-ui.service";
+/// How long `open` waits for a started interface to attach (plan 001 step 30).
+const UI_START: Duration = Duration::from_secs(5);
+/// The least time between two samples a subscription forces at once: a
+/// client re-subscribing in a loop must not beat the floor (review of phase B).
+const MIN_GAP: Duration = Duration::from_secs(1);
 /// The longest request line.
 const MAX_LINE: usize = 1 << 20;
 const STACK: usize = 256 * 1024;
@@ -59,7 +67,10 @@ pub enum ListenError {
 }
 
 struct Sub {
+    /// The interval in force: what was asked, raised to the floor.
     interval_ms: u64,
+    /// What the client asked for, so a new floor can be applied later.
+    asked_ms: u64,
     live: bool,
 }
 
@@ -104,6 +115,35 @@ struct State {
     runs: BTreeMap<String, SlotRun>,
     /// The interface: the latest client that subscribed to `ui` as one.
     ui: Option<(u64, u32)>,
+    /// The interface being started, if one is: `systemctl start` ran and
+    /// no interface has attached yet.
+    starting_ui: Option<UiStart>,
+    /// Numbers the start attempts.
+    ui_starts: u64,
+}
+
+/// One attempt to start the interface. It owns the deadline and the queued
+/// event, so a waiter leaves only when its own attempt ended (review of
+/// PR #5: each caller cleared shared state on its own deadline, and one
+/// could report success for an event that was never delivered).
+struct UiStart {
+    id: u64,
+    deadline: Instant,
+    /// Delivered right after the interface's `ui` subscribe reply; the
+    /// latest `open` wins, and a `close` clears it.
+    event: Option<UiEvent>,
+}
+
+impl State {
+    /// The interface after the current one left: the latest other client
+    /// that subscribed as one (review of phase B: an earlier interface was
+    /// not restored).
+    fn next_ui(&self) -> Option<(u64, u32)> {
+        self.clients
+            .iter()
+            .rev()
+            .find_map(|(id, c)| c.ui_pid.map(|pid| (*id, pid)))
+    }
 }
 
 /// What the `self` sampler reports beyond its own process.
@@ -123,6 +163,8 @@ struct Inner {
     /// Socket activation: systemd owns the socket file, so it is not removed.
     activated: bool,
     state: Mutex<State>,
+    /// Signalled when a client subscribes to `ui` as the interface.
+    ui_attached: Condvar,
     slots: BTreeMap<String, Arc<Slot>>,
     unavailable: BTreeMap<String, String>,
     config: Mutex<Config>,
@@ -151,6 +193,8 @@ struct SelfSampler {
     started: Instant,
     daemon: Option<Meter>,
     ui: Option<(u32, Meter)>,
+    /// Read once: the CPU does not change while the daemon runs.
+    cpu_model: Option<Option<String>>,
 }
 
 impl Sampler for SelfSampler {
@@ -193,11 +237,26 @@ impl Sampler for SelfSampler {
                 pid,
             })
         });
+        let cpu_model = self
+            .cpu_model
+            .get_or_insert_with(|| {
+                root.read("proc/cpuinfo")
+                    .ok()
+                    .and_then(|c| selfcost::cpu_model(&c))
+            })
+            .clone();
         let data = SelfData {
             daemon,
             ui,
             subscribers,
             uptime_sec: now.duration_since(self.started).as_secs(),
+            machine: Machine {
+                cpu_model,
+                uptime_sec: root
+                    .read("proc/uptime")
+                    .ok()
+                    .and_then(|u| selfcost::uptime_sec(&u)),
+            },
         };
         serde_json::to_value(data).unwrap_or(Value::Null)
     }
@@ -261,6 +320,7 @@ pub fn listen(opts: Options) -> Result<Server, ListenError> {
         started,
         daemon: None,
         ui: None,
+        cpu_model: None,
     })];
     samplers.push(Box::new(SystemCore::new()));
     samplers.extend(opts.samplers);
@@ -318,7 +378,10 @@ pub fn listen(opts: Options) -> Result<Server, ListenError> {
             next_id: 0,
             runs: BTreeMap::new(),
             ui: None,
+            starting_ui: None,
+            ui_starts: 0,
         }),
+        ui_attached: Condvar::new(),
         slots,
         unavailable,
         config: Mutex::new(config),
@@ -451,8 +514,11 @@ fn sampler_loop(inner: Arc<Inner>, name: String, slot: Arc<Slot>) {
         };
         let now = Instant::now();
         let due = match run.last {
+            None => now,
             Some(last) if !run.now => last + Duration::from_millis(ms),
-            _ => now,
+            // At once for a new or changed subscription, but never twice
+            // within MIN_GAP.
+            Some(last) => (last + MIN_GAP).max(now),
         };
         if due > now {
             state = slot
@@ -605,7 +671,7 @@ impl Inner {
             let mut state = lock(&self.state);
             let gone = state.clients.remove(&id);
             if state.ui.is_some_and(|(cid, _)| cid == id) {
-                state.ui = None;
+                state.ui = state.next_ui();
             }
             self.refresh_shared(&state);
             gone.map(|c| c.subs.into_keys().collect())
@@ -710,24 +776,41 @@ impl Inner {
         if name == stream::UI {
             let as_ui = req.param("role").and_then(Value::as_str) == Some("ui");
             let pid = req.param("pid").and_then(Value::as_u64).map(|p| p as u32);
+            let reply = frame::encode(&ServerFrame::Reply(Reply::ok(
+                req.id,
+                json!({"stream": name}),
+            )));
             let mut state = lock(&self.state);
+            let pending = if as_ui && pid.is_some() {
+                state.starting_ui.take().and_then(|s| s.event)
+            } else {
+                None
+            };
             if let Some(c) = state.clients.get_mut(&id) {
                 c.subs.insert(
                     name.to_string(),
                     Sub {
                         interval_ms: 0,
+                        asked_ms: 0,
                         live: false,
                     },
                 );
                 if as_ui {
                     c.ui_pid = pid;
                 }
+                // The reply, then the event an `open` queued while this
+                // interface was starting (plan 001 step 30).
+                c.send(&reply);
+                if let Some(ev) = &pending {
+                    c.send(&ui_line(ev));
+                }
             }
             if as_ui && let Some(pid) = pid {
                 state.ui = Some((id, pid));
+                self.ui_attached.notify_all();
             }
             self.refresh_shared(&state);
-            return Ok(Reply::ok(req.id, json!({"stream": name})));
+            return Err(Replied);
         }
         if let Some(r) = self.check_stream(req, name) {
             return Ok(r);
@@ -762,6 +845,7 @@ impl Inner {
                     name.to_string(),
                     Sub {
                         interval_ms,
+                        asked_ms: asked,
                         live: live && slot.live,
                     },
                 );
@@ -788,7 +872,7 @@ impl Inner {
                 }
             }
             if name == stream::UI && state.ui.is_some_and(|(cid, _)| cid == id) {
-                state.ui = None;
+                state.ui = state.next_ui();
             }
             self.refresh_shared(&state);
         }
@@ -893,6 +977,9 @@ impl Inner {
         match result {
             Ok(entry) if dry_run => Reply::ok(req.id, json!({"wouldDo": [entry]})),
             Ok(entry) => {
+                if key == "live.intervalMs" {
+                    self.refloor_live();
+                }
                 self.ui_event(&UiEvent::ConfigChanged);
                 Reply::ok(req.id, json!({"done": [entry]}))
             }
@@ -901,6 +988,31 @@ impl Inner {
                 Reply::err(req.id, Code::Refused, strings::config_broken(&why))
             }
             Err(SetError::Write(why)) => Reply::err(req.id, Code::Failed, why),
+        }
+    }
+
+    /// Applies a changed `live.intervalMs` to the live subscriptions already
+    /// open, which got the old floor (review of phase B).
+    fn refloor_live(&self) {
+        let floor = {
+            let mut c = lock(&self.config);
+            c.refresh();
+            c.live_interval_ms()
+        };
+        let mut woken = Vec::new();
+        {
+            let mut state = lock(&self.state);
+            for c in state.clients.values_mut() {
+                for (name, sub) in c.subs.iter_mut().filter(|(_, s)| s.live) {
+                    sub.interval_ms = sub.asked_ms.max(floor);
+                    woken.push(name.clone());
+                }
+            }
+        }
+        woken.sort();
+        woken.dedup();
+        for name in woken {
+            self.wake(&name);
         }
     }
 
@@ -982,10 +1094,7 @@ impl Inner {
 
     /// Sends a `ui` event to every client subscribed to `ui`.
     fn ui_event(&self, event: &UiEvent) {
-        let line = frame::encode(&ServerFrame::Event(Event {
-            stream: stream::UI.to_string(),
-            data: serde_json::to_value(event).unwrap_or(Value::Null),
-        }));
+        let line = ui_line(event);
         let state = lock(&self.state);
         for c in state
             .clients
@@ -997,8 +1106,8 @@ impl Inner {
     }
 
     /// `action` (§5.4). Phase B has the window's three: `ui.show`,
-    /// `ui.toggle`, `ui.hide`. Each needs a running interface; plan 001 phase
-    /// D starts one when none is attached.
+    /// `ui.toggle`, `ui.hide`. `show` and `toggle` start the interface when
+    /// none is attached (plan 001 step 30).
     fn action(&self, req: &Request) -> Reply {
         let Some(name) = req.param("name").and_then(Value::as_str) else {
             return Reply::err(req.id, Code::BadRequest, "name is required");
@@ -1024,12 +1133,109 @@ impl Inner {
         if dry_run {
             return Reply::ok(req.id, json!({"wouldDo": [entry]}));
         }
-        if lock(&self.state).ui.is_none() {
-            return Reply::err(req.id, Code::Unavailable, strings::no_interface());
+        match self.deliver_ui(event) {
+            Ok(()) => Reply::ok(req.id, json!({"done": [entry]})),
+            Err((code, why)) => Reply::err(req.id, code, why),
         }
-        self.ui_event(&event);
-        Reply::ok(req.id, json!({"done": [entry]}))
     }
+
+    /// Sends a window event to the interface, starting it first when none is
+    /// attached: `systemctl --user start mirqab-ui.service` through exec.rs,
+    /// the event queued on the start attempt and delivered when the
+    /// interface subscribes to `ui`. One deadline covers the start and the
+    /// wait. `hide` with no interface is done, and clears an event queued
+    /// for one being started. Concurrent opens share one attempt; the latest
+    /// event wins.
+    fn deliver_ui(&self, event: UiEvent) -> Result<(), (Code, String)> {
+        let mut state = lock(&self.state);
+        if state.ui.is_some() {
+            drop(state);
+            self.ui_event(&event);
+            return Ok(());
+        }
+        if event == UiEvent::Hide {
+            if let Some(s) = &mut state.starting_ui {
+                s.event = None;
+            }
+            return Ok(());
+        }
+        let timeout = ui_start_timeout();
+        let (id, deadline, starter) = match &mut state.starting_ui {
+            Some(s) => {
+                s.event = Some(event);
+                (s.id, s.deadline, false)
+            }
+            None => {
+                state.ui_starts += 1;
+                let (id, deadline) = (state.ui_starts, Instant::now() + timeout);
+                state.starting_ui = Some(UiStart {
+                    id,
+                    deadline,
+                    event: Some(event),
+                });
+                (id, deadline, true)
+            }
+        };
+        drop(state);
+        if starter {
+            let started = exec::run(&["systemctl", "--user", "start", UI_UNIT], None, timeout);
+            let failed = match started {
+                Ok(out) if out.success() => None,
+                Ok(out) => Some(out.stderr.trim().to_string()),
+                Err(e) => Some(e.to_string()),
+            };
+            if let Some(why) = failed {
+                let mut state = lock(&self.state);
+                if state.starting_ui.as_ref().is_some_and(|s| s.id == id) {
+                    state.starting_ui = None;
+                }
+                // Other opens waiting on this attempt leave now too.
+                self.ui_attached.notify_all();
+                return Err((Code::Failed, strings::interface_start_failed(&why)));
+            }
+        }
+        let mut state = lock(&self.state);
+        while state.starting_ui.as_ref().is_some_and(|s| s.id == id) {
+            let Some(left) = deadline.checked_duration_since(Instant::now()) else {
+                state.starting_ui = None;
+                self.ui_attached.notify_all();
+                break;
+            };
+            state = self
+                .ui_attached
+                .wait_timeout(state, left)
+                .map(|(g, _)| g)
+                .unwrap_or_else(|p| p.into_inner().0);
+        }
+        if state.ui.is_some() {
+            Ok(())
+        } else {
+            Err((
+                Code::Unavailable,
+                strings::interface_did_not_attach().to_string(),
+            ))
+        }
+    }
+}
+
+/// A `ui` event as a line.
+fn ui_line(event: &UiEvent) -> Vec<u8> {
+    frame::encode(&ServerFrame::Event(Event {
+        stream: stream::UI.to_string(),
+        data: serde_json::to_value(event).unwrap_or(Value::Null),
+    }))
+}
+
+/// UI_START, or `MIRQAB_UI_START_MS` when `MIRQAB_TEST=1` (tests wait less).
+fn ui_start_timeout() -> Duration {
+    if std::env::var("MIRQAB_TEST").as_deref() == Ok("1")
+        && let Some(ms) = std::env::var("MIRQAB_UI_START_MS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+    {
+        return Duration::from_millis(ms);
+    }
+    UI_START
 }
 
 /// A handler already queued its reply.

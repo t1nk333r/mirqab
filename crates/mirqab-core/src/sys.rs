@@ -52,6 +52,13 @@ pub fn listen_fd() -> Option<UnixListener> {
     // handed to this pid and owned by nobody else in the process; we take
     // ownership exactly once, here, before anything could open fd 3.
     let listener = unsafe { UnixListener::from_raw_fd(SD_LISTEN_FDS_START) };
+    // systemd passes the socket without close-on-exec; the commands exec.rs
+    // runs (systemctl, from phase D) must not inherit the listening socket.
+    // SAFETY: fd 3 is the open socket just adopted; F_SETFD with FD_CLOEXEC
+    // changes only its close-on-exec flag and touches no memory.
+    unsafe {
+        libc::fcntl(SD_LISTEN_FDS_START, libc::F_SETFD, libc::FD_CLOEXEC);
+    }
     // Children (the commands exec.rs runs) must not inherit the variables.
     // SAFETY: called at start-up on the main thread before any other thread
     // exists, as std::env::remove_var requires.
