@@ -113,8 +113,9 @@ jobs:
         run: |
           if [[ $GITHUB_EVENT_NAME == pull_request ]]; then
               # Its own statement, so a git error fails the step instead of
-              # skipping the gate.
-              changed="$(git diff --name-only "$BASE_SHA" HEAD -- crates/)"
+              # skipping the gate. As ci, who owns the checkout: git refuses
+              # a repository owned by another user (dubious ownership).
+              changed="$(runuser -u ci -- git diff --name-only "$BASE_SHA" HEAD -- crates/)"
               if [[ -z $changed ]]; then
                   echo "no change under crates/: skipped"
                   exit 0
