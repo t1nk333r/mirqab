@@ -267,6 +267,14 @@ bind = SUPER, M, exec, mirqab toggle
 bind = SUPER SHIFT, M, exec, mirqab toggle system
 ```
 
+Every command is described in `docs/cli.md` (made from `mirqab help
+--markdown`). Shell completion: `mirqab completions bash` (or `zsh`,
+`fish`) prints a script, for example
+
+```sh
+mirqab completions bash > ~/.local/share/bash-completion/completions/mirqab
+```
+
 Exit codes: 0 done, 1 refused or failed, 2 no daemon, 64 usage error.
 
 ## Planned usage

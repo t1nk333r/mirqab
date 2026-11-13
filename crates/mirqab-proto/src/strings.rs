@@ -4,70 +4,256 @@
 
 pub const APP_NAME: &str = "mirqab";
 
-pub const CLI_USAGE: &str = "\
-usage: mirqab <command> [options]
+/// One command of the CLI: its name, its usage lines (after `mirqab `),
+/// a one-line summary for the usage list, the paragraph `--help` adds, and
+/// the flags completion offers. The usage text, each command's help,
+/// `docs/cli.md` and the shell completions are all made from this table
+/// (plan 005).
+pub struct CliCommand {
+    pub name: &'static str,
+    pub usage: &'static [&'static str],
+    pub summary: &'static str,
+    pub help: &'static str,
+    pub flags: &'static [&'static str],
+}
 
-commands:
-  daemon [--root DIR] [--socket PATH]   run the daemon (systemd starts it from mirqab.socket)
-  status [--json]                       version, socket, subscribers and the daemon's cost
-  open [TAB] [--window]                 show the window, on TAB
-  toggle [TAB]                          show the window, or hide it if it is shown
-  close                                 hide the window
-  history SERIES... [--range R] [--json]  stored minutes (R: 1h, 24h, 7d, 30d; default 1h)
-  history --list                        the series history keeps
-  load [--json]                         CPU, load, memory, pressure and the thermal word
-  sensors [--json]                      temperatures, GPUs and power
-  bar ITEM [--watch] [--interval SEC] [--format F]  one bar reading (F: waybar, plain, json)
-  bar --list                            the items `bar` knows
-  help [COMMAND]                        this text, or one command's
+pub const CLI_COMMANDS: &[CliCommand] = &[
+    CliCommand {
+        name: "daemon",
+        usage: &["daemon [--root DIR] [--socket PATH]"],
+        summary: "run the daemon (systemd starts it from mirqab.socket)",
+        help: "Serves the socket. --root reads system state from DIR instead of / (tests use fixture trees). Run by hand, it prints `ready <socket>` once it listens.",
+        flags: &["--root"],
+    },
+    CliCommand {
+        name: "status",
+        usage: &["status [--json]"],
+        summary: "version, socket, subscribers and the daemon's cost",
+        help: "Prints the version, the socket, each stream's subscribers and interval, and what the daemon costs.",
+        flags: &["--json"],
+    },
+    CliCommand {
+        name: "open",
+        usage: &["open [TAB] [--window]"],
+        summary: "show the window, on TAB",
+        help: "Shows the window, on TAB if given. --window opens a normal window instead of the popover.",
+        flags: &["--window", "--dry-run"],
+    },
+    CliCommand {
+        name: "toggle",
+        usage: &["toggle [TAB]"],
+        summary: "show the window, or hide it if it is shown",
+        help: "Shows the window, or hides it if it is shown.",
+        flags: &["--dry-run"],
+    },
+    CliCommand {
+        name: "close",
+        usage: &["close"],
+        summary: "hide the window",
+        help: "Hides the window.",
+        flags: &["--dry-run"],
+    },
+    CliCommand {
+        name: "history",
+        usage: &["history SERIES... [--range R] [--json]", "history --list"],
+        summary: "stored minutes (R: 1h, 24h, 7d, 30d; default 1h)",
+        help: "Prints the average and peak of each bucket of stored minutes. R is 1h (default), 24h, 7d or 30d. --list names the series history keeps.",
+        flags: &["--range", "--json", "--list"],
+    },
+    CliCommand {
+        name: "load",
+        usage: &["load [--json]"],
+        summary: "CPU, load, memory, pressure and the thermal word",
+        help: "CPU (over the last seconds), load averages, memory, swap, pressure and the thermal word.",
+        flags: &["--json"],
+    },
+    CliCommand {
+        name: "sensors",
+        usage: &["sensors [--json]"],
+        summary: "temperatures, GPUs and power",
+        help: "Every temperature sensor, each GPU, and package and battery power.",
+        flags: &["--json"],
+    },
+    CliCommand {
+        name: "bar",
+        usage: &[
+            "bar ITEM [--watch] [--interval SEC] [--format waybar|plain|json]",
+            "bar --list",
+        ],
+        summary: "a reading for a status bar (mirqab bar --list names the items)",
+        help: "Prints one reading of ITEM for a status bar and exits. With --watch it prints a line each time the reading changes, at most once per interval (default 5 s, from 2 s to an hour), until its output is closed. --format waybar (default) prints Waybar's JSON; plain the text only; json every field.",
+        flags: &["--watch", "--interval", "--format", "--list"],
+    },
+    CliCommand {
+        name: "completions",
+        usage: &["completions bash|zsh|fish"],
+        summary: "a shell completion script",
+        help: "Prints a completion script for the shell. For bash: mirqab completions bash > ~/.local/share/bash-completion/completions/mirqab",
+        flags: &[],
+    },
+    CliCommand {
+        name: "help",
+        usage: &["help [COMMAND]", "help --markdown"],
+        summary: "this text, or one command's",
+        help: "Prints this text, or one command's. --markdown prints every command as Markdown (docs/cli.md is made from it).",
+        flags: &["--markdown"],
+    },
+];
 
-options for every command:
-  --socket PATH   the daemon's socket (default $XDG_RUNTIME_DIR/mirqab/daemon.sock, or $MIRQAB_SOCKET)
-  --help          help for the command
-  --version       print the version
-";
+/// The options every command takes.
+pub const CLI_GLOBAL: &[(&str, &str)] = &[
+    (
+        "--socket PATH",
+        "the daemon's socket (default $XDG_RUNTIME_DIR/mirqab/daemon.sock, or $MIRQAB_SOCKET)",
+    ),
+    ("--help", "help for the command"),
+    ("--version", "print the version"),
+];
 
-pub fn command_help(command: &str) -> Option<&'static str> {
-    Some(match command {
-        "daemon" => {
-            "usage: mirqab daemon [--root DIR] [--socket PATH]\n\
-             Serves the socket. --root reads system state from DIR instead of / (tests use fixture trees).\n\
-             Run by hand, it prints `ready <socket>` once it listens.\n"
+/// Exit codes, for the usage text and `docs/cli.md`.
+pub const CLI_EXITS: &str = "Exit codes: 0 done, 1 refused or failed, 2 no daemon, 64 usage error.";
+
+pub fn cli_command(name: &str) -> Option<&'static CliCommand> {
+    CLI_COMMANDS.iter().find(|c| c.name == name)
+}
+
+/// `mirqab --help`.
+pub fn cli_usage() -> String {
+    let mut out = String::from("usage: mirqab <command> [options]\n\ncommands:\n");
+    for c in CLI_COMMANDS {
+        for (i, u) in c.usage.iter().enumerate() {
+            let summary = if i == 0 { c.summary } else { "" };
+            if u.len() < 37 {
+                out.push_str(format!("  {u:<37} {summary}").trim_end());
+            } else {
+                out.push_str(format!("  {u}  {summary}").trim_end());
+            }
+            out.push('\n');
         }
-        "status" => {
-            "usage: mirqab status [--json]\n\
-             Prints the version, the socket, each stream's subscribers and interval, and what the daemon costs.\n"
+    }
+    out.push_str("\noptions for every command:\n");
+    for (o, what) in CLI_GLOBAL {
+        out.push_str(&format!("  {o:<15} {what}\n"));
+    }
+    out.push('\n');
+    out.push_str(CLI_EXITS);
+    out.push('\n');
+    out
+}
+
+/// `mirqab COMMAND --help`.
+pub fn command_help(name: &str) -> Option<String> {
+    let c = cli_command(name)?;
+    let mut out = String::new();
+    for (i, u) in c.usage.iter().enumerate() {
+        out.push_str(if i == 0 {
+            "usage: mirqab "
+        } else {
+            "       mirqab "
+        });
+        out.push_str(u);
+        out.push('\n');
+    }
+    out.push_str(c.help);
+    out.push('\n');
+    Some(out)
+}
+
+/// `mirqab help --markdown`, which is `docs/cli.md`.
+pub fn cli_markdown() -> String {
+    let mut out = String::from(
+        "# mirqab command line\n\n\
+         Generated from the command table in `crates/mirqab-proto/src/strings.rs`\n\
+         by `mirqab help --markdown`; a test keeps this file in step.\n",
+    );
+    for c in CLI_COMMANDS {
+        out.push_str(&format!("\n## {}\n\n```\n", c.name));
+        for u in c.usage {
+            out.push_str(&format!("mirqab {u}\n"));
         }
-        "open" => {
-            "usage: mirqab open [TAB] [--window]\n\
-             Shows the window, on TAB if given. --window opens a normal window instead of the popover.\n"
+        out.push_str("```\n\n");
+        out.push_str(c.help);
+        out.push('\n');
+    }
+    out.push_str("\n## Options for every command\n\n");
+    for (o, what) in CLI_GLOBAL {
+        out.push_str(&format!("- `{o}`: {what}\n"));
+    }
+    out.push('\n');
+    out.push_str(CLI_EXITS);
+    out.push('\n');
+    out
+}
+
+/// `mirqab completions SHELL`: commands, and each command's flags.
+pub fn cli_completions(shell: &str) -> Option<String> {
+    let names: Vec<&str> = CLI_COMMANDS.iter().map(|c| c.name).collect();
+    let globals = "--socket --help --version";
+    Some(match shell {
+        "bash" => {
+            let mut cases = String::new();
+            for c in CLI_COMMANDS {
+                cases.push_str(&format!(
+                    "        {}) opts=\"{} {globals}\" ;;\n",
+                    c.name,
+                    c.flags.join(" ")
+                ));
+            }
+            format!(
+                "# mirqab bash completion (mirqab completions bash)\n\
+                 _mirqab() {{\n    local cur=${{COMP_WORDS[COMP_CWORD]}} opts\n    \
+                 if [[ $COMP_CWORD -eq 1 ]]; then\n        \
+                 COMPREPLY=($(compgen -W \"{} {globals}\" -- \"$cur\"))\n        return\n    fi\n    \
+                 case ${{COMP_WORDS[1]}} in\n{cases}        *) opts=\"{globals}\" ;;\n    esac\n    \
+                 COMPREPLY=($(compgen -W \"$opts\" -- \"$cur\"))\n}}\ncomplete -F _mirqab mirqab\n",
+                names.join(" ")
+            )
         }
-        "toggle" => {
-            "usage: mirqab toggle [TAB]\n\
-             Shows the window, or hides it if it is shown.\n"
+        "zsh" => {
+            let mut cases = String::new();
+            for c in CLI_COMMANDS {
+                cases.push_str(&format!(
+                    "    ({}) compadd -- {} {globals} ;;\n",
+                    c.name,
+                    c.flags.join(" ")
+                ));
+            }
+            format!(
+                "#compdef mirqab\n# mirqab zsh completion (mirqab completions zsh)\n\
+                 if (( CURRENT == 2 )); then\n  compadd -- {} {globals}\n  return\nfi\n\
+                 case $words[2] in\n{cases}    (*) compadd -- {globals} ;;\nesac\n",
+                names.join(" ")
+            )
         }
-        "close" => "usage: mirqab close\nHides the window.\n",
-        "history" => {
-            "usage: mirqab history SERIES... [--range R] [--json]\n       mirqab history --list\n\
-             Prints the average and peak of each bucket of stored minutes. R is 1h (default), 24h, 7d or 30d.\n"
+        "fish" => {
+            let mut out = String::from(
+                "# mirqab fish completion (mirqab completions fish)\ncomplete -c mirqab -f\n",
+            );
+            for c in CLI_COMMANDS {
+                out.push_str(&format!(
+                    "complete -c mirqab -n '__fish_use_subcommand' -a {} -d '{}'\n",
+                    c.name,
+                    c.summary.replace('\'', "")
+                ));
+                for f in c.flags {
+                    out.push_str(&format!(
+                        "complete -c mirqab -n '__fish_seen_subcommand_from {}' -l {}\n",
+                        c.name,
+                        f.trim_start_matches("--")
+                    ));
+                }
+            }
+            for g in ["socket", "help", "version"] {
+                out.push_str(&format!("complete -c mirqab -l {g}\n"));
+            }
+            out
         }
-        "load" => {
-            "usage: mirqab load [--json]\n\
-             CPU (over the last seconds), load averages, memory, swap, pressure and the thermal word.\n"
-        }
-        "sensors" => {
-            "usage: mirqab sensors [--json]\n\
-             Every temperature sensor, each GPU, and package and battery power.\n"
-        }
-        "bar" => {
-            "usage: mirqab bar ITEM [--watch] [--interval SEC] [--format waybar|plain|json]\n       mirqab bar --list\n\
-             Prints one reading of ITEM for a status bar and exits. With --watch it prints a line each time the\n\
-             reading changes, at most once per interval (default 5 s, at least 2 s), until its output is closed.\n\
-             --format waybar (default) prints Waybar's JSON; plain the text only; json every field.\n"
-        }
-        "help" => "usage: mirqab help [COMMAND]\n",
         _ => return None,
     })
+}
+
+pub fn bad_shell(shell: &str) -> String {
+    format!("mirqab: completions are for bash, zsh or fish, not {shell}")
 }
 
 pub fn unknown_command(command: &str) -> String {
@@ -679,13 +865,42 @@ mod tests {
     use super::*;
 
     #[test]
+    fn docs_cli_md_is_the_generated_markdown() {
+        // Regenerate with: mirqab help --markdown > docs/cli.md
+        assert_eq!(include_str!("../../../docs/cli.md"), cli_markdown());
+    }
+
+    #[test]
+    fn completions_name_every_command_and_flag() {
+        for shell in ["bash", "zsh", "fish"] {
+            let script = cli_completions(shell).unwrap();
+            for c in CLI_COMMANDS {
+                assert!(script.contains(c.name), "{shell}: {}", c.name);
+                for f in c.flags {
+                    assert!(script.contains(f.trim_start_matches("--")), "{shell}: {f}");
+                }
+            }
+        }
+        assert!(cli_completions("tcsh").is_none());
+    }
+
+    #[test]
     fn every_command_in_the_usage_has_help() {
         for c in [
-            "daemon", "status", "open", "toggle", "close", "history", "load", "sensors", "bar",
+            "daemon",
+            "status",
+            "open",
+            "toggle",
+            "close",
+            "history",
+            "load",
+            "sensors",
+            "bar",
+            "completions",
             "help",
         ] {
             assert!(
-                CLI_USAGE.contains(&format!("  {c}")),
+                cli_usage().contains(&format!("  {c}")),
                 "{c} missing from usage"
             );
             assert!(command_help(c).is_some(), "{c} has no help");

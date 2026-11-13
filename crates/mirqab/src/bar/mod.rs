@@ -68,7 +68,7 @@ fn parse(rest: &[String]) -> Result<Option<Opts>, ExitCode> {
         match a.as_str() {
             "--list" => {
                 for (name, about) in strings::BAR_ITEMS {
-                    println!("{name:<7} {about}");
+                    crate::out::line(&format!("{name:<7} {about}"));
                 }
                 return Ok(None);
             }

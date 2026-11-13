@@ -1,7 +1,8 @@
-# tests/test-cli.sh — the `mirqab` command line: exit codes, help, and
+# tests/test-cli.sh — the `mirqab` command line: exit codes, help, the
+# generated docs and completions, output into a closed pipe, and
 # `status --json` against a daemon on a fixture root. The window commands
 # reaching an interface are tested in crates/mirqab/tests/cli.rs.
-# mirqab:covers crates/mirqab/src/{main,cli,daemon}.rs crates/mirqab-proto/src/strings.rs
+# mirqab:covers crates/mirqab/src/{main,cli,daemon,out}.rs crates/mirqab-proto/src/strings.rs docs/cli.md
 # mirqab:covers tests/fixtures/root-desktop/**
 
 sandbox
@@ -92,4 +93,36 @@ capture "$BIN/mirqab" history cpu.total --range 2y
 status_is "an unknown range is refused" 1 "$STATUS"
 capture "$BIN/mirqab" history
 status_is "history needs a series" 64 "$STATUS"
+# --json is one line, and nothing piped carries an escape code.
+capture "$BIN/mirqab" status --json
+is "status --json is one line" 1 "$(wc -l <<<"$OUTPUT" | tr -d ' ')"
+capture "$BIN/mirqab" load
+unlike "no escape codes when piped" "$OUTPUT" $'\e['
 stop_daemon
+
+# Help, docs and completions come from one table (plan 005).
+capture "$BIN/mirqab" help --markdown
+is "docs/cli.md is the generated markdown" "$(<"$REPO/docs/cli.md")" "$OUTPUT"
+for shell in bash zsh fish; do
+    capture "$BIN/mirqab" completions "$shell"
+    status_is "completions $shell" 0 "$STATUS"
+    like "the $shell script names bar" "$OUTPUT" "bar"
+done
+bash -n <("$BIN/mirqab" completions bash) && ok || not_ok "the bash script parses"
+capture "$BIN/mirqab" completions tcsh
+status_is "an unknown shell is a usage error" 64 "$STATUS"
+capture "$BIN/mirqab" bar --help
+like "a command's help is its table entry" "$OUTPUT" "usage: mirqab bar ITEM"
+
+# A reader that went away ends the command quietly, never with a panic
+# (the release profile turns one into an abort). perl hands mirqab a pipe
+# whose read end is already closed, so every write fails with EPIPE; a
+# closed stdout would not do, since Rust treats EBADF as success.
+broken_pipe() { perl -e 'pipe(my $r, my $w) or die; close $r; open(STDOUT, ">&", $w) or die; exec @ARGV' "$@"; }
+for cmd in "bar --list" "help --markdown" "completions bash"; do
+    code=0
+    # shellcheck disable=SC2086
+    broken_pipe "$BIN/mirqab" $cmd 2>"$SANDBOX/pipe.err" || code=$?
+    is "mirqab $cmd into a broken pipe exits 0" 0 "$code"
+    is "mirqab $cmd prints no panic" "" "$(<"$SANDBOX/pipe.err")"
+done

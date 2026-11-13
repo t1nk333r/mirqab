@@ -81,9 +81,8 @@ fn print_status(v: &Value) {
             notes.push(format!("unavailable {k}: {}", why.as_str().unwrap_or("")));
         }
     }
-    print!(
-        "{}",
-        strings::status_lines(
+    crate::out::print(
+        &strings::status_lines(
             v["version"].as_str().unwrap_or("?"),
             v["socket"].as_str().unwrap_or("?"),
             v["uptimeSec"].as_u64().unwrap_or(0),
@@ -91,6 +90,7 @@ fn print_status(v: &Value) {
             &streams,
             &notes,
         )
+        .to_string(),
     );
 }
 
@@ -99,11 +99,11 @@ fn print_status(v: &Value) {
 fn print_history(v: &Value, list: bool) {
     if list {
         for s in v.as_array().into_iter().flatten() {
-            println!(
+            crate::out::line(&format!(
                 "{}\t{}",
                 s["key"].as_str().unwrap_or("?"),
                 s["unit"].as_str().unwrap_or("")
-            );
+            ));
         }
         return;
     }
@@ -114,12 +114,12 @@ fn print_history(v: &Value, list: bool) {
         }
         let unit = s["unit"].as_str().unwrap_or("");
         for p in s["points"].as_array().into_iter().flatten() {
-            println!(
+            crate::out::line(&format!(
                 "{}\t{key}\tavg {:.2}\tmax {:.2}\t{unit}",
                 p[0].as_i64().unwrap_or(0),
                 p[1].as_f64().unwrap_or(0.0),
                 p[2].as_f64().unwrap_or(0.0)
-            );
+            ));
         }
     }
 }
@@ -135,7 +135,7 @@ fn pct(v: Option<f64>) -> String {
 /// `mirqab load`: CPU, load, memory, swap, pressure, thermal word.
 fn print_load(v: &Value) {
     let d = system(v);
-    let line = |k: &str, val: String| println!("{}", strings::load_line(k, &val));
+    let line = |k: &str, val: String| crate::out::line(&strings::load_line(k, &val).to_string());
     if let Some(c) = &d.cpu {
         line(
             strings::LOAD_CPU,
@@ -195,20 +195,20 @@ fn print_sensors(v: &Value) {
     let c = format::TempUnit::Celsius;
     for t in &d.temps {
         let crit = t.critical.map(|x| format::temperature(x, c));
-        println!(
-            "{}",
-            strings::sensor_line(
+        crate::out::line(
+            &strings::sensor_line(
                 strings::temp_kind(&t.kind),
                 &t.label,
                 &format::temperature(t.celsius, c),
                 crit.as_deref(),
             )
+            .to_string(),
         );
     }
     let watts = |w: f64| format!("{w:.1} {}", strings::WATTS);
     for g in &d.gpus {
         if g.suspended {
-            println!("{}", strings::gpu_suspended(&g.name));
+            crate::out::line(&strings::gpu_suspended(&g.name).to_string());
             continue;
         }
         let mut parts = Vec::new();
@@ -216,14 +216,13 @@ fn print_sensors(v: &Value) {
         parts.extend(g.watts.map(watts));
         parts.extend(g.busy_percent.map(|b| strings::busy(&format::percent(b))));
         parts.extend(g.mhz.map(strings::mhz));
-        println!("{}", strings::gpu_line(&g.name, &parts));
+        crate::out::line(&strings::gpu_line(&g.name, &parts).to_string());
     }
     if let Some(p) = &d.power {
         let pk = p.package_watts.map(watts);
         let bt = p.battery_watts.map(watts);
-        println!(
-            "{}",
-            strings::power_line(pk.as_deref(), bt.as_deref(), p.needs_helper)
+        crate::out::line(
+            &strings::power_line(pk.as_deref(), bt.as_deref(), p.needs_helper).to_string(),
         );
     }
 }
@@ -299,7 +298,7 @@ pub fn run(command: &str, args: Args) -> ExitCode {
         }
     }
     if command == "history" && !list && series.is_empty() {
-        return usage(strings::command_help("history").unwrap_or_default());
+        return usage(&strings::command_help("history").unwrap_or_default());
     }
     let req = match command {
         "status" => Request::new(1, "status"),
@@ -332,7 +331,7 @@ pub fn run(command: &str, args: Args) -> ExitCode {
             } else if command == "sensors" && !json_out {
                 print_sensors(&v);
             } else if matches!(command, "status" | "history" | "load" | "sensors") || dry_run {
-                println!("{v}");
+                crate::out::line(&format!("{v}"));
             }
             ExitCode::SUCCESS
         }

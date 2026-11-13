@@ -10,7 +10,10 @@
 - **Depends on**: 001, 002
 - **Category**: integration
 - **Planned at**: 2026-11-13, from the owner
-- **State**: PLANNED
+- **State**: IN PROGRESS. Part 1 (the CLI frame: one command table for
+  usage, help, `docs/cli.md` and completions; output that survives a
+  closed pipe) implemented 2026-11-14. Part 2 (the MCP server, plans,
+  `mcp-config`) next.
 
 ## Problem
 
@@ -172,6 +175,53 @@ file up beside itself first. Default is print only.
 6. `crates/mirqab/src/cli/mcp_config.rs`.
 7. `docs/cli.md` generation and the docs check.
 8. Tests above.
+
+## As built
+
+Part 1 (2026-11-14), where it differs from the plan:
+
+- **Two pull requests.** Part 1 is the CLI frame (checklist steps 2 and
+  7); part 2 is the MCP server, plan ids, the guard and `mcp-config`
+  (steps 3 to 6). The confirm flow (`[y/N]`, exit 3) lands with part 2,
+  whose `mcp-config --write` is its first user.
+- The command table is `strings::CLI_COMMANDS` in `mirqab-proto`, not
+  `cli/help.rs`: every user-facing string lives in the strings module.
+  The usage, each command's `--help`, `mirqab help --markdown` (which is
+  `docs/cli.md`) and `mirqab completions bash|zsh|fish` are made from it.
+- `docs/cli.md` is checked by a unit test in `strings.rs` and by
+  `tests/test-cli.sh`, not by `tools/check-docs.sh`: CI's docs job has no
+  Rust toolchain to run the binary.
+- No colour is printed anywhere, so the `NO_COLOR` rule holds trivially;
+  `tests/test-cli.sh` checks that piped output has no escape codes.
+- Every CLI line goes through `out::print`, which exits 0 when stdout is
+  gone: `println!` panicked on a closed pipe and the release profile
+  aborted (review of PR #10). The test hands mirqab a pipe whose reader is
+  already closed (`perl`), since Rust treats a closed stdout (EBADF) as
+  success. The daemon keeps `println!` for its one `ready` line: it must
+  not exit because a reader went away.
+- **Unverified, resolved** (2026-11-14):
+  - The newest MCP revision is 2026-07-28
+    (https://modelcontextprotocol.io/specification, `schema.ts`
+    `LATEST_PROTOCOL_VERSION`). It has no `initialize` handshake: every
+    request carries `_meta["io.modelcontextprotocol/protocolVersion"]`,
+    servers must implement `server/discover`, every result carries
+    `resultType`, and an unsupported version is error -32022 with the
+    supported list. Revisions up to 2025-11-25 open with `initialize`.
+    Part 2 serves both ("dual-era"): `initialize` for 2025-11-25 and
+    2025-06-18 clients, per-request `_meta` and `server/discover` for
+    2026-07-28.
+  - Tool annotations in 2026-07-28: `title`, `readOnlyHint`,
+    `destructiveHint`, `idempotentHint`, `openWorldHint` (`schema.ts`
+    `ToolAnnotations`); `structuredContent` with a text copy for older
+    clients.
+  - Client registration, from each tool's own `--help` on the
+    development machine: `claude mcp add mirqab -- mirqab --mcp`;
+    `codex mcp add mirqab -- mirqab --mcp` (it writes
+    `~/.codex/config.toml`); `gemini mcp add mirqab mirqab --mcp`;
+    `opencode mcp add --global mirqab -- mirqab --mcp`; Cursor reads
+    `~/.cursor/mcp.json` (`cursor-agent mcp --help`). So `mcp-config`
+    prints the client's own command and `--write` runs it, instead of
+    mirqab editing another program's file.
 
 ## Unverified
 
