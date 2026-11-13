@@ -208,10 +208,9 @@ tests.
   libpulse's threaded main loop and hand results to GLib with
   `glib::idle_add_once`; if that also
   fails, take the `wpctl` fallback above.
-- **Optional or required.** A binary linked to `libpulse.so.0` does not
-  start without it. Decide between a cargo feature with `libpulse` in
-  the package's `depends`, and `dlopen` (plan 020 lists the same
-  question); the tab is hidden when no PulseAudio server answers.
+- **Optional or required.** Decided by the owner (2026-11-13): `libpulse`
+  is a hard dependency of the package, linked normally; no feature flag
+  and no `dlopen`. The tab is hidden when no PulseAudio server answers.
 - **The percent.** That 50 % set here reads as 50 % in `wpctl
   get-volume` and in the desktop's OSD (cubic mapping); pin it in a view
   model test from recorded pairs.

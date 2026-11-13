@@ -48,6 +48,8 @@ System) is done.
   `toggle [TAB]`, `close`, `history SERIES... [--range 1h|24h|7d|30d]
   [--json]`, `history --list`, `load [--json]` (CPU, load, memory, pressure
   and the thermal word), `sensors [--json]` (temperatures, GPUs and power),
+  `bar ITEM [--watch] [--interval SEC] [--format waybar|plain|json]` and
+  `bar --list` (readings for a status bar),
   `help [COMMAND]`, `--help` and `--version`.
   Every command takes `--socket PATH`. `open`, `toggle` and `close` take
   `--dry-run`, which prints what the action would do.
@@ -210,6 +212,36 @@ Package power needs the root helper, which is a later plan. `sensors`
 says so only where the CPU's RAPL counter exists but cannot be read. A
 suspended GPU is reported as suspended, and nothing is read from it, so it
 is not woken.
+
+For a status bar, `mirqab bar ITEM` prints one reading as Waybar's JSON;
+`--format plain` prints the text only, and `--format json` every field.
+The items are `cpu` (busy percent), `mem` (percent of memory used), `temp`
+(the hottest CPU temperature, in degrees), `gpu` (the busiest awake GPU's
+percent), `load` (the one-minute load average) and `combo`, several items
+on one line, whose parts are the setting `bar.combo` (default `cpu`, `mem`
+and `temp`). A percentage is `normal`, `high` (80 % or more) or `critical`
+(95 % or more); `temp` takes the thermal word (`cool`, `warm`, `hot` or
+`critical`, and `normal` when there is none); `combo` takes the worst of
+its parts (`hot` counts as `high`); `load` is `normal` once it has a value. A reading
+with no value yet is `—`, class `unknown`. `--watch` prints a line when the
+reading changes, at most once per interval (5 s by default, with 250 ms of
+jitter allowed), even when another client has the daemon sampling faster.
+The first real value after `—` is printed at once. `--interval SEC` takes
+2 to 3600 seconds: a smaller value is raised to 2 and a larger one lowered
+to 3600. `--watch` ends when its reader closes the pipe.
+`contrib/waybar/README.md` has the Waybar modules and
+`contrib/haseen/mirqab.bar/` a haseen bar widget.
+
+```sh
+mirqab bar combo --watch
+```
+
+To toggle the window from a key in Hyprland:
+
+```
+bind = SUPER, M, exec, mirqab toggle
+bind = SUPER SHIFT, M, exec, mirqab toggle system
+```
 
 Exit codes: 0 done, 1 refused or failed, 2 no daemon, 64 usage error.
 

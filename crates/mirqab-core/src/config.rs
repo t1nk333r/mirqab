@@ -18,7 +18,8 @@ pub fn defaults() -> Value {
         "theme": {"follow": null, "accent": null, "scheme": "dark"},
         "units": {"temperature": "c", "clock": "auto"},
         "home": {"pinned": [], "seeded": false},
-        "tabs": {"hidden": []}
+        "tabs": {"hidden": []},
+        "bar": {"combo": ["cpu", "mem", "temp"]}
     })
 }
 
@@ -78,6 +79,23 @@ fn check(key: &str, v: &Value) -> Option<String> {
         "units.temperature" => one_of(&["c", "f"]),
         "units.clock" => one_of(&["auto", "12", "24"]),
         "home.pinned" | "tabs.hidden" => strings(),
+        "bar.combo" => match v.as_array() {
+            Some(a)
+                if a.iter().all(|x| {
+                    x.as_str().is_some_and(|n| {
+                        n != "combo"
+                            && crate::proto::strings::BAR_ITEMS
+                                .iter()
+                                .any(|(i, _)| *i == n)
+                    })
+                }) =>
+            {
+                None
+            }
+            _ => Some(format!(
+                "{key} must be a list of bar items other than combo (mirqab bar --list)"
+            )),
+        },
         _ => Some(format!("unknown setting: {key}")),
     }
 }
@@ -398,6 +416,10 @@ mod tests {
         }
         c.set("home.seeded", json!(true), false).unwrap();
         assert!(c.set("home.seeded", json!("yes"), false).is_err());
+        c.set("bar.combo", json!(["load", "cpu"]), false).unwrap();
+        for bad in [json!(["combo"]), json!(["cpu", "nope"]), json!("cpu")] {
+            assert!(c.set("bar.combo", bad, false).is_err());
+        }
         c.set("window.rememberTab", json!(true), false).unwrap();
         c.set("window.lastTab", json!("system"), false).unwrap();
         assert!(c.set("window.lastTab", json!("../x"), false).is_err());

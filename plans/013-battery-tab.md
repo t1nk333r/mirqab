@@ -103,6 +103,10 @@ tree `root-laptop-charge/` (charge-based, `cycle_count` 0, no
 
 ## Acceptance
 
+Owner decision (2026-11-13): this tab ships tested on fixtures and says
+so in its State line; the owner runs the hardware steps below on a
+suitable machine later, and they are recorded here when run.
+
 1. On a laptop (an owner step: none is at hand for the planner) the
    numbers match `upower -i` for the battery.
 2. On the desktop the tile, the bar item and the CLI all say there is no

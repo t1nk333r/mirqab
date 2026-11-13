@@ -71,15 +71,15 @@ documented clean-up, and the uninstall section of the README says so.
 ### Dependencies
 
 `depends`: `gtk4>=4.16`, `libadwaita>=1.6`, `gtk4-layer-shell`, `sqlite`,
-`curl`, `ttf-nerd-fonts-symbols`, `polkit`, `tzdata`. (`gtk4`
+`curl`, `ttf-nerd-fonts-symbols`, `polkit`, `tzdata`, `libpulse`. (`gtk4`
 already depends on `adwaita-icon-theme` and `librsvg` **[machine]**.)
-`optdepends`, each with its reason: `pipewire-pulse` with `libpulse` and
-`wireplumber` (the Volume tab),
+`optdepends`, each with its reason: `pipewire-pulse` and `wireplumber`
+(the Volume tab),
 `bluez`, `udisks2`, `upower`, `networkmanager`, `iw`, `bolt`, `docker`,
 `avahi`, `geoclue`, `lm_sensors`, `fwupd`, `qrencode`.
-`makedepends`: `cargo`, `pkgconf`, `git` (for `-git`). `libpulse` is also
-a `makedepends`, because the Volume page links it; the page loads the
-library only if present **[unverified]**, see below.
+`makedepends`: `cargo`, `pkgconf`, `git` (for `-git`). `libpulse` is in
+`depends` because the Volume page links it (owner, 2026-11-13: a hard
+dependency).
 
 The lists are generated from one table in `dist/deps.toml`, which
 `mirqab status` also reads to say which package provides a missing
@@ -184,12 +184,6 @@ user's config)
 
 ## Unverified
 
-- Whether `libpulse` can be an optional dependency. A binary linked
-  against `libpulse.so.0` does not start without it. Either the Volume
-  page is behind a cargo feature that the package enables and `libpulse`
-  moves to `depends` (a client library with no daemon), or the
-  page loads it with `dlopen`. Decide in plan 014 step 1 and make this
-  list agree.
 - That the `v4_16` and `v1_6` feature floors are the real minimum: build
   once in a container with those exact library versions if one can be
   had; otherwise state the tested versions (4.24, 1.10) in the README.

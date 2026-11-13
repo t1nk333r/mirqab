@@ -100,6 +100,10 @@ written into the plan it affects, with the date.
 | 9 | Licence | MIT | architecture §15 |
 | 10 | Languages | English only in the first release; strings kept in one module for later translation | architecture §7.2, plan 001 |
 | — | Weather provider | Open-Meteo by default; the endpoint is a setting; its non-commercial terms are stated in `README.md` | plan 017 |
+| 11 | `zbus` held on 5.x | Accepted (2026-11-13): the tray uses `ksni`, which needs `zbus` 5; plan 004 step 1's size and idle check still decides | plan 004, architecture §5.6 |
+| 12 | An Unlicense dependency | Accepted (2026-11-13): Unlicense goes on `cargo deny`'s allow-list for `ksni` only | plan 004 |
+| 13 | `libpulse` required or optional | A hard dependency of the package (2026-11-13) | plans 014, 020 |
+| 14 | Hardware for acceptance | Fans and Battery ship tested on fixtures, marked so; the owner runs the hardware steps later (2026-11-13) | plans 013, 015 |
 
 ### What the toolkit change moved
 
@@ -123,18 +127,6 @@ inside plans:
    is `t1nk33r` (two). The application id
    (`io.github.t1nk333r.mirqab`), the issues link and the README follow
    whichever is right. Which is it?
-2. **`zbus` held on 5.x.** The tray crate `ksni` 0.3.7 needs `zbus` 5,
-   so the daemon uses 5.19.0 while 6.3.0 exists. The alternative is to
-   write the tray's D-Bus interfaces by hand (plan 004 keeps it as the
-   fallback). Accept the pin?
-3. **An Unlicense dependency.** `ksni` is under the Unlicense
-   (public-domain dedication). It is compatible with MIT; it has to be
-   on `cargo deny`'s allow-list. Accept?
-4. **`libpulse` required or optional.** The Volume page links
-   `libpulse`. Simplest is to make it a hard dependency of the package
-   (plans 014 and 020 list the alternative). Accept a hard dependency?
-5. **Hardware for acceptance.** Fan curves (plan 015) and the Battery
-   tab (plan 013) need a machine with controllable fans and one with a
-   battery. Testing is on one Arch-based desktop; which machine does the
-   owner use for those two acceptance steps, or do they ship marked
-   "tested on fixtures only"?
+
+Questions 2 to 5 of this list were answered on 2026-11-13 (rows 11 to 14
+above).

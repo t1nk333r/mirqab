@@ -1,5 +1,5 @@
 //! The CLI: connect, send one request, print the answer (architecture §11).
-//! Plan 005 adds the read commands and `--watch`.
+//! Plan 005 adds the read commands and `--watch`; `bar` is in `bar/`.
 
 use crate::{Args, EXIT_FAILED, EXIT_NO_DAEMON, EXIT_USAGE};
 use mirqab_core::proto::stream::SystemData;
@@ -9,17 +9,17 @@ use mirqab_view::format;
 use serde_json::{Value, json};
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Duration;
 
-enum CallError {
+pub(crate) enum CallError {
     NoDaemon(String),
     Daemon(String, String),
 }
 
 /// Sends one request and returns its result.
-fn call(socket: &Path, req: Request) -> Result<Value, CallError> {
+pub(crate) fn call(socket: &Path, req: Request) -> Result<Value, CallError> {
     let stream = UnixStream::connect(socket).map_err(|e| CallError::NoDaemon(e.to_string()))?;
     let _ = stream.set_read_timeout(Some(Duration::from_secs(10)));
     let mut writer = &stream;
@@ -228,16 +228,45 @@ fn print_sensors(v: &Value) {
     }
 }
 
+/// The socket to use, or the exit for having none.
+pub(crate) fn socket_or_exit(args: &Args) -> Result<PathBuf, ExitCode> {
+    args.socket
+        .clone()
+        .or_else(server::default_socket)
+        .ok_or_else(|| {
+            eprintln!(
+                "{}",
+                strings::no_daemon(
+                    "$XDG_RUNTIME_DIR/mirqab/daemon.sock",
+                    "XDG_RUNTIME_DIR is not set"
+                )
+            );
+            ExitCode::from(EXIT_NO_DAEMON)
+        })
+}
+
+pub(crate) fn no_daemon(socket: &Path, why: &str) {
+    eprintln!("{}", strings::no_daemon(&socket.display().to_string(), why));
+}
+
+/// The message and exit code for a failed call.
+pub(crate) fn exit_for(socket: &Path, e: CallError) -> ExitCode {
+    match e {
+        CallError::NoDaemon(why) => {
+            no_daemon(socket, &why);
+            ExitCode::from(EXIT_NO_DAEMON)
+        }
+        CallError::Daemon(code, message) => {
+            eprintln!("{}", strings::daemon_error(&code, &message));
+            ExitCode::from(EXIT_FAILED)
+        }
+    }
+}
+
 pub fn run(command: &str, args: Args) -> ExitCode {
-    let Some(socket) = args.socket.clone().or_else(server::default_socket) else {
-        eprintln!(
-            "{}",
-            strings::no_daemon(
-                "$XDG_RUNTIME_DIR/mirqab/daemon.sock",
-                "XDG_RUNTIME_DIR is not set"
-            )
-        );
-        return ExitCode::from(EXIT_NO_DAEMON);
+    let socket = match socket_or_exit(&args) {
+        Ok(s) => s,
+        Err(code) => return code,
     };
     let mut json_out = false;
     let mut window = false;
@@ -307,16 +336,6 @@ pub fn run(command: &str, args: Args) -> ExitCode {
             }
             ExitCode::SUCCESS
         }
-        Err(CallError::NoDaemon(why)) => {
-            eprintln!(
-                "{}",
-                strings::no_daemon(&socket.display().to_string(), &why)
-            );
-            ExitCode::from(EXIT_NO_DAEMON)
-        }
-        Err(CallError::Daemon(code, message)) => {
-            eprintln!("{}", strings::daemon_error(&code, &message));
-            ExitCode::from(EXIT_FAILED)
-        }
+        Err(e) => exit_for(&socket, e),
     }
 }

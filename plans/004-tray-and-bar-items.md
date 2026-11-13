@@ -10,7 +10,10 @@
 - **Depends on**: 001, 002
 - **Category**: integration
 - **Planned at**: 2026-11-13, from the owner
-- **State**: PLANNED
+- **State**: IN PROGRESS. Part 1 (`mirqab bar`, the haseen widget, the
+  Waybar example) implemented 2026-11-13; part 2 (the tray) next.
+- **Owner decisions** (2026-11-13): the tray uses `ksni` with `zbus` held
+  on 5.x; Unlicense goes on `cargo deny`'s allow-list for `ksni` only.
 
 ## Problem
 
@@ -189,6 +192,46 @@ machine with haseen and is not a CI gate here.
 6. Tests above; the `--tray` mode of `tools/bench-idle.sh`.
 7. README: tray, bar and keybinding examples for Hyprland.
 
+## As built
+
+Part 1 (2026-11-13), where it differs from the plan:
+
+- **Two pull requests.** Part 1 is `mirqab bar`, the haseen widget and the
+  Waybar example (checklist steps 4, 5, the bar half of 6 and 7); part 2
+  is the tray (steps 1 to 3 and the rest of 6).
+- The items are `crates/mirqab/src/bar/items.rs`, one function per item
+  from a `system` snapshot; `strings::BAR_ITEMS` is the table `--list`
+  prints. `temp` is the hottest CPU sensor, classed by the thermal word
+  (`cool`, `warm`, `hot`, `critical`); `gpu` the busiest awake GPU; a
+  reading with no value yet is `—`, class `unknown`. `combo` takes the
+  worst of its parts as `normal`, `high` or `critical` (`hot` counts as
+  high).
+- `bar.combo` is a config key (default `cpu`, `mem`, `temp`), validated
+  against the items; the CLI reads it with `config.get`.
+- `--watch` checks for a closed reader on every event (`poll` on stdout,
+  in `mirqab-core::sys`, the one module that may use `unsafe`), so a
+  reading that never changes cannot keep a dead bar's process alive.
+- Temperatures print in Celsius; `units.temperature` reaches the CLI with
+  plan 005.
+- From the review of PR #10: the daemon sends events at the shortest
+  interval any subscriber asked for, so `--watch` holds a changed reading
+  back until its own interval has passed (less 250 ms for jitter), except
+  the first real value after `—`. `--interval` is capped at an hour. The
+  class follows the rounded value (79.6 reads `80%`, `high`); `combo` is
+  `unknown` while no part has a value; `temp` without the thermal word is
+  `normal`. The Waybar modules set `restart-interval` (Waybar never
+  restarts a continuous `exec` otherwise) and `escape`. The haseen widget
+  shows `—` when the daemon is gone and restarts its reading when its
+  settings change; it installs with `--path contrib/haseen/mirqab.bar`.
+  Deferred: output that survives a closed pipe for every command
+  (`println!` aborts on EPIPE) to plan 005; `bar.combo` end to end to
+  part 2.
+- The haseen widget validates with `haseen plugin validate` against
+  haseen's schema on the development machine; its one unmet requirement
+  there was `mirqab` not on `PATH` (not installed). `Widget.qml` passes
+  Qt 6's `qmllint` for syntax; haseen's own modules are not importable
+  outside haseen.
+
 ## Unverified
 
 - **`ksni` with `async-io` and `blocking`**: that it adds no executor
@@ -199,8 +242,7 @@ machine with haseen and is not a CI gate here.
 - **The watcher's behaviour in Quickshell-based hosts** (haseen's bar):
   whether it reads `ToolTip` on a timer. Measure with `busctl monitor` for
   a minute and adjust the cache time.
-- **haseen's bar-widget manifest fields**: read
-  `share/haseen/shell/plugin.schema.json` in the haseen repository at the
-  time of writing; it is that project's contract and may have moved.
-- **Waybar's JSON fields**: confirm against the wiki page above; Waybar is
-  not installed here.
+- ~~haseen's bar-widget manifest fields~~: checked against haseen's
+  `plugin.schema.json` and `haseen plugin validate` (As built, part 1).
+- ~~Waybar's JSON fields~~: checked against Waybar's wiki and its
+  `custom.cpp` (review of PR #10); Waybar is still not installed here.

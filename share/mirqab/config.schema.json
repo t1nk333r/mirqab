@@ -45,6 +45,12 @@
         "seeded": {"type": "boolean", "default": false, "description": "Home was given its first cards once; an emptied Home stays empty."}
       }
     },
+    "bar": {
+      "type": "object",
+      "properties": {
+        "combo": {"type": "array", "items": {"enum": ["cpu", "mem", "temp", "gpu", "load"]}, "default": ["cpu", "mem", "temp"], "description": "The items `mirqab bar combo` shows, in order."}
+      }
+    },
     "tabs": {
       "type": "object",
       "properties": {
