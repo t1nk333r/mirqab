@@ -72,6 +72,19 @@ capture "$repo/tools/secrets.sh"
 status_is "a line starting with ++ in history is scanned" 1 "$STATUS"
 rm -rf "$repo/.git"
 git -C "$repo" init -q -b main
+# A removed "-- " line directly before an added "++ " line: the diff shows
+# "--- old" then "+++ <host>", which must not be taken for a file header.
+printf -- '-- old\n' >"$repo/sample.txt"
+git -C "$repo" add -A
+git -C "$repo" -c user.name=t -c user.email=t@example.invalid commit -qm dashes
+printf '++ %s\n' "$private_host" >"$repo/sample.txt"
+git -C "$repo" -c user.name=t -c user.email=t@example.invalid commit -qam swap
+printf 'gone\n' >"$repo/sample.txt"
+git -C "$repo" -c user.name=t -c user.email=t@example.invalid commit -qam gone
+capture "$repo/tools/secrets.sh"
+status_is "an added ++ line after a removed -- line is scanned" 1 "$STATUS"
+rm -rf "$repo/.git"
+git -C "$repo" init -q -b main
 
 # The allow list is scanned like any other file.
 printf 'host %s\n' "$private_host" >>"$repo/tools/secrets-allow.txt"
