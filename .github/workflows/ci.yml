@@ -77,7 +77,8 @@ jobs:
       - name: Tools
         run: |
           read -ra pkgs <<<"$ARCH_PACKAGES"
-          pacman -Syu --noconfirm --needed "${pkgs[@]}"
+          # zsh and fish: tests/test-cli.sh parses their completion scripts.
+          pacman -Syu --noconfirm --needed "${pkgs[@]}" zsh fish
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # The pull request's merge base must be in the clone.
