@@ -11,7 +11,7 @@
 - **Category**: tab
 - **Planned at**: 2026-11-13, from the owner
 - **State**: DONE (2026-11-13). Part 1 (the sampler, history series,
-  `load` and `sensors`) and part 2 (the page). Plan 003 made the GPUs one
+  `load` and `sensors`, PR #7) and part 2 (the page, PR #8). Plan 003 made the GPUs one
   card. Measured on the development
   machine (release build, real `/`): 0.116 % of one core subscribed at
   2 s, 0.233 % live at 1 s, 5.4–5.6 MiB RSS.
