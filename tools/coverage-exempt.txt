@@ -3,6 +3,7 @@
 plans/**                  # the engineering record; tools/check-docs.sh checks it
 docs/**                   # architecture and guides; tools/check-docs.sh checks links
 *.md                      # README, CLAUDE.md (AGENTS.md links to it), NOTICE
+tests/fixtures/README.md  # describes the fixtures; read by nobody
 LICENSE                   # the licence text
 .gitignore                # git's ignore list
 tools/check-docs.sh       # the docs gate, run by CI's docs job

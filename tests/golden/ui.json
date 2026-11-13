@@ -1,0 +1,6 @@
+[
+  {"event": "show", "tab": "system", "mode": "popover"},
+  {"event": "hide"},
+  {"event": "toggle", "tab": null},
+  {"event": "config-changed"}
+]

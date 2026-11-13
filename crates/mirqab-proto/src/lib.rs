@@ -1,6 +1,14 @@
 //! The protocol shared by the daemon and the interface: frames, error codes,
 //! stream data shapes and every user-visible string (architecture §5.2, §7.2).
-//! Phase B of plan 001 fills it; it depends on `serde` only.
+//! It depends on `serde` only, so the interface links no SQLite or D-Bus.
+
+pub mod code;
+pub mod frame;
+pub mod stream;
+pub mod strings;
+
+pub use code::Code;
+pub use frame::{ErrorBody, Event, Hello, Reply, Request, ServerFrame};
 
 /// The protocol version in the `hello` frame. It changes only when a frame
 /// shape changes (architecture §5.2).

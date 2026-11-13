@@ -39,6 +39,9 @@ MIRQAB_SCRATCH_PARENT="${TMPDIR:-/tmp}"
 
 SCRATCH=""
 _cleanup_scratch() {
+    # A daemon a test left running dies with its sandbox.
+    [[ -z ${DAEMON_PID:-} ]] || { kill "$DAEMON_PID" 2>/dev/null || true; wait "$DAEMON_PID" 2>/dev/null || true; }
+    [[ -z ${MIRQAB_RUN_DIR:-} || ! -d $MIRQAB_RUN_DIR ]] || rm -rf -- "$MIRQAB_RUN_DIR"
     [[ -z $SCRATCH || ! -d $SCRATCH ]] || rm -rf -- "$SCRATCH"
 }
 trap _cleanup_scratch EXIT
@@ -49,10 +52,14 @@ sandbox() {
     _cleanup_scratch
     SCRATCH="$(mktemp -d "$MIRQAB_SCRATCH_PARENT/mirqab-test.XXXXXX")"
     SANDBOX="$SCRATCH"
-    mkdir -p "$SANDBOX/home" "$SANDBOX/stubs" "$SANDBOX/run" "$SANDBOX/tmp"
+    mkdir -p "$SANDBOX/home" "$SANDBOX/stubs" "$SANDBOX/tmp"
+    # The runtime dir holds sockets, whose paths must stay under 108 bytes,
+    # so it lives under /tmp whatever the caller's TMPDIR, and goes with the
+    # sandbox.
+    MIRQAB_RUN_DIR="$(mktemp -d /tmp/mqr.XXXXXX)"
+    ln -s "$MIRQAB_RUN_DIR" "$SANDBOX/run"
     # What runs under a test writes its temporary files here, not to /tmp.
     export TMPDIR="$SANDBOX/tmp"
-    chmod 0700 "$SANDBOX/run"
     local c
     for c in "${STUBBED_CMDS[@]}"; do
         printf '#!/bin/sh\necho "STUB-CALLED: %s $*" >&2\nexit 97\n' "$c" >"$SANDBOX/stubs/$c"
@@ -61,7 +68,7 @@ sandbox() {
     export HOME="$SANDBOX/home"
     export XDG_CONFIG_HOME="$HOME/.config" XDG_STATE_HOME="$HOME/.local/state"
     export XDG_DATA_HOME="$HOME/.local/share" XDG_CACHE_HOME="$HOME/.cache"
-    export XDG_RUNTIME_DIR="$SANDBOX/run"
+    export XDG_RUNTIME_DIR="$MIRQAB_RUN_DIR"
     unset XDG_DATA_DIRS
     export PATH="$SANDBOX/stubs:$CARGO_HOME/bin:/usr/bin:/bin"
     # Nothing under test may reach the session it runs in: a dead bus address
@@ -115,4 +122,39 @@ capture() {
     OUTPUT="$("$@" 2>&1)"
     STATUS=$?
     set -e
+}
+
+# build_bins — build the workspace's binaries once per test file; sets BIN to
+# the directory that holds them.
+build_bins() {
+    [[ -n ${BIN:-} ]] && return 0
+    cargo build --locked --quiet --manifest-path "$REPO/Cargo.toml" --bins
+    BIN="$CARGO_TARGET_DIR/debug"
+}
+
+# start_daemon ROOT — run `mirqab daemon` on the fixture tree ROOT (a name
+# under tests/fixtures or a path) in the sandbox; waits for its `ready` line
+# and sets DAEMON_PID and MIRQAB_SOCKET. stop_daemon ends it; the scratch
+# cleanup on exit ends it too.
+start_daemon() {
+    local root=$1 line=""
+    [[ $root == /* ]] || root="$FIXTURES/$root"
+    build_bins
+    export MIRQAB_SOCKET="$XDG_RUNTIME_DIR/mirqab/daemon.sock"
+    mkfifo "$SANDBOX/daemon.out"
+    "$BIN/mirqab" daemon --root "$root" >"$SANDBOX/daemon.out" 2>"$SANDBOX/daemon.err" &
+    DAEMON_PID=$!
+    # The fifo blocks until the daemon opens it; its first line is `ready`.
+    if ! read -r -t 10 line <"$SANDBOX/daemon.out" || [[ $line != "ready $MIRQAB_SOCKET" ]]; then
+        echo "start_daemon: no ready line (got '$line'):" >&2
+        cat "$SANDBOX/daemon.err" >&2 || true
+        return 1
+    fi
+}
+
+stop_daemon() {
+    [[ -n ${DAEMON_PID:-} ]] || return 0
+    kill "$DAEMON_PID" 2>/dev/null || true
+    wait "$DAEMON_PID" 2>/dev/null || true
+    DAEMON_PID=""
 }

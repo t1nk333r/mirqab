@@ -10,10 +10,27 @@ and no paid tier.
 
 ## Status
 
-Only the first phase of the foundation exists (plan 001, phase A): the
-workspace skeleton and the development gates. The six crates are stubs.
-The three binaries print their version and exit; the three libraries
-hold no features yet. Nothing runs yet.
+Phases A and B of the foundation exist (plan 001): the workspace, the
+development gates, and the daemon with its socket protocol and the CLI.
+Nothing is on screen yet.
+
+- The daemon (`mirqab daemon`) serves a private Unix socket at
+  `$XDG_RUNTIME_DIR/mirqab/daemon.sock`, or at `$MIRQAB_SOCKET` or
+  `--socket PATH` when given. It streams its own CPU and memory cost on
+  the `self` stream.
+- The CLI has `daemon`, `status [--json]`, `open [TAB] [--window]`,
+  `toggle [TAB]`, `close`, `help [COMMAND]`, `--help` and `--version`.
+  Every command takes `--socket PATH`.
+- There is no window yet. `mirqab-ui` only prints its version, so `open`,
+  `toggle` and `close` fail with `unavailable: no interface is running`
+  and exit 1. They take `--dry-run`, which prints what the action would do.
+- Not built yet: history, the System tab and the other tabs, the window,
+  the MCP server and the root helper. `mirqab-fand` only prints its
+  version.
+
+The config is `~/.config/mirqab/config.json` (under `$XDG_CONFIG_HOME` when
+set), its keys are listed in `share/mirqab/config.schema.json`, the daemon
+is its only writer, and a file you broke by hand is never overwritten.
 
 The design is in `docs/architecture.md` and the plans are in `plans/`.
 The sections below describe the planned product. It is developed and
@@ -57,6 +74,36 @@ tested on an Arch-based system; other distributions are untested.
 - No speed-test server and no "what is my IP" service is built in. Both
   are empty settings; the buttons do nothing until you set one.
 - English only for now.
+
+## Try it
+
+Run the daemon in one shell. It stays in the foreground and stops on
+Ctrl-C. It needs `XDG_RUNTIME_DIR`, which a login session sets, and it
+prints `ready <socket>` once it listens:
+
+```sh
+mirqab daemon
+```
+
+In another shell, `mirqab status` reads from it. With no daemon running,
+`status` exits 2 and says how to start one.
+
+To run the daemon as a user service, copy the units in `dist/` to
+`~/.config/systemd/user/`. No package installs them yet. Then enable the
+socket; the daemon starts when the first client connects:
+
+```sh
+mkdir -p ~/.config/systemd/user
+cp dist/mirqab.socket dist/mirqab.service ~/.config/systemd/user/
+systemctl --user enable --now mirqab.socket
+mirqab status
+```
+
+The service runs `/usr/bin/mirqab daemon`, so install the binary there or
+change `ExecStart=` in your copy. `mirqab-ui.service` is for the window and
+is not needed yet.
+
+Exit codes: 0 done, 1 refused or failed, 2 no daemon, 64 usage error.
 
 ## Planned usage
 

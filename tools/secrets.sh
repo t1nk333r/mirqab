@@ -51,12 +51,13 @@ git log -p --format='@@commit %H' "${REFS[@]}" -- . \
     ':!tools/secrets.sh' ':!tools/secrets-deny.txt' |
     awk -v allow="$allow" '
         BEGIN { n = split(allow, a, "\n"); for (i = 1; i <= n; i++) ok[a[i]] = 1 }
-        /^@@commit / { skip = ($2 in ok); prev = ""; next }
-        # A "+++ b/file" header follows a "--- a/file" line; an added line
-        # whose own text starts with "++ " does not, and is scanned.
-        /^\+\+\+ / && prev ~ /^--- / { prev = $0; next }
-        !skip && /^\+/ { print }
-        { prev = $0 }
+        /^@@commit / { skip = ($2 in ok); hunk = 0; next }
+        # From "diff --git" to the first "@@ " is a file header ("+++ b/x"
+        # among it); added lines are those inside hunks, whatever they start
+        # with ("++ x" and "--- x" are content there).
+        /^diff --git / { hunk = 0; next }
+        /^@@ / { hunk = 1; next }
+        hunk && !skip && /^\+/ { print }
     ' >"$added"
 
 # scan ERE — matches in tracked files and in lines added in history.

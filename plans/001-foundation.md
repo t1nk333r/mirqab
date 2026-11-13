@@ -12,7 +12,9 @@
 - **Planned at**: 2026-11-13, from the owner
 - **State**: IN PROGRESS. Phase A (skeleton and gates) implemented
   2026-11-13: `tools/lint.sh`, `tools/check-docs.sh`, `tools/secrets.sh`
-  pass on the branch, and `tests/run.sh` 93/93. Phases B to E open.
+  pass on the branch, and `tests/run.sh` 93/93. Phase B (daemon and
+  protocol) implemented 2026-11-13: `tests/run.sh --affected` 140/140.
+  Phases C to E open.
 
 ## Problem
 
@@ -532,6 +534,82 @@ squash merge leaves `e72bfef` out of `main`, and is removed then.
     `tests/golden/ui.json`.
 19. Tests: `proto` units, `tests/protocol.rs`, `tests/root.rs`,
     `tests/test-cli.sh`, `tests/test-units.sh`, the fixtures.
+
+Phase B as built (2026-11-13), where it differs from the steps above:
+
+- Three system calls std does not wrap live in
+  `crates/mirqab-core/src/sys.rs`, the one `unsafe` file of the daemon
+  besides `root.rs`: the peer's uid (`SO_PEERCRED`), `getuid`, and
+  adopting systemd's socket (`LISTEN_FDS`). Each block has a `SAFETY`
+  comment. CLAUDE.md's `unsafe` list gains `sys.rs`.
+- `act::signal` runs `kill -s SIG -- PID` through `exec.rs` instead of
+  calling kill(2), so it needs no `unsafe`; a signal is a rare,
+  user-started action. It refuses pid 0 and 1, the daemon itself and a
+  process of another uid now; the cgroup and compositor refusals of
+  architecture §5.4 come with the actions that need them (plans 006–008).
+- `selfcost.rs` reads `CLK_TCK` from `proc/self/auxv` (`AT_CLKTCK`)
+  through `Root`, falling back to 100, instead of calling `sysconf`.
+- `open`, `toggle` and `close` are the actions `ui.show`, `ui.toggle`
+  and `ui.hide`, so they take `--dry-run` like every other action. Without
+  an attached interface they reply `unavailable` until phase D starts one.
+- CLI exit codes: 0 done, 1 refused or failed, 2 no daemon, 64 usage.
+- "`open system` produces a `ui` event" is tested in Rust
+  (`crates/mirqab/tests/cli.rs`), which can hold a socket as the
+  interface; a shell has no Unix-socket client without adding one.
+  `tests/test-cli.sh` covers exit codes, help and `status --json`.
+- `tests/test-units.sh` runs `systemd-analyze verify --user
+  --recursive-errors=no` with a short runtime directory (a long one
+  overflows the socket path). The helper unit and the `.desktop` file
+  arrive with plan 015 and phase D, and their checks with them.
+- The config's keys are checked by hand in `config.rs`; a test checks
+  that `share/mirqab/config.schema.json` names the same keys and defaults.
+
+Review of phase B (Sonnet, checked by Fable, 2026-11-13). Fixed before
+merge, each with a test:
+
+- `bind()` removed whatever sat at the socket path, recursively. Now it
+  replaces only a socket that refuses connections; a file, a directory or
+  a symlink makes the daemon refuse to start. `shutdown` uses the same
+  socket-only removal.
+- `config.set` wrote from what the daemon read at start, so a file broken
+  or edited by hand while it ran was overwritten. `set` now re-reads the
+  file first and refuses a broken one; other readers re-read it when its
+  modification time or length changed.
+- A `dryRun` that is not a boolean (`"true"`, `1`) ran the real action;
+  now it is `bad-request`.
+- A client that half-closed after a request lost the reply: the socket was
+  shut while the writer was still flushing. The writer is joined first,
+  with a 10 s write timeout so a client that never reads cannot hang it.
+- An `accept` error (EMFILE, ENFILE, ENOBUFS, ENOMEM, ECONNABORTED) ended
+  the daemon; now it logs and retries after 100 ms.
+- Tests put sockets under `/tmp` so a long `TMPDIR` cannot pass the
+  108-byte socket path limit.
+
+Deferred, each to where the code it guards is written:
+
+- Phase C: two daemons starting together can both run (the stale-socket
+  check races); a lock file, once both would write `history.db`. Phase C
+  or plan 020: `mirqab.service` has no `WantedBy`, so history waits for a
+  first client.
+- Phase D, step 27: re-subscribing sets "sample now" each time and can beat
+  the floor; clamp in `sampler_loop` to at most one immediate sample a
+  second (clearing it only for a new subscriber is not enough: unsubscribe
+  then subscribe gets past). `client.rs` must accept an event that arrives
+  before its subscribe reply. `config.set live.intervalMs` does not
+  re-floor live subscriptions already open.
+- Phase D: an earlier interface is not restored when the latest one
+  disconnects (`Client.ui_pid` is unused); a `config.json` that is a
+  symlink is replaced by a regular file on write.
+- Phase D, step 30, the first command the daemon runs: mark fd 3 from
+  socket activation close-on-exec.
+- Plans 002 and 005: `get` shares the subscription's sampler, so rate
+  baselines can have short windows. Plan 005 (MCP, the first caller that is
+  not ours): reject other malformed params instead of defaulting them; a
+  cap on clients.
+- Plans 006–008: `act::signal` checks the uid through `Root` but signals
+  the real pid, and a pid can be reused between check and signal.
+- Plans 008 and 017, the first callers that pass stdin: `exec.rs` writes
+  stdin before draining the pipes, so more than 64 KiB deadlocks.
 
 ### Phase C — history (PR 3)
 

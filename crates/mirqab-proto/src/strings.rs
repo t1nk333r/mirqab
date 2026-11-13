@@ -1,0 +1,159 @@
+//! Every string a person reads, in the interface, the CLI and the daemon's
+//! data (architecture §7.2). English only for now; a translation replaces
+//! this module's body and touches no call site.
+
+pub const APP_NAME: &str = "mirqab";
+
+pub const CLI_USAGE: &str = "\
+usage: mirqab <command> [options]
+
+commands:
+  daemon [--root DIR] [--socket PATH]   run the daemon (systemd starts it from mirqab.socket)
+  status [--json]                       version, socket, subscribers and the daemon's cost
+  open [TAB] [--window]                 show the window, on TAB
+  toggle [TAB]                          show the window, or hide it if it is shown
+  close                                 hide the window
+  help [COMMAND]                        this text, or one command's
+
+options for every command:
+  --socket PATH   the daemon's socket (default $XDG_RUNTIME_DIR/mirqab/daemon.sock, or $MIRQAB_SOCKET)
+  --help          help for the command
+  --version       print the version
+";
+
+pub fn command_help(command: &str) -> Option<&'static str> {
+    Some(match command {
+        "daemon" => {
+            "usage: mirqab daemon [--root DIR] [--socket PATH]\n\
+             Serves the socket. --root reads system state from DIR instead of / (tests use fixture trees).\n\
+             Run by hand, it prints `ready <socket>` once it listens.\n"
+        }
+        "status" => {
+            "usage: mirqab status [--json]\n\
+             Prints the version, the socket, each stream's subscribers and interval, and what the daemon costs.\n"
+        }
+        "open" => {
+            "usage: mirqab open [TAB] [--window]\n\
+             Shows the window, on TAB if given. --window opens a normal window instead of the popover.\n"
+        }
+        "toggle" => {
+            "usage: mirqab toggle [TAB]\n\
+             Shows the window, or hides it if it is shown.\n"
+        }
+        "close" => "usage: mirqab close\nHides the window.\n",
+        "help" => "usage: mirqab help [COMMAND]\n",
+        _ => return None,
+    })
+}
+
+pub fn unknown_command(command: &str) -> String {
+    format!("mirqab: unknown command '{command}' (see mirqab --help)")
+}
+
+pub fn unknown_option(option: &str) -> String {
+    format!("mirqab: unknown option '{option}' (see mirqab --help)")
+}
+
+pub fn missing_value(option: &str) -> String {
+    format!("mirqab: {option} needs a value")
+}
+
+pub fn no_daemon(socket: &str, why: &str) -> String {
+    format!(
+        "mirqab: no daemon at {socket} ({why}); start it with: systemctl --user start mirqab.socket"
+    )
+}
+
+pub fn daemon_error(code: &str, message: &str) -> String {
+    format!("mirqab: {code}: {message}")
+}
+
+pub fn no_runtime_dir() -> &'static str {
+    "mirqab: XDG_RUNTIME_DIR is not set; the daemon needs a private runtime directory"
+}
+
+pub fn runtime_dir_not_ours(dir: &str) -> String {
+    format!("mirqab: {dir} is not owned by this user; refusing to put the socket there")
+}
+
+pub fn already_running(socket: &str) -> String {
+    format!("mirqab: a daemon already listens at {socket}")
+}
+
+pub fn not_a_socket(path: &str) -> String {
+    format!("{path} exists and is not a socket; refusing to replace it")
+}
+
+pub fn socket_busy(path: &str) -> String {
+    format!("{path} is a socket that did not refuse a connection; another daemon may be starting")
+}
+
+pub fn ready(socket: &str) -> String {
+    format!("ready {socket}")
+}
+
+pub fn no_interface() -> &'static str {
+    "no interface is running"
+}
+
+pub fn config_broken(why: &str) -> String {
+    format!("config.json could not be read ({why}); using defaults and leaving the file untouched")
+}
+
+pub fn status_lines(
+    version: &str,
+    socket: &str,
+    uptime_sec: u64,
+    rss_bytes: u64,
+    streams: &[(String, u32, Option<u64>)],
+    notes: &[String],
+) -> String {
+    let mut out = format!(
+        "mirqab {version}\nsocket      {socket}\nuptime      {uptime_sec} s\ndaemon      {} KiB resident\n",
+        rss_bytes / 1024
+    );
+    let total: u32 = streams.iter().map(|(_, n, _)| n).sum();
+    out.push_str(&format!("subscribers {total}\n"));
+    for (name, n, interval) in streams {
+        match interval {
+            Some(ms) => out.push_str(&format!("  {name:<10} {n} every {ms} ms\n")),
+            None => out.push_str(&format!("  {name:<10} {n}\n")),
+        }
+    }
+    for note in notes {
+        out.push_str(note);
+        out.push('\n');
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_command_in_the_usage_has_help() {
+        for c in ["daemon", "status", "open", "toggle", "close", "help"] {
+            assert!(
+                CLI_USAGE.contains(&format!("  {c}")),
+                "{c} missing from usage"
+            );
+            assert!(command_help(c).is_some(), "{c} has no help");
+        }
+        assert!(command_help("nope").is_none());
+    }
+
+    #[test]
+    fn status_counts_subscribers() {
+        let s = status_lines(
+            "0.1.0",
+            "/tmp/s",
+            5,
+            4096,
+            &[("self".into(), 2, Some(2000)), ("ui".into(), 1, None)],
+            &[],
+        );
+        assert!(s.contains("subscribers 3"));
+        assert!(s.contains("self       2 every 2000 ms"));
+    }
+}
