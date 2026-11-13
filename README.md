@@ -10,23 +10,31 @@ and no paid tier.
 
 ## Status
 
-Phases A and B of the foundation exist (plan 001): the workspace, the
-development gates, and the daemon with its socket protocol and the CLI.
-Nothing is on screen yet.
+Phases A, B and C of the foundation exist (plan 001): the workspace, the
+development gates, the daemon with its socket protocol and the CLI, and
+history. Nothing is on screen yet.
 
 - The daemon (`mirqab daemon`) serves a private Unix socket at
   `$XDG_RUNTIME_DIR/mirqab/daemon.sock`, or at `$MIRQAB_SOCKET` or
-  `--socket PATH` when given. It streams its own CPU and memory cost on
-  the `self` stream.
+  `--socket PATH` when given. Only one daemon runs per socket. It streams
+  its own CPU and memory cost on the `self` stream, and the machine's CPU
+  percent and memory on the `system` stream.
+- History: once a minute the daemon stores one value for each of four
+  series: `cpu.total` (percent, the average over the minute), `mem.used`,
+  `mem.available` and `swap.used` (bytes). It keeps 30 days in
+  `~/.local/state/mirqab/history.db`, or `$XDG_STATE_HOME/mirqab/history.db`
+  when that is set. The budget is 40 MiB for the file and its write-ahead
+  log together, and the file is compacted once a day. Minutes while the
+  daemon is not running are not stored.
 - The CLI has `daemon`, `status [--json]`, `open [TAB] [--window]`,
-  `toggle [TAB]`, `close`, `help [COMMAND]`, `--help` and `--version`.
+  `toggle [TAB]`, `close`, `history SERIES... [--range 1h|24h|7d|30d]
+  [--json]`, `history --list`, `help [COMMAND]`, `--help` and `--version`.
   Every command takes `--socket PATH`.
 - There is no window yet. `mirqab-ui` only prints its version, so `open`,
   `toggle` and `close` fail with `unavailable: no interface is running`
   and exit 1. They take `--dry-run`, which prints what the action would do.
-- Not built yet: history, the System tab and the other tabs, the window,
-  the MCP server and the root helper. `mirqab-fand` only prints its
-  version.
+- Not built yet: the System tab and the other tabs, the window, the MCP
+  server and the root helper. `mirqab-fand` only prints its version.
 
 The config is `~/.config/mirqab/config.json` (under `$XDG_CONFIG_HOME` when
 set), its keys are listed in `share/mirqab/config.schema.json`, the daemon
@@ -89,26 +97,43 @@ In another shell, `mirqab status` reads from it. With no daemon running,
 `status` exits 2 and says how to start one.
 
 To run the daemon as a user service, copy the units in `dist/` to
-`~/.config/systemd/user/`. No package installs them yet. Then enable the
-socket; the daemon starts when the first client connects:
+`~/.config/systemd/user/`. No package installs them yet. Enable both
+units: the service starts the daemon at login, so history is kept even
+when no client is connected.
 
 ```sh
 mkdir -p ~/.config/systemd/user
 cp dist/mirqab.socket dist/mirqab.service ~/.config/systemd/user/
-systemctl --user enable --now mirqab.socket
+systemctl --user enable --now mirqab.socket mirqab.service
 mirqab status
 ```
 
+Stop a daemon you started by hand first; only one can hold the socket.
 The service runs `/usr/bin/mirqab daemon`, so install the binary there or
 change `ExecStart=` in your copy. `mirqab-ui.service` is for the window and
 is not needed yet.
+
+Stored history is read with `mirqab history`. This prints the last hour of
+`cpu.total`, one bucket a minute:
+
+```sh
+mirqab history cpu.total
+```
+
+`--range` takes `1h` (the default), `24h`, `7d` or `30d`; longer ranges
+use wider buckets. Each line is a bucket's unix time, the series, its
+average and its peak, and the unit. `mirqab history --list` names the
+series. The first value appears after the first whole minute the daemon
+runs: memory is stored at the first minute boundary, and `cpu.total`,
+which needs two readings, a minute later. Until then the command prints
+nothing.
 
 Exit codes: 0 done, 1 refused or failed, 2 no daemon, 64 usage error.
 
 ## Planned usage
 
 ```sh
-systemctl --user enable --now mirqab.socket
+systemctl --user enable --now mirqab.socket mirqab.service
 mirqab open            # the window; `mirqab toggle` for a keybinding
 mirqab status          # one-screen summary
 mirqab ports           # what is listening
