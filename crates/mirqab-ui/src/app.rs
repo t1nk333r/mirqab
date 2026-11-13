@@ -325,8 +325,12 @@ impl Ctx {
         }
         if let Some(w) = self.window() {
             w.refresh_tiles(self);
-            // A reused popover follows a new corner, margin or size.
-            w.place(&cfg);
+            // A reused popover follows a new corner, margin or size. A
+            // window keeps the size the user dragged it to (review of
+            // PR #5: set_default_size resized it on every config change).
+            if w.mode == Mode::Popover {
+                w.place(&cfg);
+            }
         }
         self.config_changed();
     }

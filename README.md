@@ -10,12 +10,19 @@ and no paid tier.
 
 ## Status
 
-Phases A to D of the foundation exist (plan 001): the workspace, the
+Plan 001 (the foundation) is complete, phases A to E: the workspace, the
 development gates, the daemon with its socket protocol and the CLI,
 history, the view crate (`crates/mirqab-view`, with number formatting, the
 theme token table, the icon glyphs, graph geometry and the sidebar model;
 its tests need no display) and the window (`crates/mirqab-ui`).
 
+- Measured cost (2026-11-13, on the development machine, release build):
+  idle, with no subscriber, 0.000 % of one core over 60 s and 5.0 MiB.
+  With a live 1 s subscription to `system`, 0.000 % and 5.0 MiB. The open
+  window uses 50 MiB with the Cairo renderer. Budgets: under 0.3 % and
+  15 MiB idle, under 1 % live. To measure it yourself, run
+  `tools/bench-idle.sh`, or `tools/bench-idle.sh --subscribe system --live`
+  (it needs `socat`).
 - The daemon (`mirqab daemon`) serves a private Unix socket at
   `$XDG_RUNTIME_DIR/mirqab/daemon.sock`, or at `$MIRQAB_SOCKET` or
   `--socket PATH` when given. Only one daemon runs per socket. It streams
@@ -27,7 +34,10 @@ its tests need no display) and the window (`crates/mirqab-ui`).
   `~/.local/state/mirqab/history.db`, or `$XDG_STATE_HOME/mirqab/history.db`
   when that is set. The budget is 40 MiB for the file and its write-ahead
   log together, and the file is compacted once a day. Minutes while the
-  daemon is not running are not stored.
+  daemon is not running are not stored. With `--root DIR` (fixture trees,
+  used by the tests) the daemon keeps `history.db` and `config.json` beside
+  its socket instead, so fixture numbers never reach your files, and only
+  one daemon may use a history file (`history.db.lock`).
 - The CLI has `daemon`, `status [--json]`, `open [TAB] [--window]`,
   `toggle [TAB]`, `close`, `history SERIES... [--range 1h|24h|7d|30d]
   [--json]`, `history --list`, `help [COMMAND]`, `--help` and `--version`.

@@ -59,10 +59,12 @@ status_is "open without an interface exits 1" 1 "$STATUS"
 like "and says why" "$OUTPUT" "could not start mirqab-ui.service"
 like "through the stubbed systemctl, never the real one" "$OUTPUT" "STUB-CALLED: systemctl --user start mirqab-ui.service"
 
-# History: the file is made in the sandbox's state dir; no minute has passed.
+# History: a daemon on a fixture root keeps its file beside its socket, never
+# in XDG_STATE_HOME (phase E); no minute has passed.
 like "status reports history on" "$("$BIN/mirqab" status --json | jq -c .history)" '"enabled":true'
-ok_file="$XDG_STATE_HOME/mirqab/history.db"
-[[ -f $ok_file ]] && ok || not_ok "history.db created under XDG_STATE_HOME"
+ok_file="$(dirname "$MIRQAB_SOCKET")/history.db"
+[[ -f $ok_file ]] && ok || not_ok "history.db created beside the socket"
+[[ ! -e $XDG_STATE_HOME/mirqab/history.db ]] && ok || not_ok "and not under XDG_STATE_HOME"
 capture "$BIN/mirqab" history --list
 status_is "history --list exits 0" 0 "$STATUS"
 like "history --list names cpu.total" "$OUTPUT" "cpu.total"

@@ -10,13 +10,22 @@
 - **Depends on**: —
 - **Category**: core
 - **Planned at**: 2026-11-13, from the owner
-- **State**: IN PROGRESS. Phase A (skeleton and gates) implemented
-  2026-11-13: `tools/lint.sh`, `tools/check-docs.sh`, `tools/secrets.sh`
+- **State**: DONE (2026-11-13). Two owner checks stay open: one page by
+  eye at scale 1.25, and the popover closing on focus loss on Hyprland.
+  Phase A (skeleton and gates) implemented 2026-11-13: `tools/lint.sh`, `tools/check-docs.sh`, `tools/secrets.sh`
   pass on the branch, and `tests/run.sh` 93/93. Phase B (daemon and
   protocol) implemented 2026-11-13: `tests/run.sh --affected` 140/140.
   Phase C (history) implemented 2026-11-13: 152/152. Phase D part 1 (the
   view crate) implemented 2026-11-13: 154/154. Phase D part 2 (the window)
-  implemented 2026-11-13. Phase E open.
+  implemented 2026-11-13: 237/237. Phase E (budget) implemented
+  2026-11-13: 247/247.
+  **Measured 2026-11-13** with `tools/bench-idle.sh`, release build, on
+  the development machine (a desktop, 8-core AMD Ryzen, 16 threads):
+  no subscriber, **0.000 % of one core over 60 s, 5.0 MiB RSS, 1 context
+  switch**; subscribed to `system` live at 1 s, **0.000 %, 5.0 MiB, 288
+  context switches**. Below one clock tick (10 ms) in the minute both
+  times. The open window: 50 MiB with the Cairo renderer (73 MiB with
+  GTK's default), 0 % CPU idle.
 
 ## Problem
 
@@ -924,6 +933,45 @@ and `open` while the interface reconnects to a restarted daemon (plan
 33. Record the measured numbers in this plan's State line, with the date
     and the machine class. Update `README.md` ("Status") and
     `plans/README.md`.
+
+Phase E as built (2026-11-13), where it differs from the steps above:
+
+- `tools/bench-idle.sh` holds the subscription with `socat` (a shell has
+  no Unix-socket client; plan 005's `--watch` commands come later). CI
+  installs `socat`. It counts context switches over every thread
+  (`/proc/<pid>/task/*/status`), not the main thread's alone, and takes
+  `--seconds`, `--runs`, `--max-cpu`, `--max-rss` and `--bin` so
+  `tests/test-bench.sh` can check it in seconds. Exit 1 is over budget,
+  2 is could not measure, 64 a usage error.
+- The CI step runs on every push to `main` and on pull requests that
+  touch `crates/`: best of three, idle and `--subscribe system --live`.
+- The deferrals from the review of phase C: a second lock,
+  `<history>.lock`, refuses a second daemon on another socket that would
+  share the history file; and `mirqab daemon --root DIR` (any root but
+  `/`) keeps its history and config beside its socket, so fixture numbers
+  never reach the user's history or config.
+
+Review of phase E (Sonnet, checked by Fable, 2026-11-13). Fixed before
+merge:
+
+- A daemon that died during the measurement passed as within budget (0.0
+  MiB): `measure` ran in a command substitution, which turns `set -e`
+  off, and the daemon's and socat's pids lived only in that subshell, so
+  every early exit and signal left both running. `measure` now runs in the
+  script's own shell and sets globals; a dead daemon, an unread `/proc`
+  entry, a socat that died or a refused subscription is exit 2; socat reads
+  its request from a fifo held on fd 3, so no helper process is left to
+  leak. Tests: an unknown stream, a daemon killed mid-run, SIGTERM during
+  a run, and a stub daemon that never makes its socket.
+- The interface check read only the first `mirqab-ui`; it reads them all.
+- CI's "no change under `crates/`" skip failed open on a git error.
+- RSS is judged in KiB, unrounded; `--seconds` and `--runs` must be whole
+  numbers from 1.
+- The history lock made a fresh `~/.local` and `~/.local/state` 0700:
+  only the directory mirqab owns is made private now, its parents get the
+  default mode.
+- From the approval of phase D part 2: a window the user resized snapped
+  back whenever a setting changed; only a popover is re-placed.
 
 ## Unverified
 

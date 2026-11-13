@@ -412,6 +412,12 @@ and every subscriber to `ui` gets a `config-changed` event. A config the
 daemon cannot parse is left untouched, reported in `status`, and defaults
 are used: the app never rewrites a file the user broke by hand.
 
+With `mirqab daemon --root DIR` (fixture trees, used by the tests) the
+daemon keeps `history.db` and `config.json` beside its socket instead, so
+fixture numbers never reach the user's files. Only one daemon may use a
+history file: a second lock, `history.db.lock`, refuses a second daemon on
+another socket.
+
 ### 5.6 D-Bus and HTTP
 
 - D-Bus through the `zbus` crate's blocking API, **pinned to the 5.x line

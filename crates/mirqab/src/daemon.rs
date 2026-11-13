@@ -51,11 +51,15 @@ fn notify_ready() {
 
 pub fn run(args: Args) -> ExitCode {
     let mut root = Root::host();
+    let mut fixture = false;
     let mut it = args.rest.into_iter();
     while let Some(a) = it.next() {
         match a.as_str() {
             "--root" => match it.next() {
-                Some(v) => root = Root::new(v),
+                Some(v) => {
+                    fixture = std::path::Path::new(&v) != std::path::Path::new("/");
+                    root = Root::new(v);
+                }
                 None => {
                     eprintln!("{}", strings::missing_value("--root"));
                     return ExitCode::from(EXIT_USAGE);
@@ -73,12 +77,19 @@ pub fn run(args: Args) -> ExitCode {
     let Some(socket) = args.socket.or_else(server::default_socket) else {
         return fail(strings::no_runtime_dir());
     };
+    // A daemon reading a fixture tree keeps its history and config beside
+    // its socket, never in the user's: fixture numbers must not land in the
+    // real history (review of phase C, deferred to phase E).
+    let (config_path, history) = match socket.parent().filter(|_| fixture) {
+        Some(dir) => (dir.join("config.json"), dir.join("history.db")),
+        None => (Config::default_path(), History::default_path()),
+    };
     let server = match server::listen(Options {
         socket: socket.clone(),
         root,
-        config_path: Config::default_path(),
+        config_path,
         samplers: Vec::new(),
-        history: Some(History::default_path()),
+        history: Some(history),
     }) {
         Ok(s) => s,
         Err(ListenError::AlreadyRunning) => {
