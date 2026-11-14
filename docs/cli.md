@@ -25,7 +25,7 @@ Prints the version, the socket, each stream's subscribers and interval, and what
 mirqab open [TAB] [--window] [--dry-run]
 ```
 
-Shows the window, on TAB if given. --window opens a normal window instead of the popover. --dry-run prints what the daemon would do and changes nothing.
+Shows the window, on TAB if given. --window opens a normal window even when the config asks for a popover. --dry-run prints what the daemon would do and changes nothing.
 
 ## toggle
 

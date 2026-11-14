@@ -39,7 +39,7 @@ pub const CLI_COMMANDS: &[CliCommand] = &[
             "open [TAB] [--window] [--dry-run]",
             "show the window, on TAB",
         )],
-        help: "Shows the window, on TAB if given. --window opens a normal window instead of the popover. --dry-run prints what the daemon would do and changes nothing.",
+        help: "Shows the window, on TAB if given. --window opens a normal window even when the config asks for a popover. --dry-run prints what the daemon would do and changes nothing.",
     },
     CliCommand {
         name: "toggle",
@@ -938,7 +938,7 @@ usage: mirqab-ui [--socket PATH] [--window] [--tab TAB] [--background]
 The window. It is started by `mirqab open` through mirqab-ui.service and
 quits 60 s after the window was last hidden.
   --socket PATH   the daemon's socket
-  --window        open as a normal window instead of the popover
+  --window        open as a normal window even if the config asks for a popover
   --tab TAB       open on TAB
   --background    start without showing the window (the unit does this)
   --selftest TAB  build TAB in a window, print its widget tree as JSON, exit

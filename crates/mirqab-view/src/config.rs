@@ -6,10 +6,13 @@
 use crate::format::TempUnit;
 use serde_json::Value;
 
+/// How the interface opens. A normal window is the default (plan 022): with
+/// focus-follows-mouse a popover closes as soon as the pointer moves onto
+/// another window.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Mode {
-    #[default]
     Popover,
+    #[default]
     Window,
 }
 
@@ -19,6 +22,12 @@ impl Mode {
             Mode::Popover => "popover",
             Mode::Window => "window",
         }
+    }
+
+    /// Escape hides a popover; a normal window that vanished on Escape would
+    /// surprise, so it closes with its button, the compositor or Ctrl+W.
+    pub fn closes_on_escape(self) -> bool {
+        self == Mode::Popover
     }
 
     pub fn parse(v: &str) -> Option<Mode> {
@@ -164,4 +173,29 @@ impl UiConfig {
 
 fn lookup<'a>(v: &'a Value, key: &str) -> Option<&'a Value> {
     key.split('.').try_fold(v, |cur, part| cur.get(part))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn a_config_without_a_mode_opens_a_window() {
+        assert_eq!(UiConfig::from_json(&json!({})).mode, Mode::Window);
+        assert_eq!(
+            UiConfig::from_json(&json!({"window": {"mode": "bogus"}})).mode,
+            Mode::Window
+        );
+        assert_eq!(
+            UiConfig::from_json(&json!({"window": {"mode": "popover"}})).mode,
+            Mode::Popover
+        );
+    }
+
+    #[test]
+    fn only_a_popover_closes_on_escape() {
+        assert!(Mode::Popover.closes_on_escape());
+        assert!(!Mode::Window.closes_on_escape());
+    }
 }
