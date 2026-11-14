@@ -7,7 +7,8 @@ use gtk::glib;
 use gtk::gsk;
 use gtk::prelude::*;
 use gtk::subclass::prelude::*;
-use mirqab_ui::client::Source;
+use mirqab_proto::{Code, ErrorBody};
+use mirqab_ui::client::{Reply, Source};
 use mirqab_ui::widgets::confirm_dialog;
 use mirqab_ui::widgets::graph::{Graph, Live};
 use mirqab_ui::widgets::meter::Meter;
@@ -200,10 +201,25 @@ fn a_series_is_one_stroke_and_one_fill_and_a_gap_is_a_second_contour() {
 
 type OnEvent = Rc<dyn Fn(&Value)>;
 
+/// A `Source` that counts its subscriptions, keeps the live params and
+/// every request, and answers requests from a queue.
+#[derive(Default)]
 struct Fake {
     live: Rc<Cell<i32>>,
     plain: Rc<Cell<i32>>,
     on_event: RefCell<Option<OnEvent>>,
+    live_params: RefCell<Vec<Value>>,
+    requests: RefCell<Vec<(String, Value)>>,
+    answers: RefCell<std::collections::VecDeque<Result<Value, ErrorBody>>>,
+    /// While set, a request's reply is held in `held` instead of answered.
+    defer: Cell<bool>,
+    held: RefCell<Option<Reply>>,
+}
+
+impl Fake {
+    fn new() -> Fake {
+        Fake::default()
+    }
 }
 
 struct Held(Rc<Cell<i32>>);
@@ -218,25 +234,50 @@ impl Source for Fake {
         self.plain.set(self.plain.get() + 1);
         Box::new(Held(Rc::clone(&self.plain)))
     }
-    fn subscribe_live(&self, _: &str, on_event: Rc<dyn Fn(&Value)>) -> Box<dyn Any> {
+    fn subscribe_live(&self, _: &str, params: Value, on_event: Rc<dyn Fn(&Value)>) -> Box<dyn Any> {
         self.live.set(self.live.get() + 1);
+        self.live_params.borrow_mut().push(params);
         *self.on_event.borrow_mut() = Some(on_event);
         Box::new(Held(Rc::clone(&self.live)))
+    }
+    fn request(&self, method: &str, params: Value, on_reply: Reply) {
+        self.requests
+            .borrow_mut()
+            .push((method.to_string(), params));
+        if self.defer.get() {
+            *self.held.borrow_mut() = Some(on_reply);
+            return;
+        }
+        let answer = self.answers.borrow_mut().pop_front();
+        on_reply(answer.unwrap_or_else(|| {
+            Err(ErrorBody {
+                code: Code::Unavailable,
+                message: "no answer queued".into(),
+                data: None,
+            })
+        }));
+    }
+    fn get(&self, stream: &str, params: Value, on_reply: Reply) {
+        self.requests
+            .borrow_mut()
+            .push((format!("get {stream}"), params.clone()));
+        on_reply(Ok(json!({
+            "pid": params["pid"],
+            "name": "browser",
+            "verdict": {"code": "home", "text": "Not owned by any package"},
+        })));
     }
 }
 
 #[gtk::test]
 #[ignore = "needs a display: run tests/test-ui-widgets.sh"]
 fn live_only_while_mapped_at_two_minutes() {
-    let fake = Rc::new(Fake {
-        live: Rc::new(Cell::new(0)),
-        plain: Rc::new(Cell::new(0)),
-        on_event: RefCell::new(None),
-    });
+    let fake = Rc::new(Fake::new());
     let g = Graph::new();
     g.set_live(Some(Live {
         source: fake.clone(),
         stream: "system".into(),
+        params: Value::Null,
         extract: Rc::new(|v: &Value| v["cpu"]["percent"].as_f64()),
     }));
     g.set_range("2m");
@@ -306,16 +347,13 @@ fn the_confirm_dialog_lists_every_would_do_line() {
 #[ignore = "needs a display: run tests/test-ui-widgets.sh"]
 fn moving_a_home_card_keeps_its_graph_live() {
     use mirqab_ui::tabs::home::page::place;
-    let fake = Rc::new(Fake {
-        live: Rc::new(Cell::new(0)),
-        plain: Rc::new(Cell::new(0)),
-        on_event: RefCell::new(None),
-    });
+    let fake = Rc::new(Fake::new());
     let graph = || {
         let g = Graph::new();
         g.set_live(Some(Live {
             source: fake.clone(),
             stream: "system".into(),
+            params: Value::Null,
             extract: Rc::new(|v: &Value| v["cpu"]["percent"].as_f64()),
         }));
         g.set_range("2m");
@@ -363,4 +401,395 @@ fn moving_a_home_card_keeps_its_graph_live() {
     assert_eq!(a.ring_len(), 2);
     assert_eq!(fake.live.get(), 1);
     drop(win);
+}
+
+/// The golden `apps` frame, keyed.
+fn golden_frame() -> mirqab_view::tabs::apps::Frame {
+    let v: Value = serde_json::from_str(include_str!("../../../tests/golden/apps.json")).unwrap();
+    let mut st = mirqab_view::tabs::apps::AppsState::default();
+    st.take(serde_json::from_value(v).unwrap()).0
+}
+
+/// A widget named `name` under `w`.
+fn named(w: &gtk::Widget, name: &str) -> Option<gtk::Widget> {
+    if w.widget_name() == name {
+        return Some(w.clone());
+    }
+    let mut c = w.first_child();
+    while let Some(child) = c {
+        if let Some(hit) = named(&child, name) {
+            return Some(hit);
+        }
+        c = child.next_sibling();
+    }
+    None
+}
+
+#[gtk::test]
+#[ignore = "needs a display: run tests/test-ui-widgets.sh"]
+fn the_inspector_asks_before_it_quits_and_says_a_refusal_in_words() {
+    use adw::prelude::*;
+    use mirqab_ui::tabs::apps::inspector::Inspector;
+    use mirqab_view::tabs::apps::{self as model, Key};
+    let fake = Rc::new(Fake::new());
+    let i = Inspector::new(
+        fake.clone(),
+        Rc::new(|| true),
+        Rc::new(|| {}),
+        Rc::new(|_| {}),
+    );
+    let win = shown(&i.root, 400, 600);
+    let frame = golden_frame();
+
+    // A process: the live graph follows `process` with its pid and start,
+    // and the inspector asks `apps.inspect` once.
+    let p = Key::Process {
+        pid: 2001,
+        start: 5010,
+    };
+    i.show(model::selection(&frame, p, 1), &frame, true);
+    assert_eq!(fake.live.get(), 1, "a process is graphed live");
+    assert_eq!(
+        fake.live_params.borrow().last(),
+        Some(&json!({"pid": 2001, "start": 5010}))
+    );
+    assert_eq!(
+        fake.requests.borrow().last(),
+        Some(&("get apps.inspect".to_string(), json!({"pid": 2001})))
+    );
+    i.show(model::selection(&frame, p, 1), &frame, true);
+    assert_eq!(fake.requests.borrow().len(), 1, "never on a timer");
+
+    // A group: no live subscription; its main process is inspected.
+    let browser = frame
+        .groups
+        .iter()
+        .find(|(_, g)| g.name == "Example Browser")
+        .unwrap()
+        .0;
+    i.show(
+        model::selection(&frame, Key::Group(browser), 1),
+        &frame,
+        true,
+    );
+    assert_eq!(fake.live.get(), 0, "a group drops the live graph");
+    assert_eq!(
+        fake.requests.borrow().last().unwrap().1,
+        json!({"pid": 2000})
+    );
+    assert!(i.graph.ring_len() > 0, "fed from the frames instead");
+
+    // Quit: the plan opens the dialog, which lists every pid.
+    let would: Vec<Value> = [
+        (2001, 5010),
+        (2000, 5000),
+        (2010, 5100),
+        (2011, 5200),
+        (2012, 5300),
+    ]
+    .iter()
+    .map(|&(pid, start)| json!({"signal": "TERM", "pid": pid, "start": start, "name": "x"}))
+    .collect();
+    fake.answers.borrow_mut().push_back(Err(ErrorBody {
+        code: Code::NeedsConfirm,
+        message: "ask again".into(),
+        data: Some(json!({"plan": "p1", "wouldDo": would, "skipped": [], "warnings": []})),
+    }));
+    let quit = named(i.root.upcast_ref(), "apps-quit")
+        .and_downcast::<gtk::Button>()
+        .unwrap();
+    quit.emit_clicked();
+    let group = json!({"group": "scope:app-Hyprland-browser.sh-5650fedc"});
+    assert_eq!(
+        fake.requests.borrow().last(),
+        Some(&(
+            "action".to_string(),
+            json!({"name": "apps.quit", "args": group})
+        )),
+        "the first call has no confirm"
+    );
+    let d = i.dialog().expect("a dialog");
+    for pid in ["2000", "2001", "2010", "2011", "2012"] {
+        assert!(d.body().contains(pid), "{pid} in {}", d.body());
+    }
+    // Cancel is the default and the close response (review of PR #19).
+    assert_eq!(d.default_response().as_deref(), Some("cancel"));
+    assert_eq!(d.close_response(), "cancel");
+    // Go ahead: the same args, confirm and the plan.
+    fake.answers.borrow_mut().push_back(Ok(json!({
+        "done": [{"signal": "TERM", "pid": 2001, "start": 5010, "name": "browser"}],
+        "gone": [], "failed": [],
+        "skipped": [{"pid": 2000, "name": "bash", "reason": "r"}], "recorded": false
+    })));
+    d.emit_by_name::<()>("response", &[&"confirm"]);
+    assert_eq!(
+        fake.requests.borrow().last().unwrap().1,
+        json!({"name": "apps.quit", "args": group, "confirm": true, "plan": "p1"})
+    );
+    assert!(i.result.text().contains(mirqab_proto::strings::APPS_DONE));
+    assert!(i.warned(), "not recorded: said");
+    assert_eq!(i.dialog(), None, "a dialog that answered is gone");
+    assert_eq!(
+        i.watching(),
+        [(2001, 5010)],
+        "still running watches what was signalled, not the member left alone"
+    );
+    // The row dies on the next frame: the outcome outlives it (B1).
+    let mut st = mirqab_view::tabs::apps::AppsState::default();
+    let v: Value = serde_json::from_str(include_str!("../../../tests/golden/apps.json")).unwrap();
+    let mut d2: mirqab_proto::stream::AppsData = serde_json::from_value(v).unwrap();
+    d2.groups.retain(|g| g.name != "Example Browser");
+    let frame2 = st.take(d2).0;
+    i.show(None, &frame2, true);
+    let o = i.take_outcome(Key::Group(browser)).expect("an outcome");
+    assert!(o.warn);
+    assert_eq!(
+        o.lines,
+        [
+            mirqab_proto::strings::APPS_DONE,
+            "Left alone:",
+            "  bash (2000): r"
+        ]
+    );
+    assert_eq!(o.name, "Example Browser");
+    d.force_close();
+
+    // A refusal is the daemon's message, and no dialog.
+    let hypr = Key::Process {
+        pid: 1050,
+        start: 1500,
+    };
+    i.show(model::selection(&frame, hypr, 1), &frame, true);
+    fake.answers.borrow_mut().push_back(Err(ErrorBody {
+        code: Code::Refused,
+        message: "pid 1050 is the session's compositor".into(),
+        data: None,
+    }));
+    quit.emit_clicked();
+    assert_eq!(i.result.text(), "pid 1050 is the session's compositor");
+    assert_eq!(i.dialog(), None, "no dialog");
+
+    // The System group offers no buttons.
+    let sys = frame
+        .groups
+        .iter()
+        .find(|(_, g)| g.id == "system")
+        .unwrap()
+        .0;
+    i.show(model::selection(&frame, Key::Group(sys), 1), &frame, true);
+    assert!(!i.buttons.is_visible());
+
+    // Live only while mapped.
+    i.show(model::selection(&frame, p, 1), &frame, true);
+    assert_eq!(fake.live.get(), 1);
+    win.0.set_visible(false);
+    settle("the inspector is unmapped", || !i.graph.is_mapped());
+    assert_eq!(fake.live.get(), 0, "a hidden window drops live");
+    no_blur(&all(&i.graph));
+    drop(win);
+}
+
+#[gtk::test]
+#[ignore = "needs a display: run tests/test-ui-widgets.sh"]
+fn an_apps_row_draws_no_blur() {
+    use mirqab_ui::tabs::apps::group_row::GroupRow;
+    use mirqab_view::tabs::apps::{self as model, AppsState, Row};
+    let frame = golden_frame();
+    let rows = model::rows(&frame, &AppsState::default(), "");
+    let Row::Group(g) = &rows[0] else { panic!() };
+    let row = GroupRow::new(Rc::new(|_| {}));
+    row.show(g);
+    let _win = shown(&row.root, 600, 40);
+    assert_eq!(row.root.widget_name(), "apps-group:session:3030");
+    let mut meters = 0;
+    let mut c = row.root.first_child();
+    while let Some(w) = c {
+        if let Some(m) = w.downcast_ref::<Meter>() {
+            meters += 1;
+            no_blur(&all(m));
+        }
+        c = w.next_sibling();
+    }
+    assert_eq!(meters, 1);
+}
+
+#[gtk::test]
+#[ignore = "needs a display: run tests/test-ui-widgets.sh"]
+fn the_confirm_dialog_defaults_to_cancel() {
+    use adw::prelude::*;
+    let d = confirm_dialog::confirm_dialog_lines("Quit?", &["a (1)".to_string()]);
+    assert_eq!(d.default_response().as_deref(), Some("cancel"));
+    assert_eq!(d.close_response(), "cancel");
+    assert_eq!(
+        d.response_appearance(confirm_dialog::CONFIRM),
+        adw::ResponseAppearance::Destructive
+    );
+}
+
+/// The needs-confirm answer for `would` with plan `plan`.
+fn needs_confirm(plan: &str, would: Value) -> Result<Value, ErrorBody> {
+    Err(ErrorBody {
+        code: Code::NeedsConfirm,
+        message: "ask again".into(),
+        data: Some(json!({"plan": plan, "wouldDo": would, "skipped": [], "warnings": []})),
+    })
+}
+
+#[gtk::test]
+#[ignore = "needs a display: run tests/test-ui-widgets.sh"]
+fn one_act_one_dialog_and_go_ahead_sends_what_it_showed() {
+    use adw::prelude::*;
+    use mirqab_ui::tabs::apps::inspector::Inspector;
+    use mirqab_view::tabs::apps::{self as model, Key, Outcome};
+    let fake = Rc::new(Fake::new());
+    let outcomes: Rc<RefCell<Vec<Outcome>>> = Rc::new(RefCell::new(Vec::new()));
+    let o = Rc::clone(&outcomes);
+    let i = Inspector::new(
+        fake.clone(),
+        Rc::new(|| true),
+        Rc::new(|| {}),
+        Rc::new(move |x| o.borrow_mut().push(x)),
+    );
+    let _win = shown(&i.root, 400, 600);
+    let frame = golden_frame();
+    let quit = named(i.root.upcast_ref(), "apps-quit")
+        .and_downcast::<gtk::Button>()
+        .unwrap();
+    let force = named(i.root.upcast_ref(), "apps-force-quit")
+        .and_downcast::<gtk::Button>()
+        .unwrap();
+    let p = Key::Process {
+        pid: 2001,
+        start: 5010,
+    };
+    let other = Key::Process {
+        pid: 2010,
+        start: 5100,
+    };
+    let would = json!([{"signal": "TERM", "pid": 2001, "start": 5010, "name": "browser"}]);
+    i.show(model::selection(&frame, p, 1), &frame, true);
+    let base = fake.requests.borrow().len();
+
+    // Only one act: a second Quit and a Force quit with the dialog open
+    // send nothing and stack no second dialog (S3).
+    fake.answers
+        .borrow_mut()
+        .push_back(needs_confirm("p1", would.clone()));
+    quit.emit_clicked();
+    let first = i.dialog().expect("a dialog");
+    quit.emit_clicked();
+    force.emit_clicked();
+    assert_eq!(fake.requests.borrow().len(), base + 1, "one request");
+    assert_eq!(i.dialog(), Some(first.clone()), "the first dialog");
+    // Cancel sends nothing, and frees the next act.
+    first.emit_by_name::<()>("response", &[&"cancel"]);
+    assert_eq!(i.dialog(), None);
+    assert_eq!(
+        fake.requests.borrow().len(),
+        base + 1,
+        "cancel sends nothing"
+    );
+    fake.answers
+        .borrow_mut()
+        .push_back(needs_confirm("p2", would.clone()));
+    quit.emit_clicked();
+    assert_eq!(
+        fake.requests.borrow().len(),
+        base + 2,
+        "a further click asks"
+    );
+
+    // The row goes while the dialog is open: it closes, and its Go ahead
+    // sends nothing (S2).
+    let d = i.dialog().expect("a dialog");
+    i.show(None, &frame, true);
+    assert_eq!(i.dialog(), None, "closed with its row");
+    d.emit_by_name::<()>("response", &[&"confirm"]);
+    assert_eq!(fake.requests.borrow().len(), base + 2, "nothing redeemed");
+
+    // Another row selected while the dialog is open: closed too.
+    i.show(model::selection(&frame, p, 1), &frame, true);
+    fake.answers
+        .borrow_mut()
+        .push_back(needs_confirm("p3", would.clone()));
+    quit.emit_clicked();
+    assert!(i.dialog().is_some());
+    i.show(model::selection(&frame, other, 1), &frame, true);
+    assert_eq!(i.dialog(), None, "no redeem for a row the user left");
+
+    // Go ahead sends the args the dialog showed; the reply comes after
+    // the user moved on, and its outcome goes to the page (B1).
+    i.show(model::selection(&frame, p, 1), &frame, true);
+    fake.answers
+        .borrow_mut()
+        .push_back(needs_confirm("p4", would.clone()));
+    quit.emit_clicked();
+    let d = i.dialog().expect("a dialog");
+    fake.defer.set(true);
+    d.emit_by_name::<()>("response", &[&"confirm"]);
+    fake.defer.set(false);
+    assert_eq!(
+        fake.requests.borrow().last().unwrap().1,
+        json!({"name": "apps.quit", "args": {"pid": 2001}, "confirm": true, "plan": "p4"})
+    );
+    i.show(model::selection(&frame, other, 1), &frame, true);
+    let held = fake.held.borrow_mut().take().expect("a held reply");
+    held(Ok(
+        json!({"done": [{"signal": "TERM", "pid": 2001, "start": 5010}],
+                   "gone": [], "failed": [], "skipped": [], "recorded": false}),
+    ));
+    let got = outcomes.borrow();
+    assert_eq!(got.len(), 1, "the outcome went to the page once");
+    assert_eq!(got[0].key, p);
+    assert!(got[0].warn);
+    assert_eq!(i.result.text(), "", "not shown under the other row");
+    drop(got);
+
+    // A plan naming the row's pid with another start: the pid was reused,
+    // and nothing is asked (D5).
+    i.show(model::selection(&frame, p, 1), &frame, true);
+    let n = fake.requests.borrow().len();
+    fake.answers.borrow_mut().push_back(needs_confirm(
+        "p5",
+        json!([{"signal": "TERM", "pid": 2001, "start": 9999, "name": "other"}]),
+    ));
+    quit.emit_clicked();
+    assert_eq!(i.dialog(), None, "no dialog for a reused pid");
+    assert_eq!(fake.requests.borrow().len(), n + 1, "only the first call");
+    assert_eq!(i.result.text(), mirqab_proto::strings::APPS_ROW_GONE);
+}
+
+#[gtk::test]
+#[ignore = "needs a display: run tests/test-ui-widgets.sh"]
+fn hiding_the_sheet_clears_the_selection() {
+    use mirqab_view::tabs::apps::Key;
+    adw::init().unwrap();
+    let app = adw::Application::builder()
+        .application_id("io.github.t1nk333r.mirqab.test")
+        .flags(gtk::gio::ApplicationFlags::NON_UNIQUE)
+        .build();
+    // A dead socket: nothing is sent, the page is only built.
+    let dir = std::env::temp_dir().join(format!("mirqab-widgets-{}", std::process::id()));
+    let ctx = mirqab_ui::app::Ctx::new(&app, dir.join("none.sock"));
+    let page = mirqab_ui::tabs::apps::page::build(&ctx);
+    fn split(w: &gtk::Widget) -> Option<adw::OverlaySplitView> {
+        if let Some(s) = w.downcast_ref::<adw::OverlaySplitView>() {
+            return Some(s.clone());
+        }
+        let mut c = w.first_child();
+        while let Some(child) = c {
+            if let Some(s) = split(&child) {
+                return Some(s);
+            }
+            c = child.next_sibling();
+        }
+        None
+    }
+    let split = split(&page).expect("the split view");
+    assert!(!split.enables_hide_gesture(), "no swipe hides the sheet");
+    split.set_show_sidebar(true);
+    ctx.apps.borrow_mut().selected = Some(Key::Group(1));
+    split.set_show_sidebar(false);
+    assert_eq!(ctx.apps.borrow().selected, None, "hidden: nothing selected");
+    ctx.client.close();
 }

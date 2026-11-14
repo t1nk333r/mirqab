@@ -60,7 +60,7 @@ impl Tab {
 /// Every tab, in sidebar order (architecture §7.1).
 pub const TABS: &[Tab] = &[
     tab("home", icons::HOME, Place::Top, None, 3),
-    tab("apps", icons::APPS, Place::Top, Some("apps"), 6),
+    tab("apps", icons::APPS, Place::Top, Some("apps"), 6).built(),
     tab("system", icons::SYSTEM, Place::Top, Some("system"), 2).built(),
     tab("fans", icons::FANS, Place::Top, Some("fans"), 15),
     tab("disk", icons::DISK, Place::Top, Some("disk"), 10),

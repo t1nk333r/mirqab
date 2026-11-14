@@ -107,3 +107,71 @@ window.mirqab.popover {
 .mirqab-card:focus-within .mirqab-drag-handle {
   opacity: 1;
 }
+
+/* The Apps tab (plan 006, part 3). */
+.mirqab-apps-toolbar,
+.mirqab-apps-row,
+.mirqab-apps-inspector-head,
+.mirqab-apps-buttons {
+  border-spacing: var(--mirqab-space-2);
+}
+
+.mirqab-apps-toolbar {
+  padding-bottom: var(--mirqab-space-2);
+}
+
+.mirqab-apps-row {
+  padding: var(--mirqab-space-1) var(--mirqab-space-2);
+  border-radius: var(--mirqab-radius-tile);
+}
+
+.mirqab-apps-row.mirqab-apps-child {
+  padding-left: 3em;
+}
+
+.mirqab-apps-list .selected > .mirqab-apps-row {
+  background-color: var(--accent-bg-color);
+  color: var(--accent-fg-color);
+}
+
+.mirqab-apps-cpu {
+  min-width: 3.5em;
+}
+
+.mirqab-apps-memory {
+  min-width: 4.5em;
+}
+
+.mirqab-apps-procs {
+  min-width: 6em;
+}
+
+.mirqab-app-icon {
+  min-width: 1.5em;
+}
+
+.mirqab-apps-note {
+  padding: var(--mirqab-space-2);
+}
+
+.mirqab-apps-inspector {
+  background-color: var(--card-bg-color);
+  padding: var(--mirqab-space-3);
+}
+
+.mirqab-apps-inspector-body,
+.mirqab-apps-inspector-foot {
+  border-spacing: var(--mirqab-space-2);
+}
+
+.mirqab-apps-inspector-body {
+  padding: var(--mirqab-space-2) 0;
+}
+
+.mirqab-apps-stats {
+  border-spacing: var(--mirqab-space-1);
+}
+
+.mirqab-apps-details {
+  border-spacing: var(--mirqab-space-1) var(--mirqab-space-2);
+}

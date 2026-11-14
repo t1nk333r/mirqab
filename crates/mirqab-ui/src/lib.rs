@@ -34,6 +34,10 @@ pub fn run() -> glib::ExitCode {
         print!("{}", strings::UI_USAGE);
         return glib::ExitCode::SUCCESS;
     }
+    if let Some(why) = opts.refusal(true, app::test_env()) {
+        eprintln!("{why}");
+        return glib::ExitCode::from(64);
+    }
     let mut flags = gio::ApplicationFlags::HANDLES_COMMAND_LINE;
     if opts.selftest.is_some() || std::env::var("MIRQAB_TEST").as_deref() == Ok("1") {
         flags |= gio::ApplicationFlags::NON_UNIQUE;
@@ -54,6 +58,12 @@ pub fn run() -> glib::ExitCode {
             return glib::ExitCode::from(64);
         };
         let first = ctx.borrow().is_none();
+        // Forwarded arguments are checked here, before anything runs: a
+        // second `mirqab-ui` must not drive the running window.
+        if let Some(why) = opts.refusal(first, app::test_env()) {
+            eprintln!("{why}");
+            return glib::ExitCode::from(64);
+        }
         if first {
             let socket = opts
                 .socket
@@ -66,7 +76,7 @@ pub fn run() -> glib::ExitCode {
             return glib::ExitCode::FAILURE;
         };
         if let Some(tab) = &opts.selftest {
-            selftest::run(&c, tab);
+            selftest::run(&c, tab, opts.steps.as_deref());
         } else if !(first && opts.background) {
             let mode = opts.window.then_some(mirqab_view::config::Mode::Window);
             c.show_when_ready(opts.tab.as_deref(), mode);

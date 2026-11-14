@@ -40,6 +40,17 @@ pub const CLOSE: Glyph = g("md-close", '\u{f0156}');
 pub const HEALTH: Glyph = g("md-heart_pulse", '\u{f05f6}');
 pub const WARNING: Glyph = g("md-alert_circle_outline", '\u{f05d6}');
 pub const OK: Glyph = g("md-check_circle_outline", '\u{f05e1}');
+pub const EXPAND: Glyph = g("md-chevron_right", '\u{f0142}');
+pub const COLLAPSE: Glyph = g("md-chevron_down", '\u{f0140}');
+pub const REFRESH: Glyph = g("md-refresh", '\u{f0450}');
+// An Apps row's kind when its app has no icon in the theme (plan 006).
+pub const KIND_APP: Glyph = g("md-application_outline", '\u{f0614}');
+pub const KIND_SERVICE: Glyph = g("md-cog", '\u{f0493}');
+pub const KIND_TERMINAL: Glyph = g("md-console", '\u{f018d}');
+pub const KIND_CONTAINER: Glyph = g("md-docker", '\u{f0868}');
+pub const KIND_FLATPAK: Glyph = g("md-package_variant", '\u{f03d6}');
+pub const KIND_PROCESS: Glyph = g("md-cube_outline", '\u{f01a7}');
+pub const KIND_SYSTEM: Glyph = g("md-account_cog", '\u{f1370}');
 
 /// Every glyph above, for tests and the selftest's widget dump.
 pub const ALL: &[Glyph] = &[
@@ -68,4 +79,14 @@ pub const ALL: &[Glyph] = &[
     HEALTH,
     WARNING,
     OK,
+    EXPAND,
+    COLLAPSE,
+    REFRESH,
+    KIND_APP,
+    KIND_SERVICE,
+    KIND_TERMINAL,
+    KIND_CONTAINER,
+    KIND_FLATPAK,
+    KIND_PROCESS,
+    KIND_SYSTEM,
 ];

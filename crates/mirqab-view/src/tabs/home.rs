@@ -3,8 +3,9 @@
 
 use crate::cards::{self, Card, Size};
 
-/// What a first run pins (plan 003). Later plans add their headline card.
-pub const SEED: &[&str] = &["system.overview", "system.cpu", "system.memory"];
+/// What a first run pins (plan 003). Later plans add their headline card:
+/// plan 006 the five heaviest apps.
+pub const SEED: &[&str] = &["system.overview", "system.cpu", "system.memory", "apps.top"];
 
 /// The list to pin on a first run: `SEED` when nothing is pinned and Home
 /// was never seeded; None otherwise, so an emptied Home stays empty.

@@ -1518,10 +1518,17 @@ pub fn quit_run_line(argv: &str, procs: usize) -> String {
 }
 
 /// A unit a service's stop takes down with it, and how many processes it
-/// ends (plan 006, part 3).
-pub fn quit_also_stops_line(unit: &str, procs: usize) -> String {
+/// ends (plan 006, part 3). `deeper` for a unit that is no service, scope
+/// or slice (a target), whose own dependents stop too, unlisted (review of
+/// PR #18, S3).
+pub fn quit_also_stops_line(unit: &str, procs: usize, deeper: bool) -> String {
     let what = if procs == 1 { "process" } else { "processes" };
-    format!("  also stops {} ({procs} {what})", plain(unit))
+    let tail = if deeper {
+        " and what depends on it"
+    } else {
+        ""
+    };
+    format!("  also stops {} ({procs} {what}){tail}", plain(unit))
 }
 
 /// When the daemon could not ask which units depend on a service.
@@ -1751,6 +1758,175 @@ pub fn state_word(state: &str) -> &str {
         "I" => "idle",
         other => other,
     }
+}
+
+// --- The Apps page (plan 006, part 3b) -------------------------------------
+
+pub const APPS_SEARCH: &str = "Search apps, processes or a pid";
+pub const APPS_SORT: &str = "Sort by";
+pub const APPS_SORT_CPU: &str = "CPU";
+pub const APPS_SORT_MEM: &str = "Memory";
+pub const APPS_SORT_NAME: &str = "Name";
+pub const APPS_SHOW_PROCESSES: &str = "Show processes";
+pub const APPS_EXPAND: &str = "Show its processes";
+pub const APPS_COLLAPSE: &str = "Hide its processes";
+pub const APPS_LIST: &str = "Apps";
+pub const APPS_INSPECTOR: &str = "Inspector";
+pub const APPS_REFRESH: &str = "Read again";
+pub const APPS_CLOSE_INSPECTOR: &str = "Close the inspector";
+pub const APPS_QUIT: &str = "Quit";
+pub const APPS_FORCE_QUIT: &str = "Force quit";
+pub const APPS_EMPTY: &str = "Nothing matches";
+pub const APPS_TOP: &str = "Top apps";
+pub const APPS_CPU: &str = "CPU";
+pub const APPS_MEMORY: &str = "Memory";
+pub const APPS_THREADS: &str = "Threads";
+pub const APPS_PROCESSES: &str = "Processes";
+pub const APPS_GRAPH_PROCESS: &str = "CPU of this process";
+pub const APPS_GRAPH_GROUP: &str = "CPU of this app";
+/// A row that left the list while selected (plan 006, D5): the process
+/// exited, or its group id now names other processes.
+pub const APPS_ROW_GONE: &str = "That row is gone: its processes exited or were replaced";
+pub const APPS_NOT_YOURS: &str = "Another user's processes: mirqab does not quit them";
+pub const APPS_QUIT_SELF: &str = "Quit closes this window. The daemon keeps running.";
+pub const APPS_STILL_RUNNING: &str = "Still running. Force quit ends it at once.";
+/// `QUIT_NOT_RECORDED` without the CLI's `mirqab:` prefix.
+pub const APPS_NOT_RECORDED: &str =
+    "Done, but not recorded: the daemon could not write this action to its history";
+pub const APPS_DONE: &str = "Done.";
+pub const APPS_ALREADY_GONE: &str = "It had already exited.";
+pub const APPS_LEFT_ALONE: &str = "Left alone:";
+pub const APPS_ALSO_STOPS_UNKNOWN: &str = "Other services that depend on it may stop too";
+/// `mirqab-ui --do` outside a test run.
+pub const UI_DO_TEST_ONLY: &str = "mirqab-ui: --do is accepted only with MIRQAB_TEST=1";
+
+/// A selftest step that failed (`mirqab-ui --selftest TAB --do STEPS`).
+pub fn selftest_step_failed(step: &str, why: &str) -> String {
+    format!("mirqab-ui: --do step '{step}': {why}")
+}
+
+pub const SELFTEST_NO_WIDGET: &str = "no visible widget of that name";
+pub const SELFTEST_NOT_EDITABLE: &str = "the widget takes no text";
+pub const SELFTEST_NOT_ACTIVATABLE: &str = "neither the widget nor a parent can be activated";
+pub const SELFTEST_NO_DIALOG: &str = "no dialog is open";
+pub const SELFTEST_BAD_STEP: &str =
+    "not a step: type NAME TEXT, activate NAME, respond ID, wait NAME or pause MS";
+
+/// A group's kind as a word, under its name in the inspector.
+pub fn apps_kind(kind: &str) -> &'static str {
+    match kind {
+        "app" => "App",
+        "service" => "Service",
+        "flatpak" => "Flatpak app",
+        "container" => "Container",
+        "terminal" => "Terminal job",
+        "system" => "Other users",
+        _ => "Process",
+    }
+}
+
+pub fn apps_procs(n: u32) -> String {
+    if n == 1 {
+        "1 process".to_string()
+    } else {
+        format!("{n} processes")
+    }
+}
+
+pub fn apps_pid(pid: u32) -> String {
+    format!("pid {pid}")
+}
+
+/// A process row's state, shown when it is not running or sleeping.
+pub fn apps_state(state: &str) -> String {
+    state_word(state).to_string()
+}
+
+/// A process row in the flat list: its group's name after it.
+pub fn apps_in_group(group: &str) -> String {
+    format!("in {}", plain(group))
+}
+
+/// The accessible label of a group row.
+pub fn apps_group_label(name: &str, cpu: &str, memory: &str, procs: u32) -> String {
+    format!(
+        "{}, CPU {cpu}, memory {memory}, {}",
+        plain(name),
+        apps_procs(procs)
+    )
+}
+
+/// The accessible label of a process row.
+pub fn apps_process_label(name: &str, pid: u32, cpu: &str, memory: &str) -> String {
+    format!("{}, pid {pid}, CPU {cpu}, memory {memory}", plain(name))
+}
+
+/// The confirmation's line for one process a Quit signals.
+pub fn apps_confirm_signal(name: &str, pid: u32, via: Option<u32>) -> String {
+    match via {
+        Some(t) => format!("{} ({pid}), asked for its thread {t}", plain(name)),
+        None => format!("{} ({pid})", plain(name)),
+    }
+}
+
+/// The confirmation's line for a service stopped with systemctl.
+pub fn apps_confirm_stop(unit: &str, procs: usize) -> String {
+    format!(
+        "Stops {} with systemctl ({})",
+        plain(unit),
+        apps_procs(procs as u32)
+    )
+}
+
+/// The confirmation's line for Force quit's second command on a service.
+pub fn apps_confirm_unit_kill(unit: &str) -> String {
+    format!(
+        "Then ends whatever is left of {} at once (SIGKILL)",
+        plain(unit)
+    )
+}
+
+/// The pids under a stop's line.
+pub fn apps_confirm_pids(pids: &[u32]) -> String {
+    let pids: Vec<String> = pids.iter().map(u32::to_string).collect();
+    format!("  pids {}", pids.join(" "))
+}
+
+/// A unit a stop takes with it. `deeper` for a unit that is no service,
+/// scope or slice (a target), whose own dependents stop too, unlisted
+/// (review of PR #18, S3).
+pub fn apps_confirm_also_stops(unit: &str, procs: usize, deeper: bool) -> String {
+    let tail = if deeper {
+        " and what depends on it"
+    } else {
+        ""
+    };
+    format!(
+        "  Also stops {} ({}){tail}",
+        plain(unit),
+        apps_procs(procs as u32)
+    )
+}
+
+/// One process a Quit leaves alone, and why.
+pub fn apps_left_alone_line(pid: u32, name: &str, reason: &str) -> String {
+    format!("  {} ({pid}): {}", plain(name), plain(reason))
+}
+
+/// What an act on a row came to, once its sheet has closed (review of
+/// PR #19): `Example Browser: Done.`
+pub fn apps_outcome(name: &str, text: &str) -> String {
+    format!("{}: {text}", plain(name))
+}
+
+/// `--selftest` reaching an interface that is already running (review
+/// of PR #19): a selftest never joins one.
+pub const UI_SELFTEST_NOT_FORWARDED: &str =
+    "mirqab-ui: --selftest is not passed to a running interface";
+
+/// A warning the daemon gave with the plan (the sound server, a portal).
+pub fn apps_warning(text: &str) -> String {
+    format!("Warning: {}", plain(text))
 }
 
 #[cfg(test)]

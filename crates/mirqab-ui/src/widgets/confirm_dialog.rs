@@ -15,7 +15,13 @@ pub fn lines(would_do: &[Value]) -> Vec<String> {
 }
 
 pub fn confirm_dialog(heading: &str, would_do: &[Value]) -> adw::AlertDialog {
-    let d = adw::AlertDialog::new(Some(heading), Some(&lines(would_do).join("\n")));
+    confirm_dialog_lines(heading, &lines(would_do))
+}
+
+/// The dialog with lines a view model wrote (the Apps tab's
+/// `confirm_lines`, plan 006).
+pub fn confirm_dialog_lines(heading: &str, lines: &[String]) -> adw::AlertDialog {
+    let d = adw::AlertDialog::new(Some(heading), Some(&lines.join("\n")));
     d.add_response("cancel", strings::CANCEL);
     d.add_response(CONFIRM, strings::CONFIRM);
     d.set_response_appearance(CONFIRM, adw::ResponseAppearance::Destructive);

@@ -1,7 +1,6 @@
 //! A card: a title, an optional range picker and "Pin to Home", and a body
 //! (architecture §7.1).
 
-use crate::widgets::icon::icon_button;
 use crate::widgets::range_picker::RangePicker;
 use gtk::prelude::*;
 use mirqab_proto::strings;
@@ -45,16 +44,6 @@ impl Card {
     /// Adds a control to the header, after the title.
     pub fn add_header(&self, w: &impl IsA<gtk::Widget>) {
         self.header.append(w);
-    }
-
-    /// Adds the pin control; `on_click` runs on each press. The button
-    /// shows `pinned` and follows `set_pinned`.
-    pub fn set_pinnable(&self, pinned: bool, on_click: impl Fn() + 'static) -> gtk::Button {
-        let b = icon_button(icons::PIN_OUTLINE, strings::PIN_TO_HOME);
-        set_pin_state(&b, pinned);
-        b.connect_clicked(move |_| on_click());
-        self.header.append(&b);
-        b
     }
 }
 

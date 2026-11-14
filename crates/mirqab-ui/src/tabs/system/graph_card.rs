@@ -6,13 +6,12 @@
 
 use crate::app::Ctx;
 use crate::client::Source;
-use crate::widgets::card::{Card, set_pin_state};
+use crate::widgets::card::Card;
 use crate::widgets::graph::{Format, Graph, Live};
 use crate::widgets::range_picker::RangePicker;
 use gtk::glib;
 use gtk::prelude::*;
 use mirqab_proto::stream;
-use mirqab_view::tabs::home;
 use mirqab_view::tabs::system::{GraphSpec, history_points};
 use serde_json::json;
 use std::cell::RefCell;
@@ -27,27 +26,9 @@ pub struct GraphCard {
     timer: RefCell<Option<glib::SourceId>>,
 }
 
-/// Adds the pin control for `card_id`. It toggles the id in `home.pinned`
-/// as the config stands at the press, and follows later config changes
-/// (plan 003: the button showed the state of the page's first build).
+/// Adds the pin control for `card_id` to the card's header.
 pub fn pinnable(card: &Card, ctx: &Rc<Ctx>, card_id: &'static str) {
-    let is_pinned = move |ctx: &Ctx| ctx.config.borrow().pinned.iter().any(|p| p == card_id);
-    let weak = Rc::downgrade(ctx);
-    let button = card.set_pinnable(is_pinned(ctx), move || {
-        let Some(ctx) = weak.upgrade() else { return };
-        let on = !is_pinned(&ctx);
-        let list = home::toggled(&ctx.config.borrow().pinned, card_id, on);
-        ctx.set_setting("home.pinned", json!(list));
-    });
-    let weak_ctx = Rc::downgrade(ctx);
-    let weak_button = button.downgrade();
-    ctx.on_config(move || {
-        let (Some(ctx), Some(b)) = (weak_ctx.upgrade(), weak_button.upgrade()) else {
-            return false;
-        };
-        set_pin_state(&b, is_pinned(&ctx));
-        true
-    });
+    card.add_header(&crate::tabs::pin_button(ctx, card_id));
 }
 
 impl GraphCard {
@@ -69,6 +50,7 @@ impl GraphCard {
         graph.set_live(Some(Live {
             source,
             stream: stream::SYSTEM.to_string(),
+            params: serde_json::Value::Null,
             extract: Rc::new(spec.live),
         }));
         graph.set_range("2m");

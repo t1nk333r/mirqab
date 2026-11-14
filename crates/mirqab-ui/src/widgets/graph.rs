@@ -30,11 +30,13 @@ pub type Extract = Rc<dyn Fn(&Value) -> Option<f64>>;
 /// Formats a value for the accessible description.
 pub type Format = Rc<dyn Fn(f64) -> String>;
 
-/// The stream a graph follows live at `2m`.
+/// The stream a graph follows live at `2m`, with the stream's params
+/// (`Value::Null` for none; the `process` stream's pid and start).
 #[derive(Clone)]
 pub struct Live {
     pub source: Rc<dyn Source>,
     pub stream: String,
+    pub params: Value,
     pub extract: Extract,
 }
 
@@ -333,6 +335,7 @@ impl Graph {
         let extract = Rc::clone(&live.extract);
         let handle = live.source.subscribe_live(
             &live.stream,
+            live.params.clone(),
             Rc::new(move |data: &Value| {
                 let Some(g) = weak.upgrade() else { return };
                 let Some(v) = extract(data) else { return };
