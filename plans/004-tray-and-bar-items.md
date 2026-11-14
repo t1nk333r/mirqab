@@ -280,6 +280,9 @@ Part 2 (2026-11-14), where it differs from the plan:
   `dist/icons/mirqab-symbolic.svg`). GTK hosts recolour symbolic icons, but
   a Qt or Quickshell bar may show it dark on a dark bar; checking it on the
   owner's bar is part of Acceptance 1.
+- Owner's check, 2026-11-14: haseen's bar drew its missing-icon image. The
+  bar had started before the icon was copied, and does not recolour
+  symbolic icons. Plan 021 gives the tray a two-tone `mirqab` icon.
 - Tests: `crates/mirqab/tests/tray.rs` on a private `dbus-daemon` with a
   stand-in watcher (`tests/support/watcher.rs`, also
   `examples/sni_watcher.rs` for the bench). Fixture daemons in the other

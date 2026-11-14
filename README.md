@@ -253,12 +253,18 @@ the socket unit starts the daemon again on the next client after Quit
 daemon, such as `mirqab open` or a bar item, and the tray with it. If the
 session bus is missing when the daemon starts, it logs
 `tray: not shown (...)` and runs without a tray. It does not retry, so the
-tray appears at the next start. Until a package installs the icon, copy it
-into your icon theme:
+tray appears at the next start. Until a package installs the icons, copy
+them into your icon theme:
 
 ```sh
+install -Dm644 dist/icons/mirqab.svg ~/.local/share/icons/hicolor/scalable/apps/mirqab.svg
 install -Dm644 dist/icons/mirqab-symbolic.svg ~/.local/share/icons/hicolor/symbolic/apps/mirqab-symbolic.svg
 ```
+
+The tray icon has two tones, a light watchtower with a dark outline, so it
+reads on dark and light bars alike. A bar that was already running when
+you installed the icon keeps showing a placeholder until you restart the
+bar: bars look icons up once per process.
 
 To toggle the window from a key in Hyprland:
 

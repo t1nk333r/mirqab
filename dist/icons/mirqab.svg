@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16">
+  <!-- mirqab: a watchtower (mirqab, "lookout post"). Original drawing,
+       plan 021. Two tones: every light shape sits on a larger dark copy, so
+       the outline shows on a light bar and the fill on a dark one. -->
+  <g fill="#2e3436">
+    <path d="M8 0 15.5 4.5H0.5z"/>
+    <rect x="3" y="4" width="10" height="5"/>
+    <path d="M3.6 9H7.6L6.6 14H2.6zM8.4 9H12.4L13.4 14H9.4z"/>
+    <rect x="5" y="10" width="6" height="3"/>
+    <rect x="1" y="13" width="14" height="3"/>
+  </g>
+  <g fill="#eeeeec">
+    <path d="M8 1.4 12.6 3.5H3.4z"/>
+    <path d="M4 5h8v3H4zm1 1v1h2V6zm4 0v1h2V6z" fill-rule="evenodd"/>
+    <path d="M4.6 9H6.6L5.6 13H3.6zM9.4 9H11.4L12.4 13H10.4z"/>
+    <rect x="6" y="11" width="4" height="1"/>
+    <rect x="2" y="14" width="12" height="1"/>
+  </g>
+</svg>
