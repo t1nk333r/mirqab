@@ -26,7 +26,7 @@
 //! until `start` runs again. `stop` shuts the event socket down, which
 //! returns the blocked read, and joins the thread.
 
-use super::{Focus, FocusedSince, runtime_rel};
+use super::{Focus, FocusedSince, focused_since, runtime_rel};
 use crate::proto::strings;
 use crate::root::Root;
 use crate::sys;
@@ -60,6 +60,8 @@ const MAX_REQUESTS: usize = 10;
 const STACK: usize = 64 * 1024;
 /// The longest lock file read.
 const LOCK_CAP: usize = 64;
+/// Changes of focus kept at most, however fast they come.
+const MAX_HISTORY: usize = 4096;
 
 /// A window address as the events and the requests spell it: with or
 /// without `0x`, in any case.
@@ -116,34 +118,72 @@ pub fn active_answer(text: &[u8]) -> Result<(Option<String>, Option<u32>), Strin
     Ok((addr.filter(|a| !a.is_empty()), pid))
 }
 
-/// Asks `j/activewindow` on the request socket at `path`.
+/// The time left before `deadline`, or ETIMEDOUT when there is none.
+fn left(deadline: Instant) -> Result<Duration, String> {
+    let d = deadline.saturating_duration_since(Instant::now());
+    if d.is_zero() {
+        Err(std::io::Error::from_raw_os_error(libc::ETIMEDOUT).to_string())
+    } else {
+        Ok(d)
+    }
+}
+
+/// Asks `j/activewindow` on the request socket at `path`. The write and
+/// every read share one deadline, `REQUEST` after the connect, so an
+/// answer that trickles in a byte at a time still ends in time (review
+/// of PR #20, S2): with a timeout per read it could take minutes.
 fn ask_active(path: &Path) -> Result<(Option<String>, Option<u32>), String> {
     let mut s = sys::connect_timeout(path, CONNECT).map_err(|e| e.to_string())?;
-    s.set_read_timeout(Some(REQUEST))
-        .map_err(|e| e.to_string())?;
-    s.set_write_timeout(Some(REQUEST))
+    let deadline = Instant::now() + REQUEST;
+    s.set_write_timeout(Some(left(deadline)?))
         .map_err(|e| e.to_string())?;
     s.write_all(b"j/activewindow").map_err(|e| e.to_string())?;
     let mut buf = Vec::new();
-    (&mut s)
-        .take(ANSWER_CAP + 1)
-        .read_to_end(&mut buf)
-        .map_err(|e| e.to_string())?;
-    if buf.len() as u64 > ANSWER_CAP {
-        return Err(strings::FOCUS_BAD_ANSWER.to_string());
+    let mut chunk = [0u8; 4096];
+    loop {
+        s.set_read_timeout(Some(left(deadline)?))
+            .map_err(|e| e.to_string())?;
+        match s.read(&mut chunk) {
+            Ok(0) => break,
+            Ok(n) => buf.extend_from_slice(&chunk[..n]),
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(e.to_string()),
+        }
+        if buf.len() as u64 > ANSWER_CAP {
+            return Err(strings::FOCUS_BAD_ANSWER.to_string());
+        }
     }
     active_answer(&buf)
 }
 
+/// Whether the instance directory `dir` is a running Hyprland's: its
+/// `hyprland.lock` names on its first line a pid with a `proc/<pid>/`
+/// under the root, and its event socket is there. An old instance's
+/// directory can outlive it.
+fn live(root: &Root, dir: &str) -> bool {
+    let Ok(lock) = root.read_prefix(&format!("{dir}/hyprland.lock"), LOCK_CAP) else {
+        return false;
+    };
+    let pid = String::from_utf8_lossy(&lock)
+        .lines()
+        .next()
+        .and_then(|l| l.trim().parse::<u32>().ok())
+        .filter(|p| *p > 0);
+    pid.is_some_and(|p| root.exists(&format!("proc/{p}")))
+        && root.exists(&format!("{dir}/.socket2.sock"))
+}
+
 /// The instance directory, as a path under the root: by `signature` (the
-/// environment's, on the live machine only) when its event socket is
-/// there, else the newest directory whose lock names a live pid.
+/// environment's, on the live machine only) when that instance is live,
+/// else the newest live directory. A daemon keeps the signature of the
+/// session it started in, so after a Hyprland restart the signature
+/// names a dead instance and must not win (review of PR #20, S3).
 pub fn instance(root: &Root, runtime: &str, signature: Option<&str>) -> Result<String, String> {
     let base = format!("{runtime}/hypr");
     let plain = |s: &str| !s.is_empty() && s != "." && s != ".." && !s.contains('/');
     if let Some(sig) = signature.filter(|s| plain(s)) {
         let dir = format!("{base}/{sig}");
-        if root.exists(&format!("{dir}/.socket2.sock")) {
+        if live(root, &dir) {
             return Ok(dir);
         }
     }
@@ -153,17 +193,7 @@ pub fn instance(root: &Root, runtime: &str, signature: Option<&str>) -> Result<S
             continue;
         }
         let dir = format!("{base}/{name}");
-        let Ok(lock) = root.read_prefix(&format!("{dir}/hyprland.lock"), LOCK_CAP) else {
-            continue;
-        };
-        let pid = String::from_utf8_lossy(&lock)
-            .lines()
-            .next()
-            .and_then(|l| l.trim().parse::<u32>().ok())
-            .filter(|p| *p > 0);
-        let Some(pid) = pid else { continue };
-        // An old instance's directory can outlive it.
-        if !root.exists(&format!("proc/{pid}")) || !root.exists(&format!("{dir}/.socket2.sock")) {
+        if !live(root, &dir) {
             continue;
         }
         let mtime = root
@@ -180,9 +210,11 @@ pub fn instance(root: &Root, runtime: &str, signature: Option<&str>) -> Result<S
 /// What the reader knows, shared with the sampler.
 #[derive(Debug, Default)]
 struct State {
-    now: Option<u32>,
-    /// Pids that gained focus, oldest first, `KEEP` long.
-    history: VecDeque<(Instant, u32)>,
+    /// Every change of focus, oldest first: `Some(pid)` a window of that
+    /// client, `None` no window. An entry holds from its time until the
+    /// next one's (the last until now), so the oldest is kept while it
+    /// still reaches into the last `KEEP` (`desktop::focused_since`).
+    history: VecDeque<(Instant, Option<u32>)>,
     by_address: HashMap<String, u32>,
     /// False once the reader ended.
     alive: bool,
@@ -193,15 +225,20 @@ struct State {
 }
 
 impl State {
-    fn gained(&mut self, pid: u32) {
+    /// Focus went to `pid` (None: no window). The same focus again is no
+    /// change, and adds nothing (S7 of PR #20).
+    fn changed(&mut self, pid: Option<u32>) {
+        if self.history.back().map(|(_, p)| *p) == Some(pid) {
+            return;
+        }
         let at = Instant::now();
-        self.now = Some(pid);
         self.history.push_back((at, pid));
-        while self
-            .history
-            .front()
-            .is_some_and(|(t, _)| at.saturating_duration_since(*t) > KEEP)
-        {
+        // One entry older than KEEP stays: it held focus into the window.
+        while self.history.len() >= 2 && at.saturating_duration_since(self.history[1].0) > KEEP {
+            self.history.pop_front();
+        }
+        // A script cycling windows faster than a person: the backstop.
+        while self.history.len() > MAX_HISTORY {
             self.history.pop_front();
         }
     }
@@ -265,11 +302,11 @@ fn read_events(mut reader: BufReader<UnixStream>, requests: PathBuf, state: Arc<
             Event::Closed(a) => {
                 lock(&state).by_address.remove(&a);
             }
-            Event::Active(None) => lock(&state).now = None,
+            Event::Active(None) => lock(&state).changed(None),
             Event::Active(Some(a)) => {
                 let mut st = lock(&state);
                 if let Some(&pid) = st.by_address.get(&a) {
-                    st.gained(pid);
+                    st.changed(Some(pid));
                     continue;
                 }
                 if !st.may_ask() {
@@ -283,10 +320,7 @@ fn read_events(mut reader: BufReader<UnixStream>, requests: PathBuf, state: Arc<
                         if let (Some(addr), Some(pid)) = (addr, pid) {
                             st.by_address.insert(addr, pid);
                         }
-                        match pid {
-                            Some(pid) => st.gained(pid),
-                            None => st.now = None,
-                        }
+                        st.changed(pid);
                     }
                     Err(_) => {
                         errors += 1;
@@ -326,6 +360,12 @@ impl Hyprland {
         self.run.as_ref().map(|r| lock(&r.state).asked)
     }
 
+    /// Changes of focus kept (tests check the dedupe with it); None when
+    /// not running.
+    pub fn changes(&self) -> Option<usize> {
+        self.run.as_ref().map(|r| lock(&r.state).history.len())
+    }
+
     /// Whether the reader thread has ended (tests).
     pub fn finished(&self) -> bool {
         self.run
@@ -363,10 +403,10 @@ impl Focus for Hyprland {
             asked: 1,
             ..State::default()
         }));
-        if let Some(pid) = now {
+        {
             let mut st = lock(&state);
-            st.gained(pid);
-            if let Some(a) = addr {
+            st.changed(now);
+            if let (Some(a), Some(pid)) = (addr, now) {
                 st.by_address.insert(a, pid);
             }
         }
@@ -387,20 +427,11 @@ impl Focus for Hyprland {
 
     fn focused(&mut self, since: Instant) -> Option<FocusedSince> {
         let run = self.run.as_ref()?;
-        let st = lock(&run.state);
+        let mut st = lock(&run.state);
         if !st.alive {
             return None;
         }
-        let mut pids: Vec<u32> = Vec::new();
-        for (_, p) in st.history.iter().filter(|(t, _)| *t >= since) {
-            if !pids.contains(p) {
-                pids.push(*p);
-            }
-        }
-        Some(FocusedSince {
-            now: st.now,
-            since: pids,
-        })
+        Some(focused_since(st.history.make_contiguous(), since))
     }
 
     fn source(&self) -> Option<&'static str> {
@@ -412,7 +443,8 @@ impl Focus for Hyprland {
         let Some(mut run) = self.run.take() else {
             return;
         };
-        // Returns the blocked read with 0: the thread ends on its own.
+        // Returns the blocked read with 0: the thread ends on its own,
+        // within a request's deadline (`REQUEST`) if it is asking.
         let _ = run.events.shutdown(Shutdown::Both);
         if let Some(t) = run.thread.take() {
             let _ = t.join();

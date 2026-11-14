@@ -63,7 +63,9 @@ pub trait Sampler: Send {
     /// rates need two readings takes the first here and returns how long
     /// the second should wait; the server releases the lock for that time,
     /// so the wait never holds up a subscriber (plan 006, part 4,
-    /// decision 10). None: `snapshot` can answer at once.
+    /// decision 10). The readings queue, one per pending `get`, served
+    /// in order by `snapshot` (review of PR #20, S1). None: `snapshot`
+    /// can answer at once.
     fn prime(&mut self, _root: &Root, _now: Instant) -> Option<Duration> {
         None
     }

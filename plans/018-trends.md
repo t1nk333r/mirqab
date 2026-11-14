@@ -230,3 +230,9 @@ Phase 3:
 - The thresholds in the tables are starting values. Tune them on real
   history after M4 and record what changed and why.
 - `hidepid` on the target distributions (default off on Arch).
+- From plan 006 part 4a (review of PR #20, S6): a `top-apps` row is
+  written only when the leader used 10 % of a core and the six names
+  changed, so "no row near a spike" may mean "the same six names as an
+  hour ago"; and a row written while the Apps page was open is the last
+  2 s reading, not the minute's mean. The spike rewind must read both
+  that way.

@@ -372,10 +372,15 @@ Streams: `system`, `apps`, `process`, `ports`, `agents`, `awake`, `disk`,
   subscribers before each sample (`Sampler::wants`), so it reads only what
   they name. When a stream is left with no subscriber, the sampler is
   told once, within an interval (`Sampler::idle`), and forgets and stops
-  what it kept for the earlier subscribers. No sampler waits while
-  holding its lock: a `get` whose rates need two readings takes the first
-  in `Sampler::prime`, which returns the wait, and the server sleeps it
-  without the lock before `snapshot`; a query may answer
+  what it kept for the earlier subscribers. No sampler sleeps or asks
+  another program while holding its lock; the `apps` sampler's focus
+  source may wait on the compositor for up to 1.5 s once when the page
+  opens (a connect and one request) and up to 0.5 s when it closes (a
+  request's deadline). A `get` whose rates need two readings takes the
+  first in `Sampler::prime`, which returns the wait and queues the
+  reading (one per pending `get`, served in order, used at 250 ms to
+  10 s old), and the server sleeps it without the lock before
+  `snapshot`; a query may answer
   `Answer::Later(closure)`, which the server runs after it released the
   lock (the inspector's `pacman`). Once a minute `Sampler::minute_events`
   gives the `event` rows to write, with the effective config, and
@@ -392,7 +397,9 @@ Streams: `system`, `apps`, `process`, `ports`, `agents`, `awake`, `disk`,
   `Sampler::idle`, so the closed window keeps no reader thread or socket)
   and tags a group `idleHeavy` when it used at least 20 % of one core on
   average over a full five minutes in which none of its processes, nor
-  any process in the same host unit (a terminal's jobs), had focus; the
+  any process in the same host unit (a terminal's jobs), had focus at
+  any moment: a tag needs five minutes since focus was lost (the source
+  keeps every change of focus, "no window" included); the
   frame's `focus` names the source, and both are absent without one.
   Once a minute, subscribers or not, it may write a `top-apps` event
   (§6.1).
@@ -929,7 +936,8 @@ signalled; the interface shows them read-only.
 | Daemon CPU, no subscribers | **< 0.3 % of one core** over 60 s | `tools/bench-idle.sh`: utime+stime delta from `/proc/<pid>/stat` |
 | Daemon RSS, no subscribers | < 15 MiB | `VmRSS` after 60 s |
 | Daemon CPU, System tab open with its live graph at 1 s | < 1 % of one core | Same script with `--subscribe system --live` |
-| Daemon CPU, Apps tab open at 400 processes | < 1.5 % of one core | Same script with `--subscribe apps --max-cpu 1.5 --procs 400`: a scratch copy of the fixture with its user processes cloned (plan 006, part 4) |
+| Daemon RSS, tray registered, no subscribers | < 15 MiB | Same script with `--tray` (plan 004; in CI's bench step since plan 006, part 4) |
+| Daemon CPU, Apps tab open at 400 processes | < 1.5 % of one core | Same script with `--subscribe apps --max-cpu 1.5 --procs 400`: a scratch copy of the fixture with its user processes cloned (plan 006, part 4). A proxy: the fixture is files in the page cache, and procfs on the live machine costs more per read; the row catches added reads per process, not the absolute cost |
 | Interface process, window closed for 60 s | does not exist | `pgrep -x mirqab-ui` |
 | Interface RSS, open | reported, not gated; plan 001 measures it with the default renderer and with `GSK_RENDERER=cairo` and records both | footer |
 | `history.db` at 30 days, with its log | < 40 MiB | synthetic fill test |

@@ -61,6 +61,9 @@ impl Sampler for Counted {
     fn idle(&mut self) {
         self.idle += 1;
     }
+    fn status(&self) -> Vec<(&'static str, Value)> {
+        vec![("counted_idle", json!(self.idle))]
+    }
     fn view(&self) -> Option<mirqab_core::sampler::View> {
         Some(|data, params| json!({"n": data["n"], "idle": data["idle"], "params": params}))
     }
@@ -1044,8 +1047,18 @@ fn a_stream_left_without_subscribers_is_told_before_its_next_sample() {
     c.call("subscribe", Some("counted"), json!({})).unwrap();
     assert_eq!(c.event("counted").unwrap()["idle"], 0);
     c.call("unsubscribe", Some("counted"), Value::Null).unwrap();
-    // The loop wakes on the unsubscribe and finds no subscriber.
-    std::thread::sleep(Duration::from_millis(300));
+    // The loop wakes on the unsubscribe, finds no subscriber and tells
+    // the sampler then, before anyone subscribes again: a focus source
+    // must not outlive the page (review of PR #20). Seen through status.
+    let until = Instant::now() + Duration::from_secs(1);
+    loop {
+        let n = c.call("status", None, Value::Null).unwrap()["counted_idle"].clone();
+        if n == 1 {
+            break;
+        }
+        assert!(Instant::now() < until, "idle not called yet: {n}");
+        std::thread::sleep(Duration::from_millis(20));
+    }
     c.call("subscribe", Some("counted"), json!({})).unwrap();
     assert_eq!(c.event("counted").unwrap()["idle"], 1, "one call");
     assert_eq!(c.event("counted").unwrap()["idle"], 1, "and only one");
@@ -1238,11 +1251,12 @@ fn an_inspect_whose_pacman_is_slow_does_not_hold_the_stream() {
     let mid = first.elapsed();
     let g = gaps(&mut sub, "apps", 1);
     let (took, v) = t.join().unwrap();
-    assert!(mid < Duration::from_millis(2250), "{mid:?}");
+    // The old code gave 3010 ms; 2600 leaves room for a loaded runner.
+    assert!(mid < Duration::from_millis(2600), "{mid:?}");
     assert!(took >= Duration::from_secs(2), "pacman ran: {took:?}");
     assert_eq!(v["name"], "browser");
     for gap in &g {
-        assert!(*gap < Duration::from_millis(2250), "{g:?}");
+        assert!(*gap < Duration::from_millis(2600), "{g:?}");
     }
     let _ = std::fs::remove_dir_all(&bin);
 }

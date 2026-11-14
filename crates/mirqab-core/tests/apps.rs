@@ -14,7 +14,7 @@
 //! `prime` (D1).
 
 use mirqab_core::Root;
-use mirqab_core::desktop::{Focus, FocusedSince};
+use mirqab_core::desktop::{Focus, FocusedSince, focused_since};
 use mirqab_core::proto::stream::{AppGroup, AppsData, Inspect};
 use mirqab_core::sampler::Sampler;
 use mirqab_core::samplers::apps::focus::Thresholds;
@@ -789,38 +789,56 @@ fn a_get_of_a_missing_pid_does_not_wait() {
 
 // --- Part 4 ------------------------------------------------------------------
 
-/// A focus source the test steers: what `focused` answers (None: no
-/// source), and how often it was started and stopped.
+/// Focus changes, oldest first (`Some(pid)` a window, `None` none).
+type History = Vec<(Instant, Option<u32>)>;
+
+/// A focus source the test steers: a history of focus changes read by
+/// the same rule as Hyprland's (`desktop::focused_since`), whether a
+/// start succeeds, and how often it was started and stopped.
 #[derive(Clone, Default)]
 struct FakeFocus {
-    seen: Arc<Mutex<Option<FocusedSince>>>,
+    history: Arc<Mutex<History>>,
+    available: Arc<Mutex<bool>>,
+    running: Arc<Mutex<bool>>,
     calls: Arc<Mutex<(u32, u32)>>,
+}
+
+impl FakeFocus {
+    /// A source that starts, with nothing focused yet.
+    fn up() -> FakeFocus {
+        let f = FakeFocus::default();
+        *f.available.lock().unwrap() = true;
+        f
+    }
+    /// Focus goes to `pid` (None: no window) at `at`.
+    fn focus(&self, at: Instant, pid: Option<u32>) {
+        self.history.lock().unwrap().push((at, pid));
+    }
 }
 
 impl Focus for FakeFocus {
     fn start(&mut self, _root: &Root, _uid: u32) -> Result<&'static str, String> {
         self.calls.lock().unwrap().0 += 1;
-        match *self.seen.lock().unwrap() {
-            Some(_) => Ok("fake"),
-            None => Err("no source".into()),
+        if *self.available.lock().unwrap() {
+            *self.running.lock().unwrap() = true;
+            Ok("fake")
+        } else {
+            Err("no source".into())
         }
     }
-    fn focused(&mut self, _since: Instant) -> Option<FocusedSince> {
-        self.seen.lock().unwrap().clone()
+    fn focused(&mut self, since: Instant) -> Option<FocusedSince> {
+        if !*self.running.lock().unwrap() {
+            return None;
+        }
+        Some(focused_since(&self.history.lock().unwrap(), since))
     }
     fn source(&self) -> Option<&'static str> {
-        self.seen.lock().unwrap().as_ref().map(|_| "fake")
+        self.running.lock().unwrap().then_some("fake")
     }
     fn stop(&mut self) {
+        *self.running.lock().unwrap() = false;
         self.calls.lock().unwrap().1 += 1;
     }
-}
-
-fn focused(now: Option<u32>, since: &[u32]) -> Option<FocusedSince> {
-    Some(FocusedSince {
-        now,
-        since: since.to_vec(),
-    })
 }
 
 const CARGO: &str = "session:3030";
@@ -845,14 +863,14 @@ fn alternate(a: &mut Apps, t0: Instant, from: u64, to: u64) -> AppsData {
 fn a_busy_group_out_of_focus_is_tagged_once_its_window_is_full() {
     let s = scratch("heavy");
     let mut a = probed(&pacman(&s.0));
-    let fake = FakeFocus::default();
-    *fake.seen.lock().unwrap() = focused(Some(2001), &[]);
+    let fake = FakeFocus::up();
+    let t0 = Instant::now();
+    fake.focus(t0, Some(2001));
     a.set_focus(Box::new(fake.clone()));
     a.set_thresholds(Thresholds {
         window: Duration::from_secs(3),
         cpu: 20.0,
     });
-    let t0 = Instant::now();
     // cargo is 91 % and 0 % in turn (the twin's times go back), so 45.5 %
     // on average; the browser is as busy, but it has the focus.
     let d = alternate(&mut a, t0, 0, 4);
@@ -890,11 +908,22 @@ fn a_busy_group_out_of_focus_is_tagged_once_its_window_is_full() {
     // A get while subscribed carries the tag too, and moves nothing.
     let got = data(a.snapshot(&fixture("root-desktop.t1"), t0 + Duration::from_secs(8)));
     assert!(by_id(&got, CARGO).idle_heavy);
-    // The terminal gained focus inside the window: cargo is in view.
-    *fake.seen.lock().unwrap() = focused(Some(3000), &[3000]);
+    // Alt-tab to the terminal: cargo is in view at once, and the browser,
+    // focused a second ago, is not "idle" (review of PR #20, B1).
+    fake.focus(t0 + Duration::from_secs(7), Some(3000));
     let d = alternate(&mut a, t0, 8, 8);
     assert!(!by_id(&d, CARGO).idle_heavy, "cleared at once");
-    assert!(by_id(&d, BROWSER).idle_heavy, "the browser lost focus");
+    assert!(!by_id(&d, BROWSER).idle_heavy, "it had focus a second ago");
+    // Window [7, 10] still touches the browser's focus, which ended at 7.
+    let d = alternate(&mut a, t0, 10, 10);
+    assert!(!by_id(&d, BROWSER).idle_heavy, "focus lost only 3 s ago");
+    // Window [9, 12]: a whole window since the browser lost focus.
+    let d = alternate(&mut a, t0, 12, 12);
+    assert!(
+        by_id(&d, BROWSER).idle_heavy,
+        "a full window since focus was lost"
+    );
+    assert!(!by_id(&d, CARGO).idle_heavy, "the terminal still has focus");
     // Left without subscribers: the source stops and the windows go.
     assert!(a.windows() > 0);
     a.idle();
@@ -905,9 +934,62 @@ fn a_busy_group_out_of_focus_is_tagged_once_its_window_is_full() {
         "started once, stopped once"
     );
     // A page opened later starts the source again and counts afresh.
-    let d = alternate(&mut a, t0, 10, 12);
+    let d = alternate(&mut a, t0, 14, 16);
     assert_eq!(fake.calls.lock().unwrap().0, 2);
     assert!(!by_id(&d, BROWSER).idle_heavy);
+}
+
+#[test]
+fn no_window_in_focus_for_a_whole_window_tags() {
+    let s = scratch("blank");
+    let mut a = probed(&pacman(&s.0));
+    let fake = FakeFocus::up();
+    let t0 = Instant::now();
+    fake.focus(t0, Some(2001));
+    fake.focus(t0 + Duration::from_secs(1), None);
+    a.set_focus(Box::new(fake.clone()));
+    a.set_thresholds(Thresholds {
+        window: Duration::from_secs(3),
+        cpu: 20.0,
+    });
+    let d = alternate(&mut a, t0, 0, 4);
+    assert!(!by_id(&d, BROWSER).idle_heavy, "not a full window yet");
+    let d = alternate(&mut a, t0, 6, 6);
+    assert!(
+        by_id(&d, BROWSER).idle_heavy,
+        "no window since 1 s: window [3, 6]"
+    );
+    assert!(by_id(&d, CARGO).idle_heavy);
+}
+
+#[test]
+fn a_focus_source_that_is_not_running_is_asked_again_every_30_s() {
+    let s = scratch("retry");
+    let mut a = probed(&pacman(&s.0));
+    let fake = FakeFocus::default();
+    a.set_focus(Box::new(fake.clone()));
+    let t0 = Instant::now();
+    let root = fixture("root-desktop");
+    let starts = || fake.calls.lock().unwrap().0;
+    for at in [0, 2, 28] {
+        a.sample(&root, t0 + Duration::from_secs(at));
+    }
+    assert_eq!(starts(), 1, "once, not every tick");
+    a.sample(&root, t0 + Duration::from_secs(30));
+    assert_eq!(starts(), 2, "again after 30 s (review of PR #20, S3)");
+    *fake.available.lock().unwrap() = true;
+    let d = data(a.sample(&root, t0 + Duration::from_secs(60)));
+    assert_eq!(starts(), 3);
+    assert_eq!(
+        d.focus.as_deref(),
+        Some("fake"),
+        "found while the page is open"
+    );
+    a.sample(&root, t0 + Duration::from_secs(62));
+    assert_eq!(starts(), 3, "a running source is not started again");
+    a.idle();
+    a.sample(&root, t0 + Duration::from_secs(64));
+    assert_eq!(starts(), 4, "after idle, at once");
 }
 
 #[test]
@@ -1180,26 +1262,98 @@ fn a_fifo_for_flatpak_info_does_not_stall_the_walk() {
     assert_ne!(g.kind, "flatpak");
 }
 
+fn cargo_cpu(v: Value) -> f64 {
+    by_id(&data(v), CARGO).cpu.expect("a rate")
+}
+
 #[test]
-fn a_get_takes_its_first_reading_in_prime() {
+fn each_get_is_served_its_own_primed_reading_oldest_first() {
+    // Review of PR #20, S1: two gets primed 300 ms apart each read their
+    // own first reading, half a second old, never one a millisecond old.
     let s = scratch("prime");
     let mut a = probed(&pacman(&s.0));
-    let root = fixture("root-desktop");
-    let now = Instant::now();
-    let gap = a.prime(&root, now).expect("no subscriber baseline: a wait");
+    let (t0, t1) = (fixture("root-desktop"), fixture("root-desktop.t1"));
+    let gap = a
+        .prime(&t0, Instant::now())
+        .expect("no subscriber baseline: a wait");
     assert_eq!(gap, Duration::from_millis(500));
-    // The server sleeps the gap without the lock; here nothing waits, and
-    // the snapshot uses prime's reading at once.
+    std::thread::sleep(Duration::from_millis(300));
+    a.prime(&t0, Instant::now()).unwrap();
+    assert_eq!(a.primed(), 2);
+    std::thread::sleep(Duration::from_millis(200));
+    // The twin's ticks are two seconds' worth: 91 % over 2 s is 364 % over
+    // the half second between the readings.
+    let near = |c: f64| (c - 364.0).abs() < 364.0 * 0.2;
+    let first = cargo_cpu(a.snapshot(&t1, Instant::now()));
+    assert!(near(first), "{first}");
+    std::thread::sleep(Duration::from_millis(300));
+    let second = cargo_cpu(a.snapshot(&t1, Instant::now()));
+    assert!(near(second), "{second}");
+    assert_eq!(a.primed(), 0);
+    // A reading 2 ms old is too young: dropped, and the snapshot takes its
+    // own two readings half a second apart.
+    a.prime(&t0, Instant::now()).unwrap();
+    std::thread::sleep(Duration::from_millis(2));
     let t = Instant::now();
-    let d = data(a.snapshot(&root, Instant::now() + Duration::from_millis(1)));
+    a.snapshot(&t0, Instant::now());
     assert!(
-        t.elapsed() < Duration::from_millis(400),
+        t.elapsed() >= Duration::from_millis(400),
         "{:?}",
         t.elapsed()
     );
-    assert!(d.totals.cpu.is_some());
+    // idle clears the queue.
+    a.prime(&t0, Instant::now()).unwrap();
+    a.idle();
+    assert_eq!(a.primed(), 0);
     // A young subscriber baseline needs no wait.
-    let t0 = Instant::now();
-    a.sample(&root, t0);
-    assert!(a.prime(&root, t0 + Duration::from_secs(2)).is_none());
+    let now = Instant::now();
+    a.sample(&t0, now);
+    assert!(a.prime(&t0, now + Duration::from_secs(2)).is_none());
+}
+
+#[test]
+fn the_process_stream_serves_each_get_its_own_primed_reading() {
+    let mut p = process_probed();
+    let (t0, t1) = (fixture("root-desktop"), fixture("root-desktop.t1"));
+    let params = [json!({"pid": 2001})];
+    p.wants(&params);
+    p.prime(&t0, Instant::now()).expect("a wait");
+    std::thread::sleep(Duration::from_millis(300));
+    p.wants(&params);
+    p.prime(&t0, Instant::now()).expect("a wait");
+    std::thread::sleep(Duration::from_millis(200));
+    let cpu = |v: Value| {
+        process::view(&v, &params[0])["cpu"]
+            .as_f64()
+            .expect("a rate")
+    };
+    p.wants(&params);
+    let first = cpu(p.snapshot(&t1, Instant::now()));
+    std::thread::sleep(Duration::from_millis(300));
+    p.wants(&params);
+    let second = cpu(p.snapshot(&t1, Instant::now()));
+    // The browser's main process: its two-second delta over half a second.
+    let two_s = {
+        let mut q = process_probed();
+        q.wants(&params);
+        let t = Instant::now();
+        q.sample(&t0, t);
+        process::view(&q.sample(&t1, t + Duration::from_secs(2)), &params[0])["cpu"]
+            .as_f64()
+            .unwrap()
+    };
+    for c in [first, second] {
+        assert!(
+            (c - two_s * 4.0).abs() < two_s * 4.0 * 0.2,
+            "{c} vs {}",
+            two_s * 4.0
+        );
+    }
+    let t = Instant::now();
+    p.wants(&params);
+    p.snapshot(&t1, Instant::now());
+    assert!(
+        t.elapsed() >= Duration::from_millis(400),
+        "the queue is empty"
+    );
 }

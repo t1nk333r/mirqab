@@ -22,10 +22,10 @@ use crate::proto::stream::{PROCESS, PROCESS_MAX_PIDS, ProcessData};
 use crate::proto::strings;
 use crate::root::Root;
 use crate::sampler::{Accepts, Sampler, View};
-use crate::samplers::apps::procfs;
+use crate::samplers::apps::{MAX_PRIMED, procfs, take_primed};
 use crate::selfcost;
 use serde_json::{Value, json};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::time::{Duration, Instant};
 
 /// A baseline older than this is dropped, as in `apps` and `system`.
@@ -136,8 +136,9 @@ pub struct Process {
     over: Vec<u32>,
     pins: HashMap<u32, Pin>,
     base: Option<Base>,
-    /// A `get`'s first reading, taken in `prime`.
-    get_base: Option<Base>,
+    /// The first readings `prime` took, one per pending `get`, oldest
+    /// first (review of PR #20, S1).
+    get_base: VecDeque<Base>,
 }
 
 impl Default for Process {
@@ -155,7 +156,7 @@ impl Process {
             over: Vec::new(),
             pins: HashMap::new(),
             base: None,
-            get_base: None,
+            get_base: VecDeque::new(),
         }
     }
 
@@ -289,6 +290,7 @@ impl Sampler for Process {
     fn idle(&mut self) {
         self.pins.clear();
         self.base = None;
+        self.get_base.clear();
     }
 
     /// `get`: the first reading, under the lock; half a second without it
@@ -300,15 +302,18 @@ impl Sampler for Process {
         if first.is_empty() || usable(self.base.as_ref(), &first, now) {
             return None;
         }
-        self.get_base = Some(Base::of(&first, Instant::now()));
+        self.get_base.push_back(Base::of(&first, Instant::now()));
+        while self.get_base.len() > MAX_PRIMED {
+            self.get_base.pop_front();
+        }
         Some(SNAPSHOT_GAP)
     }
 
     /// `get`: against a subscriber's baseline when it is 1–10 s old and
     /// holds the process, without moving it, and never reading the pins;
-    /// otherwise against the reading `prime` took (or, called without
-    /// `prime`, a second reading of its own half a second later). Nothing
-    /// read is answered at once.
+    /// otherwise against the oldest reading `prime` queued when it is
+    /// 250 ms to 10 s old, or a second reading of its own half a second
+    /// later. Nothing read is answered at once.
     fn snapshot(&mut self, root: &Root, now: Instant) -> Value {
         let first = self.read_all(root);
         if first.is_empty() {
@@ -317,11 +322,7 @@ impl Sampler for Process {
         if usable(self.base.as_ref(), &first, now) {
             return self.data(&first, self.base.as_ref(), now, false);
         }
-        let primed = self.get_base.take().filter(|b| {
-            let age = now.saturating_duration_since(b.at);
-            age > Duration::ZERO && age <= LIVE_STALE
-        });
-        if let Some(base) = primed {
+        if let Some(base) = take_primed(&mut self.get_base, now, |b| b.at) {
             return self.data(&first, Some(&base), Instant::now(), false);
         }
         let base = Base::of(&first, Instant::now());

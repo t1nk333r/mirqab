@@ -21,8 +21,9 @@ use std::time::Instant;
 pub struct FocusedSince {
     /// The pid of the focused window's client, if any.
     pub now: Option<u32>,
-    /// Pids that gained focus at or after the moment asked about, oldest
-    /// first, each once.
+    /// Pids that had focus at any moment at or after the moment asked
+    /// about (one that gained it before and held it into the window
+    /// counts), oldest first, each once.
     pub since: Vec<u32>,
 }
 
@@ -36,6 +37,29 @@ impl FocusedSince {
             out.push(p);
         }
         out
+    }
+}
+
+/// The focus over `[since, now]` from a history of changes, oldest first
+/// (`Some(pid)`: a window of that client, `None`: no window; an entry
+/// holds until the next): every pid whose time with focus overlaps the
+/// window, including the last entry before `since` (it held focus into
+/// the window), and the focus now. One rule for every source and for
+/// the tests' fake, so they cannot drift (review of PR #20, B1): a tag
+/// needs the whole window since focus was lost.
+pub fn focused_since(history: &[(Instant, Option<u32>)], since: Instant) -> FocusedSince {
+    let first_inside = history.partition_point(|(t, _)| *t < since);
+    let mut pids: Vec<u32> = Vec::new();
+    for (_, p) in &history[first_inside.saturating_sub(1)..] {
+        if let Some(p) = p
+            && !pids.contains(p)
+        {
+            pids.push(*p);
+        }
+    }
+    FocusedSince {
+        now: history.last().and_then(|(_, p)| *p),
+        since: pids,
     }
 }
 
@@ -88,6 +112,31 @@ mod tests {
             runtime_dir(&r, 1000).unwrap(),
             PathBuf::from("/tmp/mirqab-fixture/run/user/1000")
         );
+    }
+
+    #[test]
+    fn focus_counts_for_any_overlap_with_the_window() {
+        let t0 = Instant::now();
+        let at = |s: u64| t0 + std::time::Duration::from_secs(s);
+        let h = [
+            (at(0), Some(1)),
+            (at(10), Some(2)),
+            (at(20), None),
+            (at(30), Some(3)),
+        ];
+        assert_eq!(focused_since(&h, at(5)).since, [1, 2, 3], "1 held into it");
+        assert_eq!(focused_since(&h, at(15)).since, [2, 3]);
+        assert_eq!(
+            focused_since(&h, at(25)).since,
+            [3],
+            "no window credits none"
+        );
+        let late = focused_since(&h, at(40));
+        assert_eq!((late.now, late.pids()), (Some(3), vec![3]));
+        let none = focused_since(&[], at(0));
+        assert_eq!(none, FocusedSince::default());
+        let blank = focused_since(&[(at(0), Some(1)), (at(10), None)], at(20));
+        assert_eq!((blank.now, blank.pids()), (None, vec![]));
     }
 
     #[test]

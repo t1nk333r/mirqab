@@ -2671,6 +2671,12 @@ Two, in this order:
 - Whether a `.socket2.sock` left by an exited Hyprland (no process behind
   it) answers `ECONNREFUSED` at connect, which the discovery of
   decision 3 treats as "not this instance" and moves on from.
+- Deferred from the review of PR #20 (nit 2): `runtime_rel` on a
+  non-UTF-8 `XDG_RUNTIME_DIR`, or one with `..`, gives no runtime
+  directory, so the compositor probe goes quiet (no refusal by socket,
+  the name list only) and the focus source finds nothing. A safety probe
+  that goes quiet on a malformed runtime dir; fall back to
+  `run/user/<uid>` in a later pass.
 
 ### Owner decisions (part 4, 2026-11-14)
 
@@ -2897,7 +2903,9 @@ Deviations from the brief, each with its reason:
   reach the next one. The inspector's `pacman` could (the protocol test
   shows a frame 3.01 s late on the old code); with the fixture's quick
   `pacman` neither showed in the measurement. D1 was fixed anyway, as
-  decision 10 says: no sampler holds its lock across a wait.
+  decision 10 says: no sampler sleeps or asks another program while
+  holding its lock (the focus source's bounded compositor waits are the
+  exception, "Review of PR #20", item 3).
 - **No debug log line for the inspector's cost**: it was measured from
   the client (`mirqab what`), which needs no new code.
 - **`.flatpak-info` through `read_regular_prefix`** (O_NONBLOCK,
@@ -2913,13 +2921,13 @@ Deviations from the brief, each with its reason:
   the test-table row's "twice the rows" is "the user's rows twice".
 - **The bench's `--subscribe` without `--live` fix** (above) is outside
   the brief and needed by its CI line.
-- **`tests/test-bench.sh` passes `--max-rss 32` to its tray run and its
-  `--procs 400` run.** It measures the debug build, whose RSS is about
-  twice the release build's: on `main` its tray run already sat at
-  14.9–15.0 MiB against the 15 MiB budget, and this change's larger
-  binary made it 15.0–15.1 (the release build: 7.4 MiB). The 15 MiB
-  budget is the release build's, which CI's bench step measures, and is
-  unchanged there.
+- **`tests/test-bench.sh` gives its tray run and its `--procs 400` run
+  a regression ceiling** (`--max-rss 18` and `21`, the measured debug
+  RSS plus about 20 %: 15.2 and 17.1 MiB on 2026-11-14). It measures the
+  debug build, whose RSS is about twice the release build's: on `main`
+  its tray run already sat at 14.9–15.0 MiB against the 15 MiB budget.
+  The 15 MiB budget is the release build's, gated by CI's `bench --tray`
+  since the review of PR #20 (first `--max-rss 32` and no CI gate; S5).
 
 Known limits (part 4a):
 
@@ -2930,6 +2938,25 @@ Known limits (part 4a):
   last answered one until the next event.
 - The tag uses the time the reader saw each focus change (`Instant`), and
   the windows the sample's stamp; both are the daemon's monotonic clock.
+- The bus-by-`comm` refusal is a guard rail for an honest
+  `dbus-run-session` bus, not a boundary: a process may rename itself
+  (`PR_SET_NAME` changes `comm`), so a bus named otherwise is not
+  refused, and a process naming itself `dbus-daemon` cannot be quit from
+  mirqab (review of PR #20, nit 9).
+- Deferred from the review of PR #20 (S4): a focus credits every group
+  with a member in the focused pid's host unit. Under uwsm every app has
+  its own `app-*.scope`, but apps a compositor `exec`s without `uwsm
+  app` share its service or the session scope, and one focused window
+  then credits every group in that unit, so nothing in it is ever
+  tagged. Decision 5 chose "same host unit" for a terminal's jobs;
+  narrowing it is an owner question for 4b (below), with a fixture of
+  two apps in one service.
+- Deferred from the review of PR #20 (nit 3): the 1024-fd cap on the
+  `fd/` listing leaves the GPU row out for the processes that matter
+  most (browsers and Electron apps often hold more fds). Capping the
+  `fdinfo` reads (DRM fds only, say 64) instead of the listing is the
+  better rule; 4b fixes it with the inspector sheet work, with a
+  1100-fd fixture of which 8 are DRM asserting a row.
 
 Left for the owner (acceptance part 4, 1–5): the tag on a real
 `yes > /dev/null &` after five minutes and its clearing on a click;
@@ -2944,7 +2971,103 @@ What 4b does: decision 16 whole (the caption and the sheet line,
 Escape, S8, N3, N8, N4, `start` in `args` and the inspect params,
 `APPS_ROW_GONE` on the gone error), its view-model and widget tests,
 `tests/test-ui-apps.sh` with a fake Hyprland, architecture §7.2 and
-§7.5, "As built (part 4b)", the plan's state and the README row.
+§7.5, "As built (part 4b)", the plan's state and the README row; the
+GPU row's cap on `fdinfo` reads instead of the `fd/` listing (review of
+PR #20, nit 3).
+
+Owner question for 4b (review of PR #20, S4): credit a focused window's
+siblings only through `app-*.scope` units and the `session:` splits of
+a terminal, so that apps sharing a compositor's service or the session
+scope are not all credited by one window?
+
+### Review of PR #20 (part 4a), 2026-11-14
+
+The ruling (Fable 5.1, on Sonnet's review) kept 7 items, deferred 4 and
+dropped the rest. What changed, with its test:
+
+1. **B1, focus counts for any overlap with the window (S7 folded in).**
+   The reader keeps every change of focus, "no window" included, as
+   `(Instant, Option<pid>)`, the same focus again adding nothing, one
+   entry older than 6 minutes kept as the anchor, at most 4096
+   (`desktop/hyprland.rs:230`, `MAX_HISTORY` `:64`). One pure rule,
+   `desktop::focused_since` (`desktop/mod.rs:50`), shared by the reader
+   and the tests' `FakeFocus`: every pid whose time with focus overlaps
+   `[since, now]`, including the last entry before `since`; a `None`
+   anchor credits nothing. So a tag needs the whole window since focus
+   was LOST (it tagged the browser two seconds after an alt-tab).
+   Tests: `focus_counts_for_any_overlap_with_the_window`
+   (`desktop/mod.rs:118`); `tests/apps.rs:863` rewritten (alt-tab at
+   t0+7: the browser is not tagged at +8 or +10, tagged at +12);
+   `no_window_in_focus_for_a_whole_window_tags` (`:943`);
+   `tests/focus.rs:201` (2001 held into `s1` counts, "no window" gives
+   nothing, three repeats of one address are one change, the hostile
+   `>>` lines and a 200 000-byte line change and ask nothing).
+2. **S1, one primed reading per `get`, oldest first (nit 4 folded
+   in).** `prime` queues its reading (at most 16), `snapshot` takes the
+   oldest whose age is 250 ms to 10 s and drops younger or older ones,
+   `idle` clears the queue, in `Apps` and `Process` (`take_primed`,
+   `samplers/apps/mod.rs:79`; `process.rs:325`). Tests:
+   `each_get_is_served_its_own_primed_reading_oldest_first`
+   (`tests/apps.rs:1270`: two primes 300 ms apart, both snapshots read
+   cargo within 20 % of 364 %, the queue empty after, a 2 ms reading
+   dropped for the inline path, `idle` clears) and
+   `the_process_stream_serves_each_get_its_own_primed_reading`
+   (`:1315`).
+3. **S2 (reduced), the compositor waits are bounded and said.**
+   `ask_active` (`hyprland.rs:135`) arms every read with what is left of
+   one 500 ms deadline, so a trickled answer cannot hold the reader;
+   `stop` (`:442`) joins within that deadline. Architecture §5.3 now
+   says: no sampler sleeps or asks another program while holding its
+   lock; the focus source may wait on the compositor up to 1.5 s once
+   when the page opens and up to 0.5 s when it closes. Test:
+   `a_trickled_answer_ends_in_time_and_stop_is_bounded`
+   (`tests/focus.rs:351`: `stop` under 1 s during a one-byte-per-100 ms
+   answer; a `start` whose request hangs ends within 1.2 s).
+4. **S3, a dead signature does not win, and a dead reader is retried.**
+   `live(root, dir)` (`hyprland.rs:163`: the lock's pid has a
+   `proc/<pid>/` and the event socket is there) for the signature and
+   the scan alike (`instance`, `:181`); `Apps` asks a source that is not
+   running to start once per 30 s while subscribed (`FOCUS_RETRY`,
+   `samplers/apps/mod.rs:579`), at once after `idle`. Tests:
+   `tests/focus.rs:179` (a signature naming the dead instance yields the
+   newest live one; a live signature itself) and
+   `a_focus_source_that_is_not_running_is_asked_again_every_30_s`
+   (`tests/apps.rs:966`).
+5. **S5, the tray budget is gated on the release build.** CI's bench
+   step runs `bench --tray` (`.github/workflows/ci.yml:131`; it fails
+   without `dbus-daemon`); architecture §9.1 has the row. The debug
+   test keeps ceilings of measured plus about 20 %
+   (`tests/test-bench.sh:34`, `:51`: 18 and 21 MiB for 15.2 and
+   17.1 MiB measured).
+6. **The prompt `idle` is observed.** The `Counted` test sampler reports
+   its idle count in `status` (`tests/protocol.rs:65`); the test polls
+   it after the unsubscribe, before any re-subscribe (it stays 0 on the
+   old code). The slow-pacman bounds widen to 2600 ms (`:1254`; the old
+   code gave 3010).
+7. **Docs and strings.** Architecture §5.3 (the lock sentence, the
+   focus rule, the primed queue), §9.1 (the tray row; the 400-process
+   row is a proxy: the fixture is files in the page cache and procfs on
+   the live machine costs more per read); MCP `top_apps`'s description
+   says when `idleHeavy` appears (`strings.rs:554`); the Known limits
+   above (the bus guard rail, S4, nit 3).
+
+Deferred: S4 and nit 3 (Known limits above, and 4b), S6 (plan 018's
+Unverified), nit 2 (Unverified (part 4)). The fake-Hyprland bench
+variant of S8 stays out.
+
+Counts after the fixes (`cargo test -p mirqab-core`): library 69,
+`tests/apps.rs` 30, `tests/focus.rs` 6, `tests/protocol.rs` 27 (the idle
+test and the bounds changed), `tests/actions.rs` 24, `tests/history.rs`
+14.
+
+Measured after the fixes (2026-11-14, development machine, release
+build, `--runs 3`, 60 s each): `--subscribe apps --max-cpu 1.5 --procs 400`
+0.200 %, 0.200 %, 0.200 % of one core, 10.4–10.5 MiB; idle 0.000 % ×3,
+7.3–7.4 MiB; idle with the tray registered (`--tray`, the new CI line)
+0.000 % ×3, 7.4–7.6 MiB, within the 15 MiB budget. The debug build's
+tray run 15.2 MiB and `--procs 400` run 17.1 MiB, the base of the test's
+ceilings.
+
 
 ## Unverified
 

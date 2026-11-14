@@ -39,7 +39,7 @@ use group::{Group, Kind};
 use inspect::Owners;
 use procfs::{Cache, Proc, User};
 use serde_json::{Value, json};
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -64,6 +64,31 @@ pub const TOP_APPS_MIN_CPU: f64 = 10.0;
 /// The minute walk's baseline, older than this, gives no row: a missed
 /// minute or a suspend lies between.
 const MINUTE_STALE: Duration = Duration::from_secs(150);
+/// How often a focus source that is not running is asked to start while
+/// the stream has subscribers.
+pub const FOCUS_RETRY: Duration = Duration::from_secs(30);
+/// Primed readings queued at most (one per pending `get`).
+pub const MAX_PRIMED: usize = 16;
+/// The youngest primed reading a `snapshot` uses: at 100 ticks a second
+/// one tick is 4 % of a core over 250 ms.
+pub const PRIMED_MIN: Duration = Duration::from_millis(250);
+
+/// The oldest of `queue` whose age at `now` is 250 ms to 10 s, popping it
+/// and every older or younger one before it (review of PR #20, S1: one
+/// slot let a second `get` read rates over a millisecond).
+pub fn take_primed<T>(
+    queue: &mut VecDeque<T>,
+    now: Instant,
+    at: impl Fn(&T) -> Instant,
+) -> Option<T> {
+    while let Some(b) = queue.pop_front() {
+        let age = now.saturating_duration_since(at(&b));
+        if (PRIMED_MIN..=LIVE_STALE).contains(&age) {
+            return Some(b);
+        }
+    }
+    None
+}
 
 /// One process's counters: CPU ticks, and storage bytes read and written
 /// when the daemon may read them.
@@ -101,13 +126,15 @@ pub struct Apps {
     page: u64,
     cores: Option<u32>,
     live: Option<Tick>,
-    /// A `get`'s first reading, taken in `prime`.
-    get_base: Option<Tick>,
+    /// The first readings `prime` took, one per pending `get`, oldest
+    /// first (review of PR #20, S1).
+    get_base: VecDeque<Tick>,
     focus: Box<dyn Focus>,
-    /// The focus source was asked to start since the last `idle`; it is
-    /// not asked again until then, so a machine without Hyprland is not
-    /// searched every tick.
-    focus_tried: bool,
+    /// When the focus source may be asked to start again while none runs:
+    /// once per `FOCUS_RETRY` while subscribed, so a Hyprland restarted
+    /// with the page open is found again and a machine without one is
+    /// not searched every tick (review of PR #20, S3). None after `idle`.
+    focus_retry: Option<Instant>,
     windows: Windows,
     thresholds: Thresholds,
     /// The last sample, while subscribed: the minute's row is read from it.
@@ -152,9 +179,9 @@ impl Apps {
             page: 4096,
             cores: None,
             live: None,
-            get_base: None,
+            get_base: VecDeque::new(),
             focus: Box::new(Hyprland::new()),
-            focus_tried: false,
+            focus_retry: None,
             windows: Windows::default(),
             thresholds: Thresholds::default(),
             last: None,
@@ -168,7 +195,7 @@ impl Apps {
     pub fn set_focus(&mut self, focus: Box<dyn Focus>) {
         self.focus.stop();
         self.focus = focus;
-        self.focus_tried = false;
+        self.focus_retry = None;
     }
 
     /// Other thresholds for the tag (tests shrink the window).
@@ -179,6 +206,11 @@ impl Apps {
     /// Walks of `proc/` so far.
     pub fn walks(&self) -> u64 {
         self.walks
+    }
+
+    /// Primed readings waiting for their `snapshot` (tests).
+    pub fn primed(&self) -> usize {
+        self.get_base.len()
     }
 
     /// Groups with a CPU window kept (tests).
@@ -543,8 +575,8 @@ impl Sampler for Apps {
     fn sample(&mut self, root: &Root, now: Instant) -> Value {
         // Only a subscriber's tick samples (a `get` takes a snapshot), so
         // the focus source runs only while the stream has subscribers.
-        if !self.focus_tried {
-            self.focus_tried = true;
+        if self.focus.source().is_none() && self.focus_retry.is_none_or(|t| now >= t) {
+            self.focus_retry = Some(now + FOCUS_RETRY);
             // No source is no tag and `focus` absent; nothing is logged
             // (a tty or another compositor is not a fault).
             let _ = self.focus.start(root, self.own_uid);
@@ -577,9 +609,10 @@ impl Sampler for Apps {
     /// frame go, so a page opened later counts afresh.
     fn idle(&mut self) {
         self.focus.stop();
-        self.focus_tried = false;
+        self.focus_retry = None;
         self.windows.clear();
         self.last = None;
+        self.get_base.clear();
     }
 
     /// `get` with no young subscriber baseline: the first reading, here
@@ -589,24 +622,25 @@ impl Sampler for Apps {
             return None;
         }
         let first = self.walk(root);
-        self.get_base = Some(Tick::of(&first, Instant::now()));
+        self.get_base.push_back(Tick::of(&first, Instant::now()));
+        while self.get_base.len() > MAX_PRIMED {
+            self.get_base.pop_front();
+        }
         Some(SNAPSHOT_GAP)
     }
 
     /// `get`: against a subscriber's baseline when it is 1–10 s old,
-    /// without moving it; otherwise against the reading `prime` took (or,
-    /// called without `prime`, a second reading of its own).
+    /// without moving it; otherwise against the oldest reading `prime`
+    /// queued, when it is 250 ms to 10 s old (each serves one `get`;
+    /// younger or older ones are dropped); otherwise against a second
+    /// reading of its own, half a second later.
     fn snapshot(&mut self, root: &Root, now: Instant) -> Value {
         if self.young(now) {
             let procs = self.walk(root);
             let live = self.live.clone();
             return self.data(&procs, live.as_ref(), now);
         }
-        let primed = self.get_base.clone().filter(|b| {
-            let age = now.saturating_duration_since(b.at);
-            age > Duration::ZERO && age <= LIVE_STALE
-        });
-        if let Some(base) = primed {
+        if let Some(base) = take_primed(&mut self.get_base, now, |b| b.at) {
             let procs = self.walk(root);
             return self.data(&procs, Some(&base), Instant::now());
         }

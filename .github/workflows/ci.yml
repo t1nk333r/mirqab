@@ -108,7 +108,8 @@ jobs:
           fi
           runuser -u ci -- env CI=1 HOME=/home/ci CARGO_HOME="$HOME/.cargo" tests/run.sh "${args[@]}"
       - name: tools/bench-idle.sh
-        # The daemon's budget (architecture §9.1): idle, with a live
+        # The daemon's budget (architecture §9.1): idle, idle with the tray
+        # registered (fails, not skips, without dbus-daemon), with a live
         # subscription, and the apps walk at 400 processes (plan 006, part
         # 4), best of three 60 s runs on this noisy shared runner. On a
         # pull request only when it touches crates/.
@@ -127,6 +128,7 @@ jobs:
           fi
           bench() { runuser -u ci -- env HOME=/home/ci CARGO_HOME="$HOME/.cargo" tools/bench-idle.sh --runs 3 "$@"; }
           bench
+          bench --tray
           bench --subscribe system --live
           bench --subscribe apps --max-cpu 1.5 --procs 400
 

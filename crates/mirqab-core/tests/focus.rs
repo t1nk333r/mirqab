@@ -50,6 +50,8 @@ enum Mode {
     Hang,
     /// Closes at once: an empty answer, which is no JSON.
     Close,
+    /// Writes one byte every 100 ms, for ever.
+    Trickle,
 }
 
 /// A fake Hyprland instance: `hyprland.lock`, an event socket the test
@@ -99,6 +101,11 @@ fn fake(root: &Path, sig: &str, lock_pid: u32, mode: Mode) -> Fake {
                     }
                     Mode::Hang => std::thread::sleep(Duration::from_secs(2)),
                     Mode::Close => {}
+                    Mode::Trickle => {
+                        while conn.write_all(b" ").is_ok() {
+                            std::thread::sleep(Duration::from_millis(100));
+                        }
+                    }
                 }
             });
         }
@@ -169,9 +176,16 @@ fn the_instance_is_found_by_its_lock_without_the_environment() {
     );
     // A signature naming a directory with an event socket wins, and one
     // that names a path is ignored.
+    // A signature naming a dead instance (its lock's pid has no proc/
+    // entry) does not win: after a Hyprland restart the daemon still has
+    // the old one (review of PR #20, S3). A live one does.
     assert_eq!(
         hyprland::instance(&r, "run/user/1000", Some("dead_1_1")).unwrap(),
-        "run/user/1000/hypr/dead_1_1"
+        "run/user/1000/hypr/newer_1_3"
+    );
+    assert_eq!(
+        hyprland::instance(&r, "run/user/1000", Some("live_1_2")).unwrap(),
+        "run/user/1000/hypr/live_1_2"
     );
     assert_eq!(
         hyprland::instance(&r, "run/user/1000", Some("../../../x")).unwrap(),
@@ -194,10 +208,42 @@ fn the_reader_asks_once_per_address_and_follows_focus() {
     assert_eq!(now_of(&mut h), Some(2001), "the focus at start");
     assert_eq!(f.asked(), 1);
 
+    let s1 = Instant::now();
     f.set(answer("bbb", 3000));
     ev.write_all(b"activewindowv2>>bbb\n").unwrap();
     eventually("focus on 3000", || now_of(&mut h) == Some(3000));
     assert_eq!(f.asked(), 2, "a new address is asked about once");
+    // 2001 held focus into s1: it counts (review of PR #20, B1).
+    assert_eq!(h.focused(s1).unwrap().since, [2001, 3000]);
+
+    // The same focus again is no change (S7).
+    let n = h.changes().unwrap();
+    ev.write_all(b"activewindowv2>>0xaaa\nactivewindowv2>>0xaaa\nactivewindowv2>>aaa\n")
+        .unwrap();
+    eventually("on 2001", || now_of(&mut h) == Some(2001));
+    std::thread::sleep(Duration::from_millis(100));
+    assert_eq!(h.changes(), Some(n + 1), "three lines, one change");
+    ev.write_all(b"activewindowv2>>bbb\n").unwrap();
+    eventually("on 3000", || now_of(&mut h) == Some(3000));
+
+    // Hostile lines: a title holding `>>` and event names changes nothing
+    // and asks nothing; a 200 000-byte line is skipped whole and the next
+    // event read.
+    let asked = f.asked();
+    ev.write_all(b"windowtitlev2>>aaa,x>>y,activewindowv2>>zzz\n")
+        .unwrap();
+    ev.write_all(b"activewindow>>cls,t>>activewindowv2>>zzz\n")
+        .unwrap();
+    let mut long = b"activewindow>>cls,".to_vec();
+    long.extend(std::iter::repeat_n(b'x', 200_000));
+    long.extend(b"\nactivewindowv2>>0xaaa\n");
+    ev.write_all(&long).unwrap();
+    eventually("the event after the long line", || {
+        now_of(&mut h) == Some(2001)
+    });
+    assert_eq!(f.asked(), asked, "nothing asked for the hostile lines");
+    ev.write_all(b"activewindowv2>>bbb\n").unwrap();
+    eventually("on 3000 again", || now_of(&mut h) == Some(3000));
 
     // The cached addresses, with and without 0x: nothing is asked.
     ev.write_all(b"activewindow>>example,synthetic title\nactivewindowv2>>0xaaa\n")
@@ -213,18 +259,22 @@ fn the_reader_asks_once_per_address_and_follows_focus() {
     eventually("no focus", || {
         h.focused(long_ago()).is_some_and(|x| x.now.is_none())
     });
+    std::thread::sleep(Duration::from_millis(20));
+    let s2 = Instant::now();
+    let blank = h.focused(s2).unwrap();
+    assert!(blank.since.is_empty() && blank.now.is_none(), "{blank:?}");
     ev.write_all(b"closewindow>>bbb\nactivewindowv2>>bbb\n")
         .unwrap();
     eventually("3000 again", || now_of(&mut h) == Some(3000));
     assert_eq!(f.asked(), 3, "evicted, so asked again");
     let seen = h.focused(long_ago()).unwrap();
     assert_eq!(seen.since, [2001, 3000]);
-    assert!(
+    assert_eq!(
         h.focused(Instant::now() + Duration::from_secs(1))
             .unwrap()
-            .since
-            .is_empty(),
-        "nothing gained focus after a moment to come"
+            .since,
+        [3000],
+        "only the focus now holds into a moment to come"
     );
 
     // stop ends the thread, at once.
@@ -295,4 +345,34 @@ fn a_root_without_hyprland_has_no_focus_source() {
     assert!(v.get("focus").is_none(), "no source, no focus key");
     assert_eq!(a.status(), vec![("focus", Value::Null)]);
     a.idle();
+}
+
+#[test]
+fn a_trickled_answer_ends_in_time_and_stop_is_bounded() {
+    // Review of PR #20, S2: one deadline across the request's write and
+    // reads, so an answer a byte at a time cannot hold the reader.
+    let s = root("trickle", &[1050]);
+    let f = fake(&s.0, "sig_1_1", 1050, answer("aaa", 2001));
+    let mut h = Hyprland::new();
+    h.start(&Root::new(&s.0), 1000).unwrap();
+    let (mut ev, _) = f.events.accept().unwrap();
+    f.set(Mode::Trickle);
+    ev.write_all(b"activewindowv2>>t1\n").unwrap();
+    eventually("the trickled request asked", || f.asked() == 2);
+    let t = Instant::now();
+    h.stop();
+    assert!(t.elapsed() < Duration::from_secs(1), "{:?}", t.elapsed());
+    assert!(h.finished());
+    // A start whose first request hangs ends within its bounds.
+    let s = root("hangstart", &[1050]);
+    let _f = fake(&s.0, "sig_1_1", 1050, Mode::Hang);
+    let mut h = Hyprland::new();
+    let t = Instant::now();
+    let _ = h.start(&Root::new(&s.0), 1000);
+    assert!(
+        t.elapsed() < Duration::from_millis(1200),
+        "{:?}",
+        t.elapsed()
+    );
+    h.stop();
 }
