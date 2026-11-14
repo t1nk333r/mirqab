@@ -30,7 +30,8 @@ System) is done.
   `--socket PATH` when given. Only one daemon runs per socket. It streams
   its own CPU and memory cost on the `self` stream, and the machine's CPU,
   load, memory, pressure, temperatures, GPUs and power on the `system`
-  stream.
+  stream. The processes grouped into apps are on the `apps` stream, read
+  every 2 s while something subscribes.
 - History: once a minute the daemon stores one value for each of 25
   series. `mirqab history --list` names them. The first four are
   `cpu.total` (percent, the average over the minute), `mem.used`,
@@ -48,8 +49,10 @@ System) is done.
   `toggle [TAB]`, `close`, `history SERIES... [--range 1h|24h|7d|30d]
   [--json]`, `history --list`, `load [--json]` (CPU, load, memory, pressure
   and the thermal word), `sensors [--json]` (temperatures, GPUs and power),
-  `bar ITEM [--watch] [--interval SEC] [--format waybar|plain|json]` and
-  `bar --list` (readings for a status bar),
+  `apps [--sort cpu|mem|name] [--all] [--json]` (apps by CPU, memory or
+  name; `--all` lists every process), `what PID [--json]` (explains one
+  process), `bar ITEM [--watch] [--interval SEC] [--format waybar|plain|json]`
+  and `bar --list` (readings for a status bar),
   `help [COMMAND]`, `--help` and `--version`.
   Every command takes `--socket PATH`. `open`, `toggle` and `close` take
   `--dry-run`, which prints what the action would do.
@@ -300,7 +303,10 @@ hl.window_rule({
 
 Coding agents can ask mirqab through its MCP server, `mirqab mcp`. It
 speaks the Model Context Protocol on stdin and stdout. Its tools only
-read: `system_load` and `explain_slowness`.
+read: `system_load`, `explain_slowness`, `top_apps` (the apps using the
+most CPU or memory now) and `what_is_process` (explains one process by
+pid). `what_is_process` leaves out command lines, working directories and
+open file paths, as they can hold secrets.
 
 `mirqab mcp-config CLIENT` prints how to register it. CLIENT is `claude`,
 `codex`, `gemini`, `opencode`, `cursor` or `json`. With `--write`, mirqab

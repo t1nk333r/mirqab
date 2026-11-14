@@ -889,7 +889,7 @@ acting unless `-y`.
 ```
 mirqab open [tab] [--window] | toggle [tab] | close
 mirqab status | load | sensors | battery
-mirqab apps [--sort cpu|mem] | what <pid>
+mirqab apps [--sort cpu|mem|name] [--all] | what <pid>
 mirqab ports [--system] | port <n> | kill <n> [-y] [--force]
 mirqab agents | cleanup <session> | orphans [--kill]
 mirqab awake <duration>|off [--display] | blockers
