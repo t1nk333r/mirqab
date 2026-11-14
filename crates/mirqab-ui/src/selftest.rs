@@ -1,4 +1,5 @@
-//! `--selftest <tab>` (architecture §7.5, layer 3): window mode, build the
+//! `--selftest <tab>` (architecture §7.5, layer 3): the config's mode (a
+//! popover becomes a window without layer shell, as under Broadway), build the
 //! page once the config is known, wait for the first event of the footer's
 //! `self` stream and for the page's first data (or 5 s), print the widget
 //! tree as JSON on stdout and exit 0; exit 1 with the reason on stderr when
@@ -8,7 +9,6 @@ use crate::app::Ctx;
 use gtk::glib;
 use gtk::prelude::*;
 use mirqab_proto::{stream, strings};
-use mirqab_view::config::Mode;
 use serde_json::{Value, json};
 use std::cell::{Cell, RefCell};
 use std::io::Write;
@@ -18,7 +18,7 @@ use std::time::Duration;
 pub fn run(ctx: &Rc<Ctx>, tab: &str) {
     // Once the config is in, as a real open: Home built from the defaults
     // was empty and ready before the user's pins arrived (plan 003).
-    ctx.show_when_ready(Some(tab), Some(Mode::Window));
+    ctx.show_when_ready(Some(tab), None);
     let done = Rc::new(Cell::new(false));
     let keep: Rc<RefCell<Option<crate::client::Subscription>>> = Rc::new(RefCell::new(None));
     let weak = Rc::downgrade(ctx);

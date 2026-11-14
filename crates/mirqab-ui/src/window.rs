@@ -103,12 +103,18 @@ impl Window {
         if mode == Mode::Popover {
             header.append(&pinned);
             header.append(&close);
+        } else {
+            // A normal window has no header bar: the row drags it and ends
+            // with the desktop's own buttons, whose close hides (plan 022).
+            header.append(&gtk::WindowControls::new(gtk::PackType::End));
         }
+        let header_row = gtk::WindowHandle::new();
+        header_row.set_child(Some(&header));
 
         let pages = Pages::new();
         let column = gtk::Box::new(gtk::Orientation::Vertical, 0);
         column.set_hexpand(true);
-        column.append(&header);
+        column.append(&header_row);
         column.append(&pages.stack);
         column.append(&footer.root);
         let body = gtk::Box::new(gtk::Orientation::Horizontal, 0);
@@ -236,7 +242,11 @@ impl Window {
                 sc.add_shortcut(gtk::Shortcut::new(Some(t), Some(action)));
             }
         };
-        add("Escape", Box::new(|ctx| ctx.hide()));
+        if self.mode.closes_on_escape() {
+            add("Escape", Box::new(|ctx| ctx.hide()));
+        } else {
+            add("<Control>w", Box::new(|ctx| ctx.hide()));
+        }
         for n in 1..=9usize {
             add(
                 &format!("<Control>{n}"),

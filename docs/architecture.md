@@ -220,23 +220,31 @@ it hands its arguments to the running instance and exits.
 
 Four ways in, one daemon behind them.
 
-1. **Popover (default).** An `AdwApplicationWindow` turned into a
-   layer-shell surface by `gtk4-layer-shell` before it is first shown:
-   layer `top`, anchored to a screen corner or edge chosen in Settings
-   (default: top right, with a margin that clears the bar), keyboard mode
-   `on-demand`, namespace `mirqab`. It closes on Escape. A click outside
-   closes it too: the compositor moves keyboard focus away, the window's
-   `is-active` property turns false, and the window hides. A "Pinned"
-   toggle keeps it open and stops that close.
-2. **Window.** `mirqab open --window`, or a Settings switch, shows the same
-   content in an ordinary `AdwApplicationWindow` (an xdg-toplevel) that
-   the compositor tiles or floats like any app. The `.desktop` entry opens
-   this mode, because a launcher has no anchor to put a popover under.
-   Whether a window is a layer surface is fixed when it is first shown, so
-   switching mode builds a new window around the same content widget.
+1. **Window (default; plan 022).** An ordinary `AdwApplicationWindow` (an
+   xdg-toplevel) that the compositor tiles or floats like any app. Its
+   header row is a `GtkWindowHandle` that drags it and ends with
+   `GtkWindowControls`, the desktop's buttons; close hides. Escape does
+   nothing (a window that vanished on Escape would surprise); Ctrl+W
+   hides. Its size is `widthEm` × `heightEm` at first and lasts while the
+   process does; its position is the compositor's, since GTK 4 has no call
+   to place a toplevel. The `.desktop` entry asks for this mode with
+   `--window`, which overrides a config that asks for the popover.
+2. **Popover (opt-in).** Settings or `window.mode = "popover"`. The same
+   content in an `AdwApplicationWindow` turned into a layer-shell surface
+   by `gtk4-layer-shell` before it is first shown: layer `top`, anchored
+   to a screen corner or edge chosen in Settings (default: top right, with
+   a margin that clears the bar), keyboard mode `on-demand`, namespace
+   `mirqab`. It closes on Escape, and when keyboard focus moves away: the
+   window's `is-active` property turns false and the window hides. With
+   focus-follows-mouse (Hyprland's `follow_mouse = 1`) that is as soon as
+   the pointer crosses another window, which is why the window is the
+   default (owner, 2026-11-14). A "Pinned" toggle keeps it open and stops
+   that close. Whether a window is a layer surface is fixed when it is
+   first shown, so switching mode builds a new window around the same
+   content widget.
 3. **Tray icon.** One StatusNotifierItem, owned by the daemon and served
    over D-Bus (`org.kde.StatusNotifierWatcher` is on the session bus
-   **[machine]**). Left click toggles the popover, the menu lists tabs and
+   **[machine]**). Left click toggles the window, the menu lists tabs and
    Quit. GTK4 has no tray API (`GtkStatusIcon` was removed in GTK 4), and
    the interface process is short-lived anyway, so the daemon serves it,
    with the `ksni` crate. Plan 004.
@@ -260,7 +268,9 @@ is a one-shot marked `// mirqab:ui-timeout` (§7.2).
 Rejected: an always-visible strip of tiles (visual clutter with no reason),
 global shortcuts grabbed by the app (the compositor's job on Wayland), an
 X11 fallback (the owner's sessions are Wayland), a `GtkPopover` for the
-popover (it needs a parent window to hang from).
+popover (it needs a parent window to hang from), and an `xdg_popup` with a
+grab, which would close only on a click outside (overruled by the owner on
+2026-11-14 in favour of a real window; plan 022).
 
 **On Hyprland** (where the app is developed and tested): the popover is a
 layer surface, so window rules do not apply to it and it needs none; the
@@ -547,13 +557,14 @@ own tokens, icons and words:
 - **Page**, right: a scrolling column of cards with rounded corners. A card
   has a title, an optional range picker (2m, 1h, 24h, 7d, 30d) and a
   "Pin to Home" control.
-- **Header**: the page title and the "Pinned" toggle for the popover.
+- **Header**: the page title; in a window it drags the window and ends
+  with the desktop's buttons, in a popover it holds "Pinned" and close.
 - **Footer**: `self 0.2% · 14 MB` (daemon plus interface; the tooltip
   splits them), the machine line (CPU model, uptime), a health shortcut to
   Support, Settings, and a menu (window mode, quit daemon).
 
-Popover size: 58 em × 40 em by default, clamped to the screen. Sizes are in
-em of the base font so the fractional-scale case works.
+Window and popover size: 58 em × 40 em by default, clamped to the screen.
+Sizes are in em of the base font so the fractional-scale case works.
 
 ### 7.2 Rules
 

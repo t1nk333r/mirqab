@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 /// Every key with its default (plan 001, "Config keys added here").
 pub fn defaults() -> Value {
     json!({
-        "window": {"mode": "popover", "anchor": "top-right", "marginEm": 0.5, "widthEm": 58, "heightEm": 40, "rememberTab": false, "lastTab": null},
+        "window": {"mode": "window", "anchor": "top-right", "marginEm": 0.5, "widthEm": 58, "heightEm": 40, "rememberTab": false, "lastTab": null},
         "live": {"intervalMs": 1000},
         "theme": {"follow": null, "accent": null, "scheme": "dark"},
         "units": {"temperature": "c", "clock": "auto"},
@@ -434,6 +434,11 @@ mod tests {
             .collect();
         assert_eq!(names, ["config.json"]);
         act::remove_path(&d, false).unwrap();
+    }
+
+    #[test]
+    fn the_window_opens_as_a_normal_window_by_default() {
+        assert_eq!(defaults()["window"]["mode"], "window");
     }
 
     #[test]

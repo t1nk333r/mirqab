@@ -57,14 +57,21 @@ System) is done.
   key per CSS variable name. The view crate checks the file, and the
   window applies it and reloads it when the file changes.
 - The window is `mirqab-ui`. `mirqab open` starts it through
-  `mirqab-ui.service`. On a compositor with wlr-layer-shell, such as
-  Hyprland, it is a popover anchored to a screen corner (the top right by
-  default). Elsewhere, or with `--window`, it is a normal window. The
-  sidebar has sixteen tabs. A tab whose plan has not landed shows a
-  placeholder. The footer shows mirqab's own CPU and memory, the machine
-  line, and a Settings button. Escape or `mirqab close` hides the window,
-  and the process quits 60 s after it was last hidden. The `.desktop`
-  entry opens a window.
+  `mirqab-ui.service`. It is a normal window that the compositor tiles or
+  floats, 58 × 40 em at first; its header row drags it and ends with the
+  desktop's window buttons. The sidebar has sixteen tabs. A tab whose plan
+  has not landed shows a placeholder. The footer shows mirqab's own CPU
+  and memory, the machine line, and a Settings button. The close button,
+  Ctrl+W, the compositor's close key, the tray click or `mirqab close`
+  hides the window; the process quits 60 s after it was last hidden, and
+  until then the window comes back at the size it had.
+- Settings → Opens as → Popover (or `window.mode` set to `popover`)
+  makes it a popover anchored to a screen corner, on compositors with
+  wlr-layer-shell such as Hyprland. Escape closes a popover, and so does
+  moving keyboard focus away. With focus-follows-mouse (Hyprland's
+  `follow_mouse = 1`) that happens as soon as the pointer moves onto
+  another window; turn on Keep open (the pin in its header) or use the
+  window.
 - The System tab shows these cards: the overview (the thermal word,
   uptime, load and restart advice), CPU with its cores, memory, pressure,
   graphics (one section per GPU, at most two, as history keeps),
@@ -265,6 +272,20 @@ To toggle the window from a key in Hyprland:
 ```
 bind = SUPER, M, exec, mirqab toggle
 bind = SUPER SHIFT, M, exec, mirqab toggle system
+```
+
+`mirqab toggle` hides a shown window wherever it is, and shows a hidden
+one where you are, so a window left on another workspace comes to you on
+the second press. Hyprland tiles the window like any app. To float it
+instead, a rule in Hyprland's Lua config:
+
+```lua
+hl.window_rule({
+  name = "mirqab_float",
+  match = { class = "io\\.github\\.t1nk333r\\.mirqab" },
+  float = true,
+  center = true,
+})
 ```
 
 Coding agents can ask mirqab through its MCP server, `mirqab mcp`. It
