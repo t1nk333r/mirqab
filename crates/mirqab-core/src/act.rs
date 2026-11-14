@@ -4,9 +4,10 @@
 //! when `dry_run` is set.
 
 use crate::exec;
+use crate::guard;
 use crate::proto::strings;
 use crate::root::Root;
-use crate::samplers::apps::procfs;
+use crate::samplers::apps::{group, procfs};
 use crate::sys;
 use serde_json::{Value, json};
 use std::os::fd::{AsFd, OwnedFd};
@@ -82,6 +83,183 @@ pub trait Sender: Send + Sync {
     fn send(&self, handle: Option<&OwnedFd>, target: Target, sig: Signal) -> std::io::Result<()>;
     /// A command for an action (`systemctl --user stop`).
     fn run(&self, argv: &[&str], timeout: Duration) -> Result<exec::Output, String>;
+    /// The active units a stop of the user unit `unit` takes down with it,
+    /// one level deep: those that name it in `Requires=`, `Requisite=`,
+    /// `BindsTo=` or `PartOf=` (its `RequiredBy`, `RequisiteOf`, `BoundBy`
+    /// and `ConsistsOf`), and those it names in `PropagatesStopTo=`
+    /// (`man systemd.unit`). Err when it cannot be told (plan 006, part 3,
+    /// decision 9). A read, but on the sender so a fixture root asks no
+    /// real service manager.
+    fn unit_dependents(&self, root: &Root, unit: &str) -> Result<Vec<String>, String>;
+}
+
+/// How long each `systemctl show` of `unit_dependents` may take.
+const SHOW_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// A unit state that a stop still changes.
+fn is_active(state: &str) -> bool {
+    matches!(state, "active" | "activating" | "reloading" | "refreshing")
+}
+
+/// A name `systemctl` may be handed as a unit: unit-name characters and a
+/// type suffix, nothing that could read as an option or a path.
+pub(crate) fn unit_like(name: &str) -> bool {
+    !name.starts_with('-')
+        && name.contains('.')
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || ":_.@\\-".contains(c))
+}
+
+/// The elements of a list value of `systemctl show`, by systemd's quoting
+/// (`shell_maybe_quote` on each element, review of PR #18): elements are
+/// separated by spaces or tabs; a bare element is taken as it is,
+/// backslashes included, and holds no `"`; a quoted one runs from `"` to
+/// the next `"` with no backslash before it, followed by whitespace or the
+/// end, and inside it a backslash before `"`, `\`, `` ` `` or `$` gives that
+/// character. Nothing else is decoded: `\x2d` is part of a unit's name and
+/// goes back to `systemctl` as it is. Anything else is None.
+pub fn show_words(val: &str) -> Option<Vec<String>> {
+    let mut out = Vec::new();
+    let mut it = val.chars().peekable();
+    loop {
+        while it.peek().is_some_and(|c| *c == ' ' || *c == '\t') {
+            it.next();
+        }
+        let Some(&first) = it.peek() else {
+            return Some(out);
+        };
+        let mut word = String::new();
+        if first == '"' {
+            it.next();
+            loop {
+                match it.next()? {
+                    '"' => break,
+                    '\\' => match it.next()? {
+                        c @ ('"' | '\\' | '`' | '$') => word.push(c),
+                        _ => return None,
+                    },
+                    c => word.push(c),
+                }
+            }
+            if it.peek().is_some_and(|c| *c != ' ' && *c != '\t') {
+                return None;
+            }
+        } else {
+            while let Some(&c) = it.peek() {
+                if c == ' ' || c == '\t' {
+                    break;
+                }
+                if c == '"' {
+                    return None;
+                }
+                word.push(c);
+                it.next();
+            }
+        }
+        out.push(word);
+    }
+}
+
+/// The units in the `RequiredBy=`, `RequisiteOf=`, `BoundBy=`,
+/// `ConsistsOf=` and `PropagatesStopTo=` lines of `systemctl show`, each
+/// once, `unit` itself left out. The lines are read by key: systemd prints
+/// the properties in its own order, not the order of the `-p` flags
+/// (systemd 262, 2026-11-14), so `--value` would not say which line is
+/// which. A value that cannot be read (`show_words`), or a name mirqab
+/// would not pass back to `systemctl`, makes the whole question fail.
+pub fn dependents_named(show: &str, unit: &str) -> Result<Vec<String>, String> {
+    let mut out: Vec<String> = Vec::new();
+    for line in show.lines() {
+        let Some((key, val)) = line.split_once('=') else {
+            continue;
+        };
+        if !matches!(
+            key,
+            "RequiredBy" | "RequisiteOf" | "BoundBy" | "ConsistsOf" | "PropagatesStopTo"
+        ) {
+            continue;
+        }
+        let names = show_words(val).ok_or_else(|| strings::act_odd_dependent(val))?;
+        for name in names {
+            if !unit_like(&name) {
+                return Err(strings::act_odd_dependent(&name));
+            }
+            if name != unit && !out.contains(&name) {
+                out.push(name);
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// `unit_dependents` over a `show` that runs `systemctl` with an argv and
+/// gives its output: which units name `unit`, then which of them are
+/// active. `Real` passes `exec::run`; tests pass a closure.
+pub fn dependents_via(
+    show: &dyn Fn(&[&str]) -> Result<String, String>,
+    unit: &str,
+) -> Result<Vec<String>, String> {
+    if !unit_like(unit) {
+        return Err(strings::act_odd_dependent(unit));
+    }
+    let named = dependents_named(
+        &show(&[
+            "systemctl",
+            "--user",
+            "show",
+            "-p",
+            "RequiredBy",
+            "-p",
+            "RequisiteOf",
+            "-p",
+            "BoundBy",
+            "-p",
+            "ConsistsOf",
+            "-p",
+            "PropagatesStopTo",
+            "--",
+            unit,
+        ])?,
+        unit,
+    )?;
+    if named.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut argv = vec![
+        "systemctl",
+        "--user",
+        "show",
+        "-p",
+        "Id",
+        "-p",
+        "ActiveState",
+        "--",
+    ];
+    argv.extend(named.iter().map(String::as_str));
+    Ok(active_ids(&show(&argv)?))
+}
+
+/// The `Id=` of each block of `systemctl show -p Id -p ActiveState` whose
+/// state a stop still changes.
+pub fn active_ids(show: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let (mut id, mut state): (Option<&str>, Option<&str>) = (None, None);
+    for line in show.lines().chain([""]) {
+        if line.trim().is_empty() {
+            if let (Some(i), Some(st)) = (id, state)
+                && is_active(st)
+            {
+                out.push(i.to_string());
+            }
+            (id, state) = (None, None);
+        } else if let Some(v) = line.strip_prefix("Id=") {
+            id = Some(v.trim());
+        } else if let Some(v) = line.strip_prefix("ActiveState=") {
+            state = Some(v.trim());
+        }
+    }
+    out
 }
 
 /// The live machine: pidfd_open, then pidfd_send_signal (sys.rs).
@@ -103,6 +281,19 @@ impl Sender for Real {
 
     fn run(&self, argv: &[&str], timeout: Duration) -> Result<exec::Output, String> {
         exec::run(argv, None, timeout).map_err(|e| e.to_string())
+    }
+
+    /// Two reads of the user's service manager, 2 s each: which units name
+    /// `unit`, then which of them are active.
+    fn unit_dependents(&self, _root: &Root, unit: &str) -> Result<Vec<String>, String> {
+        let show = |argv: &[&str]| -> Result<String, String> {
+            match exec::run(argv, None, SHOW_TIMEOUT) {
+                Ok(out) if out.success() => Ok(out.stdout),
+                Ok(out) => Err(out.stderr.trim().to_string()),
+                Err(e) => Err(e.to_string()),
+            }
+        };
+        dependents_via(&show, unit)
     }
 }
 
@@ -170,6 +361,30 @@ impl Sender for Recording {
             stdout: String::new(),
             stderr: String::new(),
         })
+    }
+
+    /// The fixture's answer, `run/mirqab-test/dependents/<unit>` under the
+    /// root: one `<unit> <ActiveState>` a line. No file is no dependents;
+    /// a file that cannot be read is a question that failed. Nothing is
+    /// asked of a real service manager, and nothing is recorded: it is a
+    /// read.
+    fn unit_dependents(&self, root: &Root, unit: &str) -> Result<Vec<String>, String> {
+        if !unit_like(unit) {
+            return Err(strings::act_odd_dependent(unit));
+        }
+        let text = match root.read(&format!("run/mirqab-test/dependents/{unit}")) {
+            Ok(t) => t,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(e) => return Err(e.to_string()),
+        };
+        Ok(text
+            .lines()
+            .filter_map(|l| {
+                let mut w = l.split_whitespace();
+                let (name, state) = (w.next()?, w.next()?);
+                (name != unit && is_active(state)).then(|| name.to_string())
+            })
+            .collect())
     }
 }
 
@@ -259,6 +474,10 @@ pub fn refusal(root: &Root, guard: &Guard, pid: u32, facts: &Facts) -> Option<St
         .any(|w| w[0] == manager && w[1] == "init.scope")
     {
         return Some(strings::refuse_user_manager(pid));
+    }
+    // The session bus ends the session (owner, 2026-11-14, plan 006 Q2).
+    if let Some(unit) = group::host_service(&cgroup).filter(|u| guard::is_session_bus(u)) {
+        return Some(strings::refuse_session_bus(pid, unit));
     }
     guard
         .refused
@@ -562,6 +781,183 @@ mod tests {
         assert!(rec.lines().is_empty(), "a dry run sends nothing");
         signal(&root, &rec, &guard, t(4242), Signal::Term, false).unwrap();
         assert_eq!(rec.lines(), ["TERM 4242 500"]);
+        remove_path(&d, false).unwrap();
+    }
+
+    #[test]
+    fn dependents_are_read_by_key_and_only_active_ones_count() {
+        // The order systemd 262 printed for `-p ConsistsOf -p RequiredBy
+        // -p BoundBy` on the development machine (2026-11-14).
+        let show = "RequiredBy=\nBoundBy=wireplumber.service pipewire-pulse.service\nConsistsOf=\n";
+        assert_eq!(
+            dependents_named(show, "pipewire.service").unwrap(),
+            ["wireplumber.service", "pipewire-pulse.service"]
+        );
+        assert_eq!(
+            dependents_named(
+                "ConsistsOf=a.service x.service\nRequiredBy=a.service\nId=x.service\n",
+                "x.service"
+            )
+            .unwrap(),
+            ["a.service"]
+        );
+        let states = "Id=wireplumber.service\nActiveState=active\n\nId=pipewire-pulse.service\nActiveState=inactive\n\nId=b.service\nActiveState=activating";
+        assert_eq!(active_ids(states), ["wireplumber.service", "b.service"]);
+        assert!(unit_like("app-two\\x2dwords@1.service"));
+        assert!(!unit_like("-H.service"));
+        assert!(!unit_like("../x.service"));
+        assert!(!unit_like("plain"));
+    }
+
+    #[test]
+    fn show_words_follow_systemds_quoting_and_decode_no_escapes() {
+        // The value as the file text: a quote, then two backslashes.
+        let val = r#"plain.service "app-two\\x2dwords@autostart.service" other.scope"#;
+        assert_eq!(
+            show_words(val).unwrap(),
+            [
+                "plain.service",
+                r"app-two\x2dwords@autostart.service",
+                "other.scope"
+            ]
+        );
+        assert_eq!(show_words(r#""a\"b""#).unwrap(), [r#"a"b"#]);
+        assert_eq!(show_words(r#""\`\$""#).unwrap(), ["`$"]);
+        assert_eq!(
+            show_words(r"a\x2db.service").unwrap(),
+            [r"a\x2db.service"],
+            "a bare element is kept as it is"
+        );
+        assert_eq!(show_words("").unwrap(), Vec::<String>::new());
+        assert_eq!(show_words(" \t ").unwrap(), Vec::<String>::new());
+        for bad in [r#""open"#, r#""a\nb""#, r#""a"b"#, r#"a"b"#] {
+            assert_eq!(show_words(bad), None, "{bad}");
+        }
+    }
+
+    /// A `systemctl show` answer in systemd 262's format, with synthetic
+    /// names: list values quoted per element where they need it.
+    const SHOW_DEPS: &str = "RequiredBy=\nRequisiteOf=\nBoundBy=one.service\nConsistsOf=plain.service \"app-two\\\\x2dwords@autostart.service\"\nPropagatesStopTo=\n";
+
+    #[test]
+    fn dependents_are_read_from_every_stop_property_quoted_or_not() {
+        let names = dependents_named(SHOW_DEPS, "x.service").unwrap();
+        assert_eq!(
+            names,
+            [
+                "one.service",
+                "plain.service",
+                r"app-two\x2dwords@autostart.service"
+            ]
+        );
+        assert!(names.iter().all(|n| unit_like(n)));
+        let more = "RequiredBy=\nRequisiteOf=req.service\nBoundBy=one.service\nConsistsOf=\nPropagatesStopTo=prop.service\nWantedBy=w.service\n";
+        assert_eq!(
+            dependents_named(more, "x.service").unwrap(),
+            ["req.service", "one.service", "prop.service"],
+            "WantedBy does not stop with it"
+        );
+        assert!(dependents_named("BoundBy=\"open\n", "x.service").is_err());
+        assert!(dependents_named("BoundBy=-x.service\n", "x.service").is_err());
+    }
+
+    #[test]
+    fn dependents_via_asks_twice_and_keeps_the_active_ones() {
+        let calls: Mutex<Vec<Vec<String>>> = Mutex::new(Vec::new());
+        let answer = |argv: &[&str]| -> Result<String, String> {
+            let mut c = calls.lock().unwrap();
+            c.push(argv.iter().map(|a| a.to_string()).collect());
+            Ok(if c.len() == 1 {
+                SHOW_DEPS.to_string()
+            } else {
+                "Id=app-two\\x2dwords@autostart.service\nActiveState=active\n\nId=one.service\nActiveState=inactive\n".to_string()
+            })
+        };
+        assert_eq!(
+            dependents_via(&answer, "x.service").unwrap(),
+            [r"app-two\x2dwords@autostart.service"]
+        );
+        let calls = calls.into_inner().unwrap();
+        assert_eq!(
+            calls[0].join(" "),
+            "systemctl --user show -p RequiredBy -p RequisiteOf -p BoundBy -p ConsistsOf -p PropagatesStopTo -- x.service"
+        );
+        assert_eq!(
+            calls[1].join(" "),
+            r"systemctl --user show -p Id -p ActiveState -- one.service plain.service app-two\x2dwords@autostart.service"
+        );
+        let never = |_: &[&str]| -> Result<String, String> { panic!("no call for an odd unit") };
+        assert!(dependents_via(&never, "-x.service").is_err());
+        assert!(dependents_via(&never, "plain").is_err());
+        let fails = |_: &[&str]| -> Result<String, String> { Err("no manager".into()) };
+        assert_eq!(
+            dependents_via(&fails, "x.service"),
+            Err("no manager".into())
+        );
+    }
+
+    #[test]
+    fn the_session_bus_is_never_signalled() {
+        let d = scratch("bus");
+        let user = "/user.slice/user-1000.slice/user@1000.service";
+        procs(
+            &d,
+            &[
+                (
+                    4242,
+                    "dbus-broker",
+                    0,
+                    [1000; 4],
+                    &format!("{user}/session.slice/dbus-broker.service"),
+                ),
+                (
+                    4343,
+                    "dbus-daemon",
+                    0,
+                    [1000; 4],
+                    &format!("{user}/session.slice/dbus.service"),
+                ),
+                (
+                    4545,
+                    "dbus-daemon",
+                    0,
+                    [1000; 4],
+                    &format!("{user}/session.slice/dbus-daemon.service"),
+                ),
+                (
+                    4444,
+                    "pipewire",
+                    0,
+                    [1000; 4],
+                    &format!("{user}/session.slice/pipewire.service"),
+                ),
+            ],
+        );
+        let root = Root::new(&d);
+        let guard = Guard {
+            own_uid: 1000,
+            daemon: vec![],
+            refused: vec![],
+        };
+        let rec = Recording::default();
+        let t = |pid| Target { pid, start: 500 };
+        for (pid, unit) in [
+            (4242, "dbus-broker.service"),
+            (4343, "dbus.service"),
+            (4545, "dbus-daemon.service"),
+        ] {
+            assert_eq!(
+                signal(&root, &rec, &guard, t(pid), Signal::Term, false),
+                Err(ActError::Refused(strings::refuse_session_bus(pid, unit)))
+            );
+        }
+        assert!(rec.lines().is_empty());
+        signal(&root, &rec, &guard, t(4444), Signal::Term, false).unwrap();
+        assert_eq!(
+            rec.lines(),
+            ["TERM 4444 500"],
+            "the sound server may be quit"
+        );
         remove_path(&d, false).unwrap();
     }
 

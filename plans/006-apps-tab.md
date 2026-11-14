@@ -10,8 +10,10 @@
 - **Depends on**: 001, 005
 - **Category**: tab
 - **Planned at**: 2026-11-13, from the owner
-- **State**: IN PROGRESS (parts 1 and 2 of 4: sampler, inspector, read CLI
-  and MCP; Quit and Force quit, `mirqab quit`)
+- **State**: IN PROGRESS (parts 1, 2 and 3a of 4: sampler, inspector, read
+  CLI and MCP; Quit and Force quit, `mirqab quit`; the daemon side of the
+  page: the `process` stream, start times, the units a stop takes with
+  it, the session bus refused. Part 3b, the page, is next)
 
 ## Problem
 
@@ -473,19 +475,416 @@ The dialog is part 3. In part 2 the owner runs, on their own session:
   Force quit would report `failed` and exit 1 although the unit stopped.
   To be settled by the owner's acceptance run (checklist 3h).
 
-#### Known limits (part 2)
+#### Known limits (part 3a)
 
-Written down by the review of PR #17 (K8); the fixes are deferred (D1):
+Written down by the review of PR #17 (K8) as "Known limits (part 2)";
+part 3a (checklist 6c) closed the first level of dependents and the
+session bus, and this is what is left:
 
-- `systemctl stop` also stops units tied to this one by `Requires=`,
-  `BindsTo=` or `PartOf=`; their processes are not in `wouldDo` and no
-  refusal sees them.
-- Quit of a service is `stop`, which runs `ExecStop=` and ends in SIGKILL
-  after `TimeoutStopSec`.
-- Session services (the session bus, the audio server) are not refused.
+- Only the first level of units a stop takes with it is asked about and
+  refused: a dependent's own dependents are not walked, and their
+  processes are not in `wouldDo`. A dependent `.target` (or any unit)
+  takes its own dependents with it, unlisted; a target has no processes
+  and shows as "(0 processes)" (review of PR #18, deferred to 6e).
+- Quit of a service is `stop` (owner, Q1), which runs `ExecStop=` and ends
+  in SIGKILL after `TimeoutStopSec`.
 - For a unit the refusals are checked at each resolution, but `systemctl`
   acts on the unit by name: there is no pidfd and start-time binding at
-  the moment of the command, as there is for a signal.
+  the moment of the command, as there is for a signal. The dependents are
+  asked again at the confirmation, and one the plan did not show refuses
+  it (review of PR #18); one that starts depending between that question
+  and the `stop` is still not seen.
+- The session bus is recognised by its unit name only
+  (`guard::SESSION_BUS`); a bus started by hand in some other unit
+  (`dbus-run-session`, `dbus-launch`) is not. A check by command name
+  would be a new owner question (review of PR #18, deferred to step 7).
+
+
+### Part 3: the page (design)
+
+Planner's brief, 2026-11-14 (Fable). Evidence lines in this section are
+from `origin/plan-006-apps-part2` (PR #17); where the build differs, "As
+built (part 3a)" says so.
+
+
+The Apps page, its inspector with Quit and Force quit, and the `apps.top`
+card for Home. It adds three small things to the daemon, because the page
+cannot be built correctly without them: a one-process sample that may run
+live (decision 3), the start time of each listed process (decision 5), and
+the units a service stop takes with it (decision 9, which settles D1).
+
+#### What exists, and what is missing
+
+| Need | Today | Evidence |
+|------|-------|----------|
+| The tab | `apps` is in `TABS` but not `.built()`, so it shows the placeholder | `crates/mirqab-view/src/shell.rs:63`, `crates/mirqab-ui/src/tabs/mod.rs:53-63` |
+| The list | The `apps` stream gives groups, and every process of a group named in `expand` (or all, with `true`) | `crates/mirqab-proto/src/stream.rs:245-306`, `crates/mirqab-core/src/samplers/apps/mod.rs:259-306` |
+| One view per subscriber | The daemon shapes each subscriber's frame from its params, but keeps one subscription per stream and connection | `crates/mirqab-core/src/server.rs:582-634`, architecture §5.2 ("Subscribing again to the same stream replaces the params") |
+| Two consumers in the interface | The client merges the handles of a stream: shortest interval, `live` if any, and **the first handle's other params win** | `crates/mirqab-ui/src/client.rs:49-58` |
+| Row identity | A listed process has a pid but no start time; the sampler has both | `stream.rs:297-306`; `samplers/apps/mod.rs:48-62`, `procfs.rs:34,199` |
+| The inspector's text | `get apps.inspect {pid}` | `stream.rs:321-388`, `samplers/apps/mod.rs:379-406` |
+| The inspector's 1 s graph | Promised twice, served by nothing: `Apps::live()` is the default `false`, and the stream is the whole walk | plan 006 "Stream apps"; architecture §5.3 lines 391-392; `crates/mirqab-core/src/sampler.rs:23-25` |
+| A live graph with params | `Graph` subscribes live with no params; only it may | `crates/mirqab-ui/src/widgets/graph.rs:329-342`, `client.rs:122-133`, `tools/lint.sh:175-181` |
+| Quit and Force quit | The two-step flow; `needs-confirm` carries `plan`, `wouldDo`, `skipped`; the reply carries `recorded` | `samplers/apps/actions.rs:691-706,838-867`, `server.rs:1267-1283` |
+| Reading an error's data in the interface | `request` hands the reply's `ErrorBody` (code, message, data) to its callback | `client.rs:247` |
+| A confirm dialog | `confirm_dialog(heading, would_do)` exists and is presented nowhere yet; its lines are the generic `key value` join | `crates/mirqab-ui/src/widgets/confirm_dialog.rs:17`, `crates/mirqab-view/src/shell.rs:191-204`, `crates/mirqab-ui/tests/widgets.rs:290-304` |
+| A service's dependents | Not known to the daemon; `wouldDo` shows one `run` entry | `actions.rs:250-270,286-305`; "Known limits (part 2)" |
+| App icons | The stream carries the desktop entry's `Icon=`; the interface draws Nerd Font glyphs only | `stream.rs:259-260`; architecture §7.2 lines 643-647; `crates/mirqab-ui/src/widgets/icon.rs:8` |
+| Cards | `cards::all()` is the System tab's cards only; Home subscribes to its cards' streams with no params | `crates/mirqab-view/src/cards.rs:27-29`, `crates/mirqab-ui/src/tabs/home/page.rs:132-153` |
+| A selftest that acts | `--selftest <tab>` prints one tree after the first data; it cannot type, select or press | `crates/mirqab-ui/src/selftest.rs:18-83` |
+| A test caller for the interface | `MIRQAB_CALLER_PID` on a fixture root; without it the interface's real pid has no `proc/<pid>/stat` there and every action is refused | `server.rs:1380-1399` |
+
+#### Decisions
+
+1. **The page asks for everything once and the view model does the rest.**
+   The page subscribes to `apps` at 2000 ms with
+   `{"limit": 1000, "expand": true}` and never changes those params.
+   Search, sort (CPU, memory, name), flatten and expanding a group are
+   pure functions in `crates/mirqab-view/src/tabs/apps.rs` over the last
+   frame, so each answers at once and none costs a subscribe. A
+   re-subscribe would make the daemon sample at once
+   (`server.rs:565-571`), and a CPU figure over a baseline as short as
+   `MIN_GAP` (1 s, `server.rs:50`) is coarse. The sort uses the daemon's
+   own order (`mod.rs:279-289`: lower-cased name, then the name, then the
+   id; ties in CPU and memory by name), and a view-model test holds the
+   two to the same answer on the golden frame. When
+   `totals.groups` exceeds what arrived, the list ends with
+   `strings::apps_more(n)`'s wording for the page.
+   The daemon builds every process for every sample whatever a view asks
+   (`mod.rs:147-208`), so `expand: true` adds bytes on the socket and a
+   parse in the interface, not a second walk.
+
+2. **One subscription, merged by a rule the stream owns.** The client
+   gets `Client::set_merge(stream, fn(&[Value]) -> Value)`; `wanted()`
+   (`client.rs:49-58`) calls it for the handles' params instead of taking
+   the first. `mirqab_view::tabs::apps::merge_params` is registered for
+   `apps` in `app.rs`: the largest `limit` (absent is the daemon's 50),
+   `expand` is `true` if any asks `true`, otherwise the union of the id
+   lists; `sort` is never sent. A stream with no rule keeps today's
+   behaviour. The card on Home needs no params at all (decision 8), so
+   Home's plain `Source::subscribe` (`home/page.rs:139`) stays as it is,
+   and a consumer that receives more than it asked for takes what it
+   needs. The page and Home are never mapped together, but both handles
+   exist for a moment while the stack switches, and "first handle wins"
+   would then send the page a frame of 50 unexpanded groups.
+
+3. **The live graph is a new stream, `process`.** One sampler,
+   `crates/mirqab-core/src/samplers/process.rs`, `live()` true:
+   - params `{"pid": N}`; a subscribe without a valid `pid` is
+     `bad-request` (a new `Sampler::accepts(&Value) -> Result<(), String>`,
+     default `Ok`, called by `subscribe` and `get`);
+   - each tick it reads `proc/<pid>/stat` and `proc/<pid>/statm` for each
+     distinct pid its subscribers named, eight at most, through `Root`
+     and the parsers of `samplers/apps/procfs.rs`. The loop already
+     collects the distinct params before it samples (`server.rs:582-591`);
+     a new `Sampler::wants(&mut self, &[Value])`, default empty, hands
+     them over;
+   - a subscriber's view is
+     `{"pid":2001,"start":5010,"name":"browser","cpu":3.1,"rssBytes":…,"threads":12,"state":"S"}`,
+     `cpu` null on its first reading, or `{"pid":2001,"gone":true}` once
+     the pid is gone or its start time changed. The baseline is keyed by
+     pid and start time, as the `apps` sampler's is (`mod.rs:47-62`);
+   - it has its own lock, so a 1 s reading never waits behind the `apps`
+     walk, `get apps`' half-second sleep or the inspector's `pacman`
+     (deferred D1 of PR #16).
+   `stat` and `statm` are world-readable, so another user's process can be
+   graphed, as the System group already shows its figures. The stream
+   reads nothing else and takes no action; it joins `stream::STREAMS`,
+   `capabilities`, and architecture §5.3, where "the Apps inspector's
+   single-process sample" becomes its row.
+   In the interface `graph::Live` gains `params: Value`, and
+   `Source::subscribe_live(stream, params, on_event)` passes them;
+   `widgets/graph.rs` stays the one caller (lint unchanged). The
+   inspector's graph has no range picker: its range is `2m`, live only,
+   and nothing is stored (plan 006, "No per-app series").
+
+4. **What the inspector graphs.** A selected process row: that pid, live
+   from `process`, two series off one event (CPU on a 0–100 scale that
+   grows past 100, memory as text beside it, not a second line). A
+   selected group row: the group's CPU from the `apps` frames, pushed
+   into the same widget every 2 s with `Graph::push_live`
+   (`graph.rs:348`), with no live subscription; a group is many pids, and
+   the live rule buys one. The graph's accessible name says which it is.
+   When `process` is not in `capabilities` the process graph falls back
+   to the 2 s figures of its row.
+
+5. **Row keys (D5).** `AppProcess` gains `start` (clock ticks since boot,
+   the value `wouldDo` already carries). A process row's key is
+   `(pid, start)`. A group row's key is a number the view model assigns:
+   a group in a new frame keeps the key of the previous frame's group
+   with the same `id` **only if they share at least one `(pid, start)`**;
+   otherwise it is a new row with a new key. `system` always keeps its
+   key. So a `session:<sid>` or `tree:<pid>` id that a new session or a
+   reused pid takes over starts collapsed and unselected, and the
+   inspector of the old one closes with `strings::APPS_ROW_GONE`.
+   Expansion, selection and the pending dialog all hang on keys, never on
+   ids or bare pids. Before the first call of Quit on a process row the
+   interface compares its row's `start` with the `wouldDo` entry's; when
+   they differ it shows `APPS_ROW_GONE` and asks nothing.
+
+6. **The list is a `gtk::ListView` over a flat model.** The view model
+   returns `Vec<Row>` (`Row::Group` or `Row::Process`, in display order,
+   a group's processes after it when it is open; in flatten mode process
+   rows only, each with its group's name dimmed). The store holds one
+   plain object per position; each frame writes row `i` into object `i`
+   and notifies only when the row changed, and the store grows or shrinks
+   at its end. Bound list items redraw; nothing is reordered, so the
+   scroll position holds. Each list item holds one `GroupRow` and one
+   `ProcessRow` and shows the one its row is (one type per file,
+   §7.2). `gtk::NoSelection` with single-click activate: the selected key
+   lives in the view state and the row carries the `selected` class and
+   `Property::Selected` for assistive technology. Cost follows the rows on
+   screen, not the processes on the machine.
+
+7. **Rows.** Group: expander button (hidden when it has one process),
+   icon, name, CPU meter and number, memory, process count. Process: name,
+   pid, CPU, memory, state when it is not `S` or `R`. The meter is the
+   existing `Meter` (`widgets/meter.rs`), full at 100 % of one core; the
+   number is percent of one core and may pass 100, as `mirqab apps`
+   prints it, and it is the meter's value text. Every string from
+   `strings.rs`; `plain()` (`strings.rs:1281`) on every name, as the CLI
+   does.
+
+8. **Icons.** A group's `icon` is drawn with `gtk::Image` from the icon
+   theme when it is a theme name the display's `gtk::IconTheme` has
+   (`has_icon`); a value containing `/` is never loaded: the interface
+   reads no file the daemon's data names. Otherwise the row shows a glyph
+   for its kind (new constants in `icons.rs`: app, service, terminal,
+   container, flatpak, process, system). Size in em, role presentation.
+   Architecture §7.2's icon rule gains one sentence: "the Apps tab's rows
+   show an app's own icon from the icon theme, by name".
+
+9. **A service's dependents (D1).** For a `Step::Unit` the daemon asks
+   which units a stop takes down: `systemctl --user show -p RequiredBy
+   -p BoundBy -p ConsistsOf --value -- <unit>`, then `show -p Id -p
+   ActiveState` for those names, through `exec.rs`, 2 s each, one level
+   deep. This goes on the `Sender` trait (`act.rs:73-91`): the real
+   sender runs the commands; `Recording` answers from the fixture root
+   (`run/mirqab-test/dependents/<unit>`, one unit a line), so a fixture
+   root still runs nothing. The `run` entry of `wouldDo` gains
+   `"alsoStops": ["b.service", …]` (active ones only), or
+   `"alsoStopsUnknown": true` when the question failed. Then:
+   - the processes of a dependent **service** are found by cgroup as the
+     unit's own are (`actions.rs:478-483`) and pass the same refusals; a
+     refused one refuses the stop whole, with
+     `strings::refuse_unit_dependent(unit, dependent, why)`. This closes
+     "no refusal sees them" for the first level;
+   - the dialog and `mirqab quit` print one line per dependent ("also
+     stops b.service (2 processes)"), or "other services that depend on
+     it may stop too" when unknown;
+   - deeper levels are not walked; "Known limits" keeps that sentence.
+   Quit stays `stop` (owner, Q1), and only the session bus is denied by
+   name (owner, Q2): see "Owner decisions (part 3)" below.
+
+10. **The inspector is a side sheet in the window.** The page's root is
+    an `adw::OverlaySplitView` with the sidebar at the end, shown while a
+    row is selected and collapsed (overlaid) under 60 em of page width.
+    It is in the window's widget tree, so the selftest sees it, and in a
+    popover it takes no focus away (`window.rs:280-298` closes a popover
+    on focus loss). Content, top to bottom: icon, name, kind; the verdict
+    sentence; the graph; CPU, memory, threads, processes from the row;
+    then `get apps.inspect {pid}` once per selection and on the refresh
+    button (never on a timer): parents, user, started, executable,
+    package, unit, sandbox, memory, files, each row left out when the
+    daemon left it out. A group selection inspects the group's main
+    process: the member whose parent is not a member, lowest pid on a
+    tie (`apps::main_pid`, from `ppid`).
+
+11. **Quit and Force quit.** Two buttons at the foot of the sheet. A
+    process row sends `{"pid": N}`, a group row `{"group": id}`.
+    - First call without `confirm`. `needs-confirm` opens
+      `confirm_dialog` with the heading `QUIT_WILL` or `FORCE_QUIT_WILL`
+      (`strings.rs:1427-1428`) and typed lines from
+      `apps::confirm_lines(data)`: one per `signal` entry (name, pid,
+      "asked for its thread" when `via` is set), one per `run` entry in
+      words ("stops x.service with systemctl, 3 processes") followed by
+      its pids and its `alsoStops` lines, then a "Left alone" block with
+      every `skipped` entry and its reason. `would_do_line` stays for
+      other actions.
+    - Go ahead sends the same `args` with `confirm: true` and the plan.
+      The reply is one line in the sheet: done, already gone, or each
+      `failed` entry with its error. `recorded: false` adds
+      `APPS_NOT_RECORDED` (the CLI's sentence without its `mirqab:`
+      prefix) as a warning line that stays until the selection changes.
+    - `refused`, `plan-expired` and any other error show the daemon's
+      message in the sheet, in words, with no dialog. The interface
+      repeats no refusal rule and asks no dry run on selection: the
+      compositor probe can block the connection's thread (deferred D2 of
+      PR #17).
+    - The System group and a process `apps.inspect` marks `limited` show
+      no buttons, and `APPS_NOT_YOURS` instead.
+    - The row that holds the interface itself (its pid is
+      `std::process::id()`, matched against the frame) says
+      `APPS_QUIT_SELF`: "Quit closes this window. The daemon keeps
+      running." The daemon's row needs nothing: the daemon refuses it in
+      words.
+    - After a Quit whose targets are still listed two frames later, the
+      sheet says `APPS_STILL_RUNNING` beside Force quit. The daemon does
+      not wait for exits (plan 006, Rejected, "Waiting for the processes
+      to exit").
+    - Dialog default and Escape are Cancel; Force quit's Go ahead is
+      destructive, as `confirm_dialog` already sets.
+
+12. **The card `apps.top`.** `apps::CARDS = [Card { id: "apps.top", tab:
+    "apps", streams: &["apps"], size: Size::Half }]`, chained into
+    `cards::all()`. It shows the five groups using the most CPU of
+    whatever frame arrives, System included when it is among them (a
+    root daemon eating a core must not be hidden): icon, name, meter,
+    CPU. Activating a row opens the Apps tab with that group selected
+    (`Ctx` keeps a pending group id; the page resolves it on its next
+    frame). It is appended to `home::SEED` (plan 003: "Later plans append
+    their headline card to the seed list"); a config already seeded is
+    not touched. The Apps page's toolbar carries the pin control with the
+    existing `PIN_TO_HOME` / `UNPIN_FROM_HOME`.
+
+13. **What the page remembers.** Sort, the flatten switch, open groups
+    and the selection live in an `AppsState` on `Ctx`, so they survive the
+    page being dropped on hide and end with the interface process. The
+    search field starts empty each time.
+
+14. **Subscription lifetime.** The page subscribes on map and drops on
+    unmap, as System does (`tabs/system/page.rs`); the card is Home's.
+    `process` exists only while the inspector's graph is mapped with a
+    process selected. Closing the window ends all three.
+
+15. **A selftest that can act.** `mirqab-ui --selftest <tab> --do STEPS`
+    (accepted only with `MIRQAB_TEST=1`): steps separated by `;`, run in
+    order after the page's first data, the tree printed after the last.
+    `type NAME TEXT`, `activate NAME`, `respond ID` (the open alert
+    dialog's response), `wait NAME` (a visible widget of that name, 5 s).
+    `NAME` is the widget name the dump already prints
+    (`selftest.rs:100-103`); the page names `apps-search`,
+    `apps-group:<id>`, `apps-process:<pid>`, `apps-inspector`,
+    `apps-quit`, `apps-force-quit`, `apps-result`. Architecture §7.5 gains
+    the paragraph.
+
+#### Rejected
+
+- **Per-view params from the page** (`sort`, `limit`, `expand` changed on
+  every click). Each change is a subscribe, an immediate sample over a
+  short baseline, and a merge problem with the card. The daemon's
+  per-subscriber views stay for the CLI and MCP.
+- **A second connection for the card or the inspector.** Two sockets, two
+  reconnect states, and the daemon would count two interfaces.
+- **Keyed subscriptions in the protocol** (several per stream and
+  connection). A protocol change for one tab; the merge rule is six lines.
+- **Polling `get apps.inspect` every second for the graph.** It runs
+  `pacman`, reads `fdinfo`, holds the `apps` sampler's lock, and would be
+  a sampler in the interface (§7.2 timers).
+- **`live` on the `apps` stream with a `watch` pid.** The stream is the
+  whole walk; 1 s of it is what §5.3 forbids.
+- **A group's live graph** (every member each second). Unbounded pids; a
+  browser is forty reads a second.
+- **`gtk::ListBox` with a widget per process.** Four hundred processes
+  are some four thousand widgets and a relayout every 2 s.
+- **`gtk::TreeListModel` with `TreeExpander`.** It wants the model to own
+  expansion; the view model already does, and tests it without GTK.
+- **A dry run on every selection to grey the buttons out.** A resolve and
+  a compositor probe per click on a row; the refusal in words after the
+  press is enough.
+- **Loading an icon by path.** The interface would read a file named by a
+  desktop entry.
+- **Sort and flatten in the config.** Two keys and their validation for a
+  preference nobody has asked to keep.
+- **Refusing a service whose dependents cannot be listed.** Where
+  `systemctl` cannot answer, `stop` fails too; the dialog says the list
+  is unknown.
+
+#### Tests
+
+| Test | Checks |
+|------|--------|
+| `crates/mirqab-view/tests/apps.rs` (new) | On `tests/golden/apps.json` with `expand: true`: each sort equals the daemon's `view` for the same sort; search by group name, by member name and by pid; flatten; open and closed groups; the "more" line; `main_pid`; `top_five` with and without System; `merge_params` (largest limit, `expand` union, `true` wins, no params is 50) |
+| same | Keys: a group keeps its key across frames with a shared `(pid, start)`; the same `session:` id with no shared member gets a new key and loses expansion and selection; a pid with a new start is a new process row |
+| same | `confirm_lines`: a signal entry, a `via` entry, a `run` entry with pids and `alsoStops`, `alsoStopsUnknown`, the skipped block; the result line for done, gone, failed, and `recorded: false`; control characters in a name come out as U+FFFD |
+| `crates/mirqab-core/tests/apps.rs` | The `process` stream: figures for a fixture pid across `.t1`; `gone` for a missing pid and for a changed start; no `pid` is `bad-request`; `start` in every listed process |
+| `crates/mirqab-core/tests/actions.rs` | `alsoStops` from the fixture answer; an inactive dependent left out; a dependent holding a refused process refuses the stop; a failed question gives `alsoStopsUnknown` and still plans |
+| `crates/mirqab-core/tests/protocol.rs` (D6) | A re-subscribe with new params changes the next frame and leaves no old view behind; unsubscribe removes it; two subscribers that differ only in interval get the same line; `process` at 1000 ms only with `live` |
+| `crates/mirqab-ui/tests/widgets.rs` | The fake `Source` gains `request` and live params. The inspector with a fake that answers `needs-confirm`: the dialog's body lists every pid; Go ahead sends `confirm` and the plan; `refused` shows the message and opens nothing; the process graph is live only while mapped and drops on a group selection; a row draws no blur |
+| `tests/test-ui-apps.sh` (`--selftest apps` on `root-desktop`, `MIRQAB_CALLER_PID` a fixture shell, `MIRQAB_ACT_LOG` set) | The groups of the golden frame are listed, System last; `type apps-search Browser` leaves one group; `activate apps-group:…` shows the inspector with the verdict; `activate apps-quit` shows a dialog naming pids 2000, 2001, 2010, 2011, 2012; `respond confirm` writes five TERM lines to the act log and the result line; Quit on pid 410 shows the refusal in words and no dialog; `status` counts one `apps` subscriber while the page is shown and none after `close`, and one `process` subscriber only while a process is selected |
+| `tests/test-ui-home.sh` | `apps.top` pinned shows five rows; a fresh config seeds four cards. Its "placeholder" step moves from `apps` to a tab that is still one |
+| `tests/test-cli.sh` | `mirqab quit` on the fixture service prints the "also stops" line |
+
+Affected scope only (`tests/run.sh --affected`); the new files carry
+`# mirqab:covers` for `crates/mirqab-ui/src/tabs/apps/**`,
+`crates/mirqab-view/src/tabs/apps.rs` and
+`crates/mirqab-core/src/samplers/process.rs`.
+
+#### Cost
+
+To measure and record in "As built (part 3)", not gated here (the
+benchmark is part 4's step 9):
+
+- the size of one `apps` frame with `expand: true` on `root-desktop` and
+  on the development machine, and the interface's CPU while the page is
+  shown and idle (`tools/bench-idle.sh` reads the daemon; the interface is
+  `pidstat -p $(pgrep -x mirqab-ui) 10 1`);
+- the interface's RSS with Apps open against System open (§9.1: reported,
+  not gated);
+- the daemon's CPU with one `process` subscriber at 1 s: two small reads a
+  second, expected under 0.1 % of a core;
+- window closed: no `apps` and no `process` subscriber, from `mirqab
+  status --json`.
+
+#### Acceptance (part 3)
+
+Headless, in CI: every row of the table above.
+
+Owner checks on the development machine (they need a real session, icon
+theme and compositor):
+
+1. The list shows recognisable apps with their own icons, terminal jobs
+   by name and System last; sorting, search and "show processes" answer
+   at once; rows are still easy to click while the order changes every
+   2 s under the CPU sort.
+2. Selecting a row opens the sheet; the graph of a process moves once a
+   second and stops when the window hides (`mirqab status` shows no
+   `process` subscriber).
+3. Quit on a `sleep 1000` started by hand lists its pid and ends it; on a
+   root process the sheet says why not; on a `--user` service with a
+   dependent the dialog names the dependent.
+4. Quit on mirqab's own row says what it does, and does it.
+5. In a popover the dialog and the sheet do not close the popover.
+6. `apps.top` on Home shows five rows and opens the tab.
+
+#### One pull request or two
+
+Two. The daemon side stands alone and is reviewed for safety, as part 2
+was; the page is large and is reviewed for the interface rules.
+
+- **3a, daemon:** the `process` stream with `Sampler::wants` and
+  `accepts`; `start` in `AppProcess` (the golden file changes);
+  `alsoStops`, its refusal, and the two CLI lines; the D6 protocol tests;
+  architecture §5.3 and §5.4. No interface change.
+- **3b, interface:** the view model, the six files under `tabs/apps/`, the
+  client's merge rule and live params, the selftest steps, the card, the
+  seed, `.built()`, architecture §7.2 and §7.5, the user guide's Apps
+  page.
+
+The owner's answers to Q1 and Q2 (below) land in 3a.
+
+#### Owner decisions (part 3)
+
+The brief asked two questions; the owner answered on 2026-11-14.
+
+- **Q1. Should Quit on a service be `systemctl --user kill
+  --signal=TERM` instead of `stop`?** `kill` runs no `ExecStop=`, never
+  escalates to SIGKILL, and does not stop `Requires=` and `PartOf=`
+  dependents by itself; but a unit with `Restart=always` comes straight
+  back, which is why part 2 chose `stop`. The planner recommended keeping
+  `stop` now that the dialog names what it takes with it. **Owner: keep
+  `systemctl --user stop`.**
+- **Q2. Should some session services be denied by name?** The planner
+  recommended refusing only the session bus, which like the compositor
+  takes the session with it, and warning for the audio server and the
+  portals, which are socket- or bus-activated and come back on next use.
+  **Owner: refuse only the session bus by name** (`dbus.service` and
+  `dbus-broker.service` are never stopped or signalled, a refusal with a
+  reason in words, in `strings.rs`, tested). **For the audio server
+  (`pipewire`, `wireplumber`, `pipewire-pulse`) and `xdg-desktop-portal*`
+  services Quit is allowed, and the `needs-confirm` reply carries a
+  one-line warning** that the CLI prints and 3b's dialog will show.
+
 
 ### Page
 
@@ -541,6 +940,8 @@ times. A stub `pacman` answering `-Qo`.
 | same | Inspector golden output for five processes; verdict rules; unreadable files give omitted rows, not errors |
 | same | Actions under a recording `act`: `wouldDo` lists; refusals for uid 0, pid 1, the daemon, the compositor; a service is stopped through the stub `systemctl` |
 | `tests/test-ui-apps.sh` (`mirqab-ui --selftest apps`, plan 001) | The page lists the groups, search filters, the inspector opens, the confirm dialog shows the pids |
+| `crates/mirqab-view/tests/apps.rs` (part 3b) | The view model on the golden frame with `expand: true`: sorts as the daemon does, search, flatten, row keys across frames, the merge rule, the dialog's lines |
+| `crates/mirqab-core/tests/protocol.rs` (D6, part 3a) | A re-subscribe replaces a view and leaves no old one; an unsubscribe removes it; two subscribers that differ only in interval share one line; `process` at 1000 ms only with `live`, its params checked |
 | `tools/bench-idle.sh --subscribe apps` | With a 400-process fixture: under 1.5 % of a core |
 
 ## Acceptance
@@ -553,6 +954,11 @@ times. A stub `pacman` answering `-Qo`.
    and ends it after confirmation; the same on a root process is refused
    with the reason.
 4. The cost benchmark passes.
+5. The inspector's graph of a process moves once a second and stops when
+   the window hides (`mirqab status` shows no `process` subscriber).
+6. Quit on a `--user` service with a dependent names the dependent in the
+   dialog and in `mirqab quit`; Quit on the sound server warns first.
+7. `apps.top` on Home shows five rows and opens the tab.
 
 ## Checklist
 
@@ -591,19 +997,62 @@ times. A stub `pacman` answering `-Qo`.
    actions' tests come with part 2).
 5. [x] CLI `apps`, `what`, `quit`; MCP `top_apps`, `what_is_process`
    (part 1 did `apps`, `what` and both MCP tools; part 2 `quit`).
-6. [ ] `crates/mirqab-view/src/tabs/apps.rs` (the view model and the tab's cards); `crates/mirqab-ui/src/tabs/apps/{mod,page,group_row,process_row,inspector,top_card}.rs` (part 3).
+6. [ ] The page (part 3; design in "Part 3: the page (design)").
    - Deferred from the review of PR #17 (D1): before the dialog offers
      Quit on a service row, list the units a stop takes with it
      (`systemctl --user show -p RequiredBy -p BoundBy -p ConsistsOf`, a
      host-only read with a fixture answer), consider Quit as
      `systemctl --user kill --signal=TERM` instead of `stop`, and a
-     deny-list for session services (the owner's call). "Known limits
-     (part 2)" writes the limit down meanwhile.
+     deny-list for session services (the owner's call). Settled by 6c and
+     the owner's decisions (part 3); "Known limits (part 3a)" keeps what
+     is left.
    - Deferred from the review of PR #16 (D5): session-scope group ids
      (`session:<sid>`) can be reused after a logout; the view model's row
-     keys must not rely on them alone across frames.
+     keys must not rely on them alone across frames. Settled by 6b (the
+     daemon side) and 6e (the keys).
+   - 6a. [x] `process` stream: `samplers/process.rs`, `Sampler::wants` and
+     `accepts`, `stream::PROCESS` and its data type, tests. (PR 3a)
+   - 6b. [x] `start` in `AppProcess`; regenerate `tests/golden/apps.json`.
+     (3a; settles D5 with 6e)
+   - 6c. [x] D1: `Sender::unit_dependents`, `alsoStops` /
+     `alsoStopsUnknown` in `wouldDo`, the dependent refusal, the fixture
+     answer, `mirqab quit`'s lines, strings; rewrite "Known limits
+     (part 2)" to what is left (deeper levels, `ExecStop=`, no pidfd for
+     a unit). The owner's Q1 and Q2: `stop` kept, the session bus
+     refused, the sound server and portals warned about. (3a)
+   - 6d. [x] Architecture §5.3 (the `process` row, the list of live
+     streams) and §5.4 (dependents in the dialog). (3a)
+   - 6e. [ ] `crates/mirqab-view/src/tabs/apps.rs`: `AppsState`, `rows`,
+     keys, sort, search, flatten, `main_pid`, `top_five`,
+     `merge_params`, `confirm_lines`, `result_line`, `CARDS`; `cards::all`
+     chains it; `home::SEED` gains `apps.top`; `shell::TABS` marks `apps`
+     built; glyphs in `icons.rs`; strings. (3b)
+     - Deferred from the review of PR #18 (S3, second half): a dependent
+       that is not a service, scope or slice (a `.target`) takes its own
+       dependents with it, unlisted; `confirm_lines` reads "and what
+       depends on it" for it, and `mirqab quit`'s "also stops" line says
+       the same. Walking deeper, with a depth bound, stays out until a
+       real unit needs it.
+   - 6f. [ ] Client: `set_merge`, `Source::request`,
+     `subscribe_live(stream, params, …)`, `graph::Live.params`. (3b)
+     - Deferred from the review of PR #18 (nit): `process` accepts a
+       thread id and reads that thread's own `stat`; harmless and read
+       only. The client sends `pid` and `start` from a row, never a typed
+       number; one sentence in architecture §5.3 when 3b touches it.
+   - 6g. [ ] `crates/mirqab-ui/src/tabs/apps/{mod,page,group_row,process_row,inspector,top_card}.rs`;
+     `tabs::build` and `tabs::card`; the pin control. (3b)
+   - 6h. [ ] `--selftest … --do`, `tests/test-ui-apps.sh`, the widget
+     tests, `tests/test-ui-home.sh`. (3b)
+   - 6i. [ ] Architecture §7.2 (app icons), §7.5 (selftest steps);
+     `docs/user-guide/` Apps page; "As built (part 3)" with the measured
+     costs. (3b)
 7. [ ] Focus tracking: `crates/mirqab-core/src/desktop/hyprland.rs` (event
    socket reader, active only while `apps` has a subscriber) (part 4).
+   - Deferred from the review of PR #18 (bus outside a unit): a session
+     bus run by `dbus-run-session` or `dbus-launch` is in no bus unit and
+     is not refused ("Known limits (part 3a)"). The owner's Q2 said "by
+     unit name"; refusing by command name is a new owner question, to ask
+     with part 4.
    - Deferred from the review of PR #17 (D2): the compositor probe's
      connect is blocking; a frozen compositor with a full listen queue
      holds one client thread (no lock). Make it non-blocking, which needs
@@ -613,6 +1062,8 @@ times. A stub `pacman` answering `-Qo`.
      with new params, their cleanup on unsubscribe, and two subscribers
      that differ only in interval; written with part 3, where the page
      changes `sort` and `expand` live.
+   - D6: [x] `crates/mirqab-core/tests/protocol.rs`, the rows of "Part 3:
+     the page (design)", Tests (3a).
    - Deferred from the review of PR #16 (D7): `root/.flatpak-info` is read
      with no size cap or file-type check (a FIFO there would stall the
      walk); read it only when it is a regular file, through
@@ -626,6 +1077,9 @@ times. A stub `pacman` answering `-Qo`.
    - Deferred from the review of PR #16 (D2): the inspector's GPU memory
      reads every `fdinfo` of the process; measured with the inspector's
      cost.
+   - Deferred from the review of PR #18 (nit): the `process` stream's
+     eight-pid cap keeps the first eight in client order; decide with the
+     other `process` costs whether the newest should win.
 
 ## As built (part 1)
 
@@ -1064,6 +1518,265 @@ child):
 4. The `action` events (`history.events` with `kind: "action"`) show one
    row, for step 1 only.
 
+## As built (part 3a)
+
+Part 3a (2026-11-14) is checklist steps 6a–6d and the D6 tests of step 8:
+the daemon side of the page, as designed in "Part 3: the page (design)"
+with the owner's decisions. No interface code changed. What was built,
+with where it lives:
+
+- **Two new sampler hooks.** `Sampler::accepts` returns an `Accepts`, a
+  plain `fn(&Value) -> Result<(), String>` (`crates/mirqab-core/src/sampler.rs:18`,
+  `:59`), copied into the slot like `view` (`server.rs:396`) and called
+  by `subscribe` (`server.rs:945`) and `get` (`:1033`): an Err is
+  `bad-request` and adds no subscription. `Sampler::wants(&[Value])`
+  (`sampler.rs:68`) gets the subscribers' distinct params under the
+  sampler's lock just before each sample (`server.rs:615`), and a `get`'s
+  own params before its snapshot (`:1042`). A third hook, `idle`, came
+  with the review (below).
+- **The `process` stream** (`crates/mirqab-core/src/samplers/process.rs`),
+  registered after `apps` in its own slot (`server.rs:379`), so its lock
+  is its own. Params `{"pid": N}` and optionally `"start"`, nothing else
+  (`accepts`, `process.rs:57`). Each tick reads `stat` and `statm` of the
+  first eight distinct pids (`wants`, `:242`; `stream::PROCESS_MAX_PIDS`)
+  through `Root` with `samplers/apps/procfs.rs`'s parsers; CPU is percent
+  of one core against a baseline keyed by pid and start time, null on the
+  first reading, dropped after 10 s (`sample`, `:253`). A subscriber gets
+  `ProcessData` (`crates/mirqab-proto/src/stream.rs:341`):
+  `{pid, start, name, cpu, rssBytes, threads, state}`, or
+  `{"pid": N, "gone": true}` when the pid holds no process or another one
+  than asked for (`view`, `process.rs:203`), or `{"pid": N, "capped":
+  true}` past the eighth pid. `live()` is true. Golden:
+  `tests/golden/process.json` (pid 2001 on `.t1`, 40 % of one core).
+- **`start` in every listed process** (`stream.rs:315`, set at
+  `samplers/apps/mod.rs:182`): clock ticks after boot, the value
+  `wouldDo` carries. `tests/golden/apps.json` is now the view with
+  `expand: true`, so it holds every process with its start time (24
+  groups, 44 processes; the group fields are unchanged), which is the
+  frame 3b's view-model tests read.
+- **The units a stop takes with it.** `Sender::unit_dependents(root,
+  unit)` (`crates/mirqab-core/src/act.rs:93`): `act::Real` (`:288`) runs
+  `act::dependents_via` (`:199`) over `exec.rs`: `systemctl --user show
+  -p RequiredBy -p RequisiteOf -p BoundBy -p ConsistsOf -p
+  PropagatesStopTo -- <unit>` and then `show -p Id -p ActiveState --
+  <names>`, 2 s each, parsed by key and by systemd's quoting
+  (`dependents_named`, `:171`; `show_words`, `:122`; `active_ids`,
+  `:245`); `active`, `activating`, `reloading` and `refreshing` count.
+  `act::Recording` answers from `run/mirqab-test/dependents/<unit>` under
+  the root (`:371`), one `<unit> <ActiveState>` a line; no file is no
+  dependents, an unreadable one a failed question. `unit_step`
+  (`samplers/apps/actions.rs:577`) lists each active dependent's
+  processes by cgroup, for any unit type (`unit_members`, `:543`, on
+  `group::host_units`), and runs the same refusals on them; a refused
+  one, or the session bus as a dependent, refuses the stop with
+  `strings::refuse_unit_dependent`. The stop's `wouldDo` entry gains
+  `"alsoStops": [{"unit": …, "pids": […]}]`, or `"alsoStopsUnknown":
+  true` when the question failed (the stop is still planned); Force
+  quit's `kill` entry carries neither (`:292`). The `action` event names
+  them under `alsoStops` (`:1017`).
+- **The owner's decisions.** Q1: Quit on a service stays `systemctl
+  --user stop`. Q2: `guard::SESSION_BUS` (`crates/mirqab-core/src/guard.rs:58`)
+  is refused by name for a unit (`unit_step`, as the unit or as a
+  dependent, `strings::refuse_session_bus_unit`) and for a signal
+  (`act::refusal`, `act.rs:479`, `strings::refuse_session_bus`, so a
+  process of the bus is refused at plan time and again through the
+  pidfd). `guard::session_warning` (`guard.rs:76`) gives one line for
+  `pipewire.service`, `pipewire-pulse.service`, `wireplumber.service`
+  (`strings::warn_sound`) and `xdg-desktop-portal*.service`
+  (`strings::warn_portal`); the dry-run reply and the `needs-confirm`
+  data carry them as `warnings` (`actions.rs:824`, `:843`), for the
+  unit and its active dependents, each once.
+- **`mirqab quit`** prints, under a stop, one `also stops <unit> (N
+  processes)` line per dependent or `other services that depend on it may
+  stop too`, and each warning as `warning: …` after the list
+  (`plan_lines`, `crates/mirqab/src/quit.rs:35`). Its help (and
+  `docs/cli.md`) names the session bus among what is never signalled.
+- **Fixtures.** `tests/fixtures/root-desktop/run/mirqab-test/dependents/pipewire.service`:
+  `wireplumber.service` active (pid 1211), `pipewire-pulse.service`
+  inactive; `tests/fixtures/README.md` says what it stands for.
+- **Tests.** `crates/mirqab-core/tests/actions.rs` 19 (new:
+  `a_stop_names_the_active_units_it_takes_with_it`,
+  `a_dependent_that_holds_a_refused_process_refuses_the_stop`,
+  `a_question_that_fails_still_plans_and_says_so`,
+  `the_session_bus_is_never_stopped`); `crates/mirqab-core/tests/apps.rs`
+  16 (new: `every_listed_process_carries_its_start_time`,
+  `the_process_stream_reads_one_pid_across_two_ticks`,
+  `a_missing_pid_or_a_new_start_time_is_gone`,
+  `the_process_stream_takes_only_a_pid_and_a_start`);
+  `crates/mirqab-core/tests/protocol.rs` 22 (D6:
+  `a_re_subscribe_replaces_the_view_and_leaves_no_old_one`,
+  `subscribers_that_differ_only_in_interval_share_one_line`, on a
+  `Counted` stream whose view shows the sample number and the params it
+  was cut with; and
+  `the_process_stream_serves_one_pid_live_and_checks_its_params`);
+  `mirqab-core` unit tests 56 (the stream's params and its cap, the
+  dependents' parsing, the bus never signalled, the bus and warning
+  lists); `mirqab` 19 (`a_stop_lists_what_it_takes_with_it_and_the_warnings`);
+  `tests/test-cli.sh` 193 checks (8 new: `quit 1210` names
+  `wireplumber.service`, leaves out the inactive unit, warns, carries
+  `alsoStops` and `warnings` in `--json`, and records only the one
+  `stop`).
+
+Measured (resolving the brief's Unverified items that 3a depends on):
+
+- **`systemctl show` prints properties in its own order.** On the
+  development machine (systemd 262.1, 2026-11-14), `systemctl --user show
+  -p ConsistsOf -p RequiredBy -p BoundBy -- pipewire.service` printed
+  `RequiredBy=`, `BoundBy=wireplumber.service pipewire-pulse.service`,
+  `ConsistsOf=`, in that order whatever the order of the flags, and with
+  `--value` three lines with nothing to say which is which. `show -p Id
+  -p ActiveState -- a b c` printed one block per unit, blank-line
+  separated, an unknown unit as `ActiveState=inactive`. Hence the parse
+  by key. systemd 257 was not available to check.
+- **List values are quoted per element** (review of PR #18, on the same
+  machine): an element is bare unless it holds whitespace or a
+  shell-special character, and is then wrapped in `"…"` with a backslash
+  before each `"`, `\`, `` ` `` and `$` (systemd's `shell_maybe_quote`).
+  A line reads, with synthetic names,
+  `ConsistsOf=plain.service "app-two\\x2dwords@autostart.service"`; the
+  second name is `app-two\x2dwords@autostart.service`, its `\x2d` part of
+  the name and passed back to `systemctl` as it is. Plain properties
+  (`Id=`) are printed bare. `show -p` of an unknown property prints
+  nothing and exits 0.
+- **Five properties stop a unit's dependents with it** (`man
+  systemd.unit`, systemd 262): `Requires=` (`RequiredBy`), `Requisite=`
+  (`RequisiteOf`), `BindsTo=` (`BoundBy`), `PartOf=` (`ConsistsOf`), and
+  the unit's own `PropagatesStopTo=`; `Wants=` does not.
+- **The `apps` frame with `expand: true`** (one event line, bytes on the
+  socket), from a daemon on a fixture root and `subscribe apps` with each
+  params: `root-desktop` (44 processes, 24 groups) 6 727 bytes with no
+  params, 11 798 with `{"limit": 1000, "expand": true}`; a scratch copy
+  of `root-desktop` with its processes cloned nine times (422 processes,
+  69 groups, made by a throwaway script, not committed) 14 744 with no
+  params, 19 722 with `limit: 1000`, **68 565 with `{"limit": 1000,
+  "expand": true}`**, about 160 bytes a process: 34 KB/s at 2 s. On the
+  development machine, the sampler run once in-process on `/` (read only,
+  no daemon): 269 processes, 78 groups, 55 537 bytes. Decision 1 stands:
+  `expand: true` costs bytes and a parse, not a second walk. The
+  interface's CPU while the page is shown is measured in 3b.
+- **The daemon's CPU with one `process` subscriber at 1 s** (release
+  build, fixture root, `live: true`, 37 events): no clock tick in 30 s,
+  under 0.04 % of a core.
+
+Deviations from the brief, each with its reason:
+
+- **`accepts` is a function the slot keeps**, not a method called on
+  the sampler: `subscribe` would otherwise wait on the `apps` sampler's
+  lock, which a `get apps` holds for half a second and the inspector
+  across `pacman`.
+- **`start` is an optional param of `process`.** Without it the stream
+  pins the process first seen at the pid (an empty pid stays gone); with
+  it the subscriber says which process it means. 3b knows each row's
+  start (D5) and should send it: a pin alone cannot tell two subscribers
+  of one pid apart across a reuse.
+- **`capped`.** The brief caps the pids at eight but does not say what
+  the ninth subscriber gets; it gets `capped: true`, not a false `gone`.
+- **`name` is `comm`.** The `apps` list's name may come from `cmdline`
+  when `comm` was cut short; the stream reads `stat` and `statm` only, as
+  designed.
+- **A `get process` goes through `wants`.** `snapshot` takes no params,
+  so the `get` hands its own over first; the next tick hands the
+  subscribers' back. A `get` never moves the pins or the baseline, and
+  uses the subscribers' baseline only when it holds that process
+  (otherwise its own second reading 500 ms later).
+- **`alsoStops` entries are objects** (`{unit, pids}`), not bare names:
+  the CLI's "(N processes)" and 3b's dialog need the processes.
+- **No `--value`** on `systemctl show` (measured above).
+- **A `systemctl show` value that cannot be read** (by the quoting rule
+  above), or a name in it that mirqab would not pass back, makes the
+  whole question fail (`alsoStopsUnknown`), not the stop refused, as the
+  brief's Rejected "Refusing a service whose dependents cannot be listed"
+  says. Every name systemd allows reads; an odd one means the format
+  changed (review of PR #18, DROP 1).
+- **The fixture answer carries the state** (`<unit> <ActiveState>` a
+  line, where the brief said one unit a line), so "an inactive dependent
+  left out" is tested through the same filter as the real answer.
+- **`warnings` is always present** in the dry-run reply and the
+  `needs-confirm` data (empty when there is none), beside `skipped`.
+- **The session-bus list lives in `guard.rs`**, as the brief's Q2
+  suggested; the refusal for a signal is in `act::refusal` with the
+  other fixed refusals.
+
+From the review of PR #18 (2026-11-14; the ruling kept 8 items, deferred
+4 and dropped 9):
+
+- **K1, systemd's quoting.** Read word by word, a quoted element such as
+  `"app-two\\x2dwords@autostart.service"` failed the unit-name check and
+  the stop became `alsoStopsUnknown` with no refusal run on that unit.
+  `act::show_words` (`act.rs:122`) reads the rule above and decodes no
+  `\xNN`; `dependents_named` returns `Result` and checks each name there;
+  `dependents_via` (`:199`) holds what `Real` asks and checks the unit
+  first (`Real` did not). `unit_like` is shared (`pub(crate)`, `:106`)
+  and `actions.rs::unit_name_ok` (`:376`) is written on it. Tests:
+  `show_words_follow_systemds_quoting_and_decode_no_escapes`,
+  `dependents_are_read_from_every_stop_property_quoted_or_not`,
+  `dependents_via_asks_twice_and_keeps_the_active_ones` in `act.rs`;
+  `quoted_escaped_names_from_systemctl_are_found_and_refused` in
+  `tests/actions.rs` (a sender answering through `dependents_via` with a
+  line in systemd 262's format: both names found, then the quoted scope
+  holding the caller refuses the stop).
+- **K2, `RequisiteOf` and `PropagatesStopTo`** are asked for and read.
+  Tests: the two `act.rs` tests above (`WantedBy` ignored; five `-p`
+  flags).
+- **K3, a dependent of any unit type.** `group::host_units`
+  (`samplers/apps/group.rs:142`): the slices under the user manager and
+  the first unit that is not one; `host_service` is its last part when a
+  `.service` (`:129`). `unit_members` matches on it, so a dependent
+  scope's or slice's processes are listed and checked. `ordered` returns
+  nothing for no members (`actions.rs:519`): a dependent with no process
+  (a target) used to reach `group::main_process` with an empty list and
+  panic the client's thread, found by the K1 test. Tests:
+  `a_dependent_of_any_unit_type_is_found_and_checked` (a scope holding
+  the caller refused, with a backslash in its name; a scope's pids
+  listed; a slice holding the daemon refused) and `host_units` in
+  `group.rs`'s `units_under_the_user_manager`.
+- **K4, a confirmation does not stop a dependent it did not show.**
+  `Plans::make` keeps the dependents the plan showed and `Redeemed`
+  returns them (`plan.rs:42`, `:84`); `Resolution::unit_also`
+  (`actions.rs:315`); at redeem, before any step, a dependent not shown
+  is `strings::plan_dependents_changed` and a list that cannot be told
+  now, when the plan's could, `strings::plan_dependents_unknown`
+  (`actions.rs:883`, `:891`): refused, the plan spent, nothing run, no
+  event. A plan whose list was unknown takes what is there. Tests:
+  `a_confirmation_does_not_stop_a_dependent_it_did_not_show` (a new
+  dependent refused and the plan then unknown; an unreadable answer
+  refused; a shown dependent gone inactive still stops),
+  `the_dependents_a_plan_showed_come_back_at_redeem` in `plan.rs`.
+- **K5, `dbus-daemon.service`** joins `guard::SESSION_BUS`: where the
+  reference bus is installed under that name, `dbus.service` is only its
+  alias (from the ruling's memory, see Unverified). Tests: the guard's
+  list test, `the_session_bus_is_never_signalled` in `act.rs` and
+  `the_session_bus_is_never_stopped` in `tests/actions.rs` (pid and
+  group).
+- **K6, a pin does not outlive its subscribers.** `Sampler::idle`
+  (`sampler.rs:74`): the loop marks a stream idle when it finds no
+  subscriber after a sample (`server.rs:572`), takes the mark when the
+  next sample is due (`:594`) and calls `idle` under the sampler's lock
+  before `wants` (`:613`); no lock inside another. `Process::idle`
+  (`process.rs:275`) drops the pins and the baseline, and a `get` reads
+  no pin (`data`'s `pinned`). No time-based expiry: an interval has no
+  upper bound. Tests: `a_pin_does_not_outlive_its_subscribers` in
+  `tests/apps.rs`; `a_stream_left_without_subscribers_is_told_before_its_next_sample`
+  in `protocol.rs` (the `Counted` stream counts `idle` calls: one), and
+  the `process` test now checks that the subscriber's event after a `get`
+  has a number in `cpu`.
+- **K7, a `get` of a missing pid does not wait** half a second holding
+  the stream's lock (`process.rs:287`). Test:
+  `a_get_of_a_missing_pid_does_not_wait`.
+- **K8, the docs.** Architecture §5.2 (the dry-run example), §5.3
+  (`Sampler::idle`; the `process` row's pin, `capped` and `get`), §5.4
+  (five properties, any unit type, the plan's dependents,
+  `dbus-daemon.service`); this section, "Known limits (part 3a)" and
+  "Unverified".
+- **Counts after the fixes.** `tests/actions.rs` 22, `tests/apps.rs` 18,
+  `protocol.rs` 23, `mirqab-core` unit tests 60, `mirqab` 19,
+  `mirqab-proto` 18, `tests/test-cli.sh` 193 checks.
+
+Left for 3b or later: everything under 6e–6i; the interface's CPU and RSS
+with the page shown; the inspector's use of `process` with `start`; the
+three Unverified items about Broadway (the dialog in the dump, `ListView`
+activation, app icons there).
+
 ## Unverified
 
 - Hyprland's event socket path and the `activewindow` event format:
@@ -1091,3 +1804,28 @@ child):
   names the group after the main process, not the launcher. The fixture
   carries a case of each; none of them falls to rule 5, which is left
   for processes outside the user manager (the session scope).
+- Whether an `adw::AlertDialog` presented on the `adw::ApplicationWindow`
+  is reached by `first_child` / `next_sibling` from the window, so the
+  selftest's dump shows its body. If not, the dump adds the window's
+  visible dialog explicitly. Check under Broadway before writing 6h.
+- Whether `gtk::Widget::activate` on a `ListView` item under
+  `NoSelection` emits `activate` for its position; otherwise the step
+  calls the list view's `list.activate-item` action.
+- ~~`systemctl --user show -p RequiredBy -p BoundBy -p ConsistsOf --value`
+  prints three lines in that order~~ Resolved 2026-11-14
+  **[machine]**, systemd 262.1: the properties come in systemd's own
+  order whatever the order of `-p`, so 3a reads `Key=value` lines without
+  `--value` ("As built (part 3a)"). Not checked on systemd 257.
+- ~~The frame size with `expand: true` at 400 processes~~ Resolved
+  2026-11-14: 68 565 bytes at 422 processes on a cloned fixture, 55 537
+  at 269 on the development machine ("As built (part 3a)"); small, so
+  decision 1 stands. The interface's CPU with it is measured in 3b.
+- Whether the icon theme under Broadway in CI has any app icon; the
+  selftest asserts the fallback glyph there, and the theme path is an
+  owner check.
+- The quoting of `systemctl show` list values on systemd 257 (checked on
+  262.1 only; review of PR #18).
+- That a distribution shipping the reference bus (dbus-daemon) names its
+  user unit `dbus-daemon.service` with `dbus.service` as an alias (said
+  of Fedora by the review of PR #18 from memory; the development machine
+  runs dbus-broker). Both names are refused either way.

@@ -179,6 +179,7 @@ impl Apps {
                     rss_bytes: p.mem.map_or(0, |m| m.resident * self.page),
                     threads: p.stat.threads,
                     state: p.stat.state.to_string(),
+                    start: p.stat.start,
                 });
             }
             processes.sort_by_key(|p| p.pid);

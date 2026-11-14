@@ -20,9 +20,10 @@ use crate::history::{self, History};
 use crate::proto::stream::{self, Machine, ProcessCost, SelfData, UiCost, UiEvent};
 use crate::proto::{Code, Event, Hello, PROTOCOL, Reply, Request, ServerFrame, frame, strings};
 use crate::root::Root;
-use crate::sampler::{Sampler, View};
+use crate::sampler::{Accepts, Sampler, View};
 use crate::samplers::apps::Apps;
 use crate::samplers::apps::actions::{self, Action, Actions};
+use crate::samplers::process::Process;
 use crate::samplers::system::System;
 use crate::selfcost::{self, Meter};
 use crate::sys;
@@ -108,6 +109,9 @@ struct SlotRun {
     last: Option<Instant>,
     /// Sample at once: a new subscriber should not wait a whole interval.
     now: bool,
+    /// The stream had no subscriber since its last sample: the sampler is
+    /// told (`Sampler::idle`) before the next one.
+    idle: bool,
 }
 
 struct Slot {
@@ -117,6 +121,8 @@ struct Slot {
     /// The sampler's view, copied out so shaping a sample for each
     /// subscriber does not lock the sampler.
     view: Option<View>,
+    /// The check a subscription's params must pass, copied out likewise.
+    accepts: Option<Accepts>,
     wake: Condvar,
 }
 
@@ -368,6 +374,9 @@ pub fn listen(opts: Options) -> Result<Server, ListenError> {
     })];
     samplers.push(Box::new(System::new()));
     samplers.push(Box::new(Apps::new()));
+    // Its own slot and so its own lock: a 1 s reading never waits behind
+    // the `apps` walk, `get apps`' second reading or the inspector's pacman.
+    samplers.push(Box::new(Process::new()));
     samplers.extend(opts.samplers);
 
     let mut slots = BTreeMap::new();
@@ -384,6 +393,7 @@ pub fn listen(opts: Options) -> Result<Server, ListenError> {
                 live: s.live(),
                 default_ms: s.default_interval().as_millis() as u64,
                 view: s.view(),
+                accepts: s.accepts(),
                 sampler: Mutex::new(s),
                 wake: Condvar::new(),
             }),
@@ -558,6 +568,8 @@ fn sampler_loop(inner: Arc<Inner>, name: String, slot: Arc<Slot>) {
         let run = state.runs.entry(name.clone()).or_default();
         let Some(ms) = interval else {
             run.now = false;
+            // Only after a sample: before the first there is nothing kept.
+            run.idle = run.last.is_some();
             state = slot.wake.wait(state).unwrap_or_else(|p| p.into_inner());
             continue;
         };
@@ -579,6 +591,7 @@ fn sampler_loop(inner: Arc<Inner>, name: String, slot: Arc<Slot>) {
         }
         run.now = false;
         run.last = Some(now);
+        let was_idle = std::mem::take(&mut run.idle);
         // The params each subscriber shapes its view with, taken while the
         // lock is held anyway; the views are made after it is released.
         let mut wanted: Vec<Value> = Vec::new();
@@ -596,6 +609,10 @@ fn sampler_loop(inner: Arc<Inner>, name: String, slot: Arc<Slot>) {
         // and a rate over a stale stamp reads high (review of PR #16).
         let data = {
             let mut sampler = lock(&slot.sampler);
+            if was_idle {
+                sampler.idle();
+            }
+            sampler.wants(&wanted);
             sampler.sample(&inner.root, Instant::now())
         };
         let event = |data: Value| {
@@ -925,6 +942,11 @@ impl Inner {
         } else {
             Value::Null
         };
+        if let Some(accepts) = slot.accepts
+            && let Err(why) = accepts(&view_params(&req.params))
+        {
+            return Ok(Reply::err(req.id, Code::BadRequest, why));
+        }
         let reply = frame::encode(&ServerFrame::Reply(Reply::ok(
             req.id,
             json!({"stream": name, "interval": interval_ms}),
@@ -1007,9 +1029,21 @@ impl Inner {
             return r;
         }
         let slot = &self.slots[name];
-        let data = lock(&slot.sampler).snapshot(&self.root, Instant::now());
+        let params = view_params(&req.params);
+        if let Some(accepts) = slot.accepts
+            && let Err(why) = accepts(&params)
+        {
+            return Reply::err(req.id, Code::BadRequest, why);
+        }
+        let data = {
+            // A `get` names what it wants as a subscriber does; the next
+            // tick hands the subscribers' params back before it samples.
+            let mut sampler = lock(&slot.sampler);
+            sampler.wants(std::slice::from_ref(&params));
+            sampler.snapshot(&self.root, Instant::now())
+        };
         match slot.view {
-            Some(view) => Reply::ok(req.id, view(&data, &view_params(&req.params))),
+            Some(view) => Reply::ok(req.id, view(&data, &params)),
             None => Reply::ok(req.id, data),
         }
     }

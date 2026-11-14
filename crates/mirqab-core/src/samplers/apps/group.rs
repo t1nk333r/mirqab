@@ -127,15 +127,34 @@ pub fn user_unit(cgroup: &str) -> Option<&str> {
 /// service's own sub-cgroups) names units of another manager, never the
 /// host's: the deepest name would stop the wrong unit (review of PR #17).
 pub fn host_service(cgroup: &str) -> Option<&str> {
-    let parts: Vec<&str> = cgroup.split('/').collect();
-    let manager = parts
-        .iter()
-        .position(|p| p.starts_with("user@") && p.ends_with(".service"))?;
-    parts[manager + 1..]
-        .iter()
-        .find(|p| !p.ends_with(".slice"))
+    host_units(cgroup)
+        .last()
         .copied()
         .filter(|p| p.ends_with(".service"))
+}
+
+/// The host's units a process is in, under the user manager: its slices,
+/// then the first unit that is not a slice (a service or a scope). Parts
+/// deeper than that belong to another manager, or are the unit's own
+/// sub-cgroups, and are not returned. A stop of any of these units ends
+/// the process (review of PR #18: a dependent `.scope` or `.slice` holds
+/// processes too). Empty outside the user manager.
+pub fn host_units(cgroup: &str) -> Vec<&str> {
+    let parts: Vec<&str> = cgroup.split('/').collect();
+    let Some(manager) = parts
+        .iter()
+        .position(|p| p.starts_with("user@") && p.ends_with(".service"))
+    else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for p in &parts[manager + 1..] {
+        out.push(*p);
+        if !p.ends_with(".slice") {
+            break;
+        }
+    }
+    out
 }
 
 /// The deepest unit anywhere in a cgroup path, for the inspector.
@@ -563,6 +582,27 @@ mod tests {
             )),
             Some("app-org.example.Sync@autostart.service")
         );
+        // Every host unit a process is in: its slices and its first unit,
+        // never what is nested in that unit (review of PR #18).
+        assert_eq!(
+            host_units(&format!("{u}/app.slice/app-held\\x2dterm-1.scope")),
+            ["app.slice", "app-held\\x2dterm-1.scope"]
+        );
+        assert_eq!(
+            host_units(&format!(
+                "{u}/app.slice/outer.service/payload/inner.service"
+            )),
+            ["app.slice", "outer.service"]
+        );
+        assert_eq!(
+            host_units(&nested),
+            [
+                "user.slice",
+                format!("libpod-{}.scope", "c0ffee00".repeat(8)).as_str()
+            ]
+        );
+        assert_eq!(host_units(&format!("{u}/init.scope")), ["init.scope"]);
+        assert!(host_units("/system.slice/sshd.service").is_empty());
         assert_eq!(host_service(&format!("{u}/init.scope")), None);
         assert_eq!(host_service(&format!("{u}/app.slice/app-x-1.scope")), None);
         assert_eq!(host_service("/system.slice/sshd.service"), None);

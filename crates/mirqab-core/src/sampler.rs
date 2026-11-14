@@ -12,6 +12,11 @@ use std::time::{Duration, Instant};
 /// `apps` stream's `sort`, `limit` and `expand` (plan 006).
 pub type View = fn(&Value, &Value) -> Value;
 
+/// Whether a subscriber's (or a `get`'s) params are ones the stream can
+/// serve: Err with the reason makes the request `bad-request` before
+/// anything is sampled (the `process` stream needs a `pid`, plan 006).
+pub type Accepts = fn(&Value) -> Result<(), String>;
+
 /// The answer to a query: the data, or an error code and message.
 pub type QueryResult = Result<Value, (Code, String)>;
 
@@ -47,6 +52,26 @@ pub trait Sampler: Send {
     fn view(&self) -> Option<View> {
         None
     }
+
+    /// The check a subscription's and a `get`'s params must pass; None
+    /// takes any. A plain function, copied out once like `view`, so a
+    /// subscribe never waits on the sampler's lock.
+    fn accepts(&self) -> Option<Accepts> {
+        None
+    }
+
+    /// The distinct params of every subscriber, handed over before each
+    /// sample (or a `get`'s alone, before its snapshot), for a sampler
+    /// that reads only what its subscribers name: the `process` stream
+    /// reads the pids they ask for. Most samplers read everything and
+    /// ignore it.
+    fn wants(&mut self, _params: &[Value]) {}
+
+    /// No subscriber held the stream since the last sample: forget what was
+    /// kept for them. Called under the sampler's lock just before the next
+    /// sample (the `process` stream drops its pins and baseline, so a pin
+    /// does not outlive its subscribers; review of PR #18).
+    fn idle(&mut self) {}
 
     /// `get <stream>.<name>`: a request about the stream's subject that is
     /// not a sample of it (`get apps.inspect {pid}`, plan 006). None when

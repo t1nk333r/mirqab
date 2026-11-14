@@ -13,6 +13,38 @@
         3040,
         3041
       ],
+      "processes": [
+        {
+          "cpu": 90.0,
+          "name": "rustc",
+          "pid": 3041,
+          "ppid": 3040,
+          "rssBytes": 1638400000,
+          "start": 20100,
+          "state": "R",
+          "threads": 16
+        },
+        {
+          "cpu": 1.0,
+          "name": "cargo",
+          "pid": 3040,
+          "ppid": 3030,
+          "rssBytes": 81920000,
+          "start": 20000,
+          "state": "S",
+          "threads": 4
+        },
+        {
+          "cpu": 0.0,
+          "name": "zsh",
+          "pid": 3030,
+          "ppid": 3000,
+          "rssBytes": 8192000,
+          "start": 8200,
+          "state": "S",
+          "threads": 1
+        }
+      ],
       "procs": 3,
       "rssBytes": 1710080000,
       "threads": 21,
@@ -38,6 +70,58 @@
         2011,
         2012
       ],
+      "processes": [
+        {
+          "cpu": 40.0,
+          "name": "browser",
+          "pid": 2001,
+          "ppid": 2000,
+          "rssBytes": 819200000,
+          "start": 5010,
+          "state": "S",
+          "threads": 120
+        },
+        {
+          "cpu": 20.0,
+          "name": "Web Content",
+          "pid": 2010,
+          "ppid": 2001,
+          "rssBytes": 409600000,
+          "start": 5100,
+          "state": "S",
+          "threads": 30
+        },
+        {
+          "cpu": 5.0,
+          "name": "Web Content",
+          "pid": 2011,
+          "ppid": 2001,
+          "rssBytes": 204800000,
+          "start": 5200,
+          "state": "S",
+          "threads": 25
+        },
+        {
+          "cpu": 1.0,
+          "name": "RDD Process",
+          "pid": 2012,
+          "ppid": 2001,
+          "rssBytes": 40960000,
+          "start": 5300,
+          "state": "S",
+          "threads": 5
+        },
+        {
+          "cpu": 0.0,
+          "name": "bash",
+          "pid": 2000,
+          "ppid": 1050,
+          "rssBytes": 4096000,
+          "start": 5000,
+          "state": "S",
+          "threads": 1
+        }
+      ],
       "procs": 5,
       "rssBytes": 1258291200,
       "threads": 181,
@@ -61,6 +145,38 @@
         3020,
         3021
       ],
+      "processes": [
+        {
+          "cpu": 10.0,
+          "name": "node",
+          "pid": 3020,
+          "ppid": 3010,
+          "rssBytes": 245760000,
+          "start": 9000,
+          "state": "S",
+          "threads": 11
+        },
+        {
+          "cpu": 2.0,
+          "name": "esbuild",
+          "pid": 3021,
+          "ppid": 3020,
+          "rssBytes": 32768000,
+          "start": 9010,
+          "state": "S",
+          "threads": 8
+        },
+        {
+          "cpu": 0.0,
+          "name": "zsh",
+          "pid": 3010,
+          "ppid": 3000,
+          "rssBytes": 8192000,
+          "start": 8100,
+          "state": "S",
+          "threads": 1
+        }
+      ],
       "procs": 3,
       "rssBytes": 272384000,
       "threads": 20,
@@ -83,6 +199,28 @@
         6201,
         6202
       ],
+      "processes": [
+        {
+          "cpu": 5.0,
+          "name": "devserver",
+          "pid": 6201,
+          "ppid": 6200,
+          "rssBytes": 102400000,
+          "start": 31010,
+          "state": "S",
+          "threads": 6
+        },
+        {
+          "cpu": 3.0,
+          "name": "devserver-worker",
+          "pid": 6202,
+          "ppid": 6201,
+          "rssBytes": 36864000,
+          "start": 31020,
+          "state": "S",
+          "threads": 2
+        }
+      ],
       "procs": 2,
       "rssBytes": 126976000,
       "threads": 8,
@@ -104,6 +242,28 @@
       "pids": [
         1050,
         6200
+      ],
+      "processes": [
+        {
+          "cpu": 7.0,
+          "name": "Hyprland",
+          "pid": 1050,
+          "ppid": 900,
+          "rssBytes": 368640000,
+          "start": 1500,
+          "state": "S",
+          "threads": 18
+        },
+        {
+          "cpu": 0.0,
+          "name": "bash",
+          "pid": 6200,
+          "ppid": 1050,
+          "rssBytes": 3686400,
+          "start": 31000,
+          "state": "S",
+          "threads": 1
+        }
       ],
       "procs": 2,
       "rssBytes": 369459200,
@@ -128,6 +288,38 @@
         4001,
         4100
       ],
+      "processes": [
+        {
+          "cpu": 3.0,
+          "name": "notes",
+          "pid": 4001,
+          "ppid": 4000,
+          "rssBytes": 286720000,
+          "start": 12010,
+          "state": "S",
+          "threads": 14
+        },
+        {
+          "cpu": 0.0,
+          "name": "bwrap",
+          "pid": 4000,
+          "ppid": 1100,
+          "rssBytes": 2048000,
+          "start": 12000,
+          "state": "S",
+          "threads": 1
+        },
+        {
+          "cpu": 0.0,
+          "name": "notes-daemon",
+          "pid": 4100,
+          "ppid": 1050,
+          "rssBytes": 12288000,
+          "start": 12500,
+          "state": "S",
+          "threads": 2
+        }
+      ],
       "procs": 3,
       "rssBytes": 291225600,
       "threads": 17,
@@ -150,6 +342,28 @@
         5000,
         5001
       ],
+      "processes": [
+        {
+          "cpu": 2.0,
+          "name": "postgres",
+          "pid": 5000,
+          "ppid": 1100,
+          "rssBytes": 122880000,
+          "start": 15000,
+          "state": "S",
+          "threads": 1
+        },
+        {
+          "cpu": 0.5,
+          "name": "postgres",
+          "pid": 5001,
+          "ppid": 5000,
+          "rssBytes": 32768000,
+          "start": 15010,
+          "state": "S",
+          "threads": 1
+        }
+      ],
       "procs": 2,
       "rssBytes": 126976000,
       "threads": 2,
@@ -170,6 +384,18 @@
       "name": "pipewire",
       "pids": [
         1210
+      ],
+      "processes": [
+        {
+          "cpu": 2.0,
+          "name": "pipewire",
+          "pid": 1210,
+          "ppid": 1100,
+          "rssBytes": 20480000,
+          "start": 1400,
+          "state": "S",
+          "threads": 3
+        }
       ],
       "procs": 1,
       "rssBytes": 20480000,
@@ -192,6 +418,18 @@
       "pids": [
         7500
       ],
+      "processes": [
+        {
+          "cpu": 2.0,
+          "name": "python3",
+          "pid": 7500,
+          "ppid": 1050,
+          "rssBytes": 49152000,
+          "start": 36000,
+          "state": "S",
+          "threads": 2
+        }
+      ],
       "procs": 1,
       "rssBytes": 49152000,
       "threads": 2,
@@ -212,6 +450,18 @@
       "name": "editor",
       "pids": [
         7100
+      ],
+      "processes": [
+        {
+          "cpu": 1.0,
+          "name": "editor",
+          "pid": 7100,
+          "ppid": 1050,
+          "rssBytes": 184320000,
+          "start": 34000,
+          "state": "S",
+          "threads": 6
+        }
       ],
       "procs": 1,
       "rssBytes": 184320000,
@@ -234,6 +484,18 @@
       "pids": [
         1300
       ],
+      "processes": [
+        {
+          "cpu": 1.0,
+          "name": "example-sync",
+          "pid": 1300,
+          "ppid": 1100,
+          "rssBytes": 122880000,
+          "start": 2600,
+          "state": "S",
+          "threads": 8
+        }
+      ],
       "procs": 1,
       "rssBytes": 122880000,
       "threads": 8,
@@ -254,6 +516,18 @@
       "name": "Foot",
       "pids": [
         3000
+      ],
+      "processes": [
+        {
+          "cpu": 1.0,
+          "name": "foot",
+          "pid": 3000,
+          "ppid": 1050,
+          "rssBytes": 163840000,
+          "start": 8000,
+          "state": "S",
+          "threads": 1
+        }
       ],
       "procs": 1,
       "rssBytes": 163840000,
@@ -277,6 +551,28 @@
         3050,
         3060
       ],
+      "processes": [
+        {
+          "cpu": 1.0,
+          "name": "python3",
+          "pid": 3060,
+          "ppid": 3050,
+          "rssBytes": 36864000,
+          "start": 26000,
+          "state": "S",
+          "threads": 1
+        },
+        {
+          "cpu": 0.0,
+          "name": "zsh",
+          "pid": 3050,
+          "ppid": 3000,
+          "rssBytes": 8192000,
+          "start": 8300,
+          "state": "S",
+          "threads": 1
+        }
+      ],
       "procs": 2,
       "rssBytes": 38912000,
       "threads": 2,
@@ -297,6 +593,18 @@
       "name": "mirqab",
       "pids": [
         4321
+      ],
+      "processes": [
+        {
+          "cpu": 0.5,
+          "name": "mirqab",
+          "pid": 4321,
+          "ppid": 1100,
+          "rssBytes": 3145728,
+          "start": 2000,
+          "state": "S",
+          "threads": 4
+        }
       ],
       "procs": 1,
       "rssBytes": 3145728,
@@ -319,6 +627,18 @@
       "pids": [
         7300
       ],
+      "processes": [
+        {
+          "cpu": 0.5,
+          "name": "twowords-bin",
+          "pid": 7300,
+          "ppid": 1050,
+          "rssBytes": 81920000,
+          "start": 35000,
+          "state": "S",
+          "threads": 3
+        }
+      ],
       "procs": 1,
       "rssBytes": 81920000,
       "threads": 3,
@@ -339,6 +659,18 @@
       "name": "Calculator",
       "pids": [
         8000
+      ],
+      "processes": [
+        {
+          "cpu": 0.0,
+          "name": "calculator",
+          "pid": 8000,
+          "ppid": 1100,
+          "rssBytes": 61440000,
+          "start": 33000,
+          "state": "S",
+          "threads": 4
+        }
       ],
       "procs": 1,
       "rssBytes": 61440000,
@@ -361,6 +693,18 @@
       "pids": [
         7000
       ],
+      "processes": [
+        {
+          "cpu": 0.0,
+          "name": "newjob",
+          "pid": 7000,
+          "ppid": 1050,
+          "rssBytes": 12288000,
+          "start": 360000,
+          "state": "R",
+          "threads": 1
+        }
+      ],
       "procs": 1,
       "rssBytes": 12288000,
       "threads": 1,
@@ -381,6 +725,18 @@
       "name": "suidtool",
       "pids": [
         6300
+      ],
+      "processes": [
+        {
+          "cpu": 0.0,
+          "name": "suidtool",
+          "pid": 6300,
+          "ppid": 1050,
+          "rssBytes": 12288000,
+          "start": 37000,
+          "state": "S",
+          "threads": 1
+        }
       ],
       "procs": 1,
       "rssBytes": 12288000,
@@ -404,6 +760,28 @@
         1100,
         1101
       ],
+      "processes": [
+        {
+          "cpu": 0.0,
+          "name": "systemd",
+          "pid": 1100,
+          "ppid": 1,
+          "rssBytes": 12288000,
+          "start": 1200,
+          "state": "S",
+          "threads": 1
+        },
+        {
+          "cpu": 0.0,
+          "name": "(sd-pam)",
+          "pid": 1101,
+          "ppid": 1100,
+          "rssBytes": 2457600,
+          "start": 1210,
+          "state": "S",
+          "threads": 1
+        }
+      ],
       "procs": 2,
       "rssBytes": 12697600,
       "threads": 2,
@@ -424,6 +802,18 @@
       "name": "tool",
       "pids": [
         6000
+      ],
+      "processes": [
+        {
+          "cpu": 0.0,
+          "name": "tool",
+          "pid": 6000,
+          "ppid": 1050,
+          "rssBytes": 20480000,
+          "start": 30000,
+          "state": "S",
+          "threads": 2
+        }
       ],
       "procs": 1,
       "rssBytes": 20480000,
@@ -446,6 +836,18 @@
       "pids": [
         7400
       ],
+      "processes": [
+        {
+          "cpu": 0.0,
+          "name": "tworeader",
+          "pid": 7400,
+          "ppid": 1100,
+          "rssBytes": 61440000,
+          "start": 35500,
+          "state": "S",
+          "threads": 4
+        }
+      ],
       "procs": 1,
       "rssBytes": 61440000,
       "threads": 4,
@@ -467,6 +869,18 @@
       "pids": [
         1211
       ],
+      "processes": [
+        {
+          "cpu": 0.0,
+          "name": "wireplumber",
+          "pid": 1211,
+          "ppid": 1100,
+          "rssBytes": 36864000,
+          "start": 1450,
+          "state": "S",
+          "threads": 5
+        }
+      ],
       "procs": 1,
       "rssBytes": 36864000,
       "threads": 5,
@@ -487,6 +901,18 @@
       "name": "worker",
       "pids": [
         7200
+      ],
+      "processes": [
+        {
+          "cpu": 0.0,
+          "name": "worker",
+          "pid": 7200,
+          "ppid": 1050,
+          "rssBytes": 8192000,
+          "start": 361000,
+          "state": "S",
+          "threads": 1
+        }
       ],
       "procs": 1,
       "rssBytes": 8192000,
@@ -513,6 +939,68 @@
         600,
         900,
         5100
+      ],
+      "processes": [
+        {
+          "cpu": 1.0,
+          "name": "systemd-journald",
+          "pid": 410,
+          "ppid": 1,
+          "rssBytes": 49152000,
+          "start": 300,
+          "state": "S",
+          "threads": 1
+        },
+        {
+          "cpu": 1.0,
+          "name": "redis-server",
+          "pid": 5100,
+          "ppid": 1,
+          "rssBytes": 16384000,
+          "start": 15500,
+          "state": "S",
+          "threads": 5
+        },
+        {
+          "cpu": 0.5,
+          "name": "systemd",
+          "pid": 1,
+          "ppid": 0,
+          "rssBytes": 13107200,
+          "start": 10,
+          "state": "S",
+          "threads": 1
+        },
+        {
+          "cpu": 0.5,
+          "name": "dbus-broker",
+          "pid": 600,
+          "ppid": 1,
+          "rssBytes": 4915200,
+          "start": 520,
+          "state": "S",
+          "threads": 1
+        },
+        {
+          "cpu": 0.0,
+          "name": "systemd-logind",
+          "pid": 430,
+          "ppid": 1,
+          "rssBytes": 10240000,
+          "start": 500,
+          "state": "S",
+          "threads": 1
+        },
+        {
+          "cpu": 0.0,
+          "name": "login",
+          "pid": 900,
+          "ppid": 1,
+          "rssBytes": 3686400,
+          "start": 900,
+          "state": "S",
+          "threads": 1
+        }
       ],
       "procs": 6,
       "rssBytes": 64716800,

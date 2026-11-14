@@ -53,10 +53,12 @@ System) is done.
   name; `--all` lists every process), `what PID [--json]` (explains one
   process), `quit PID|NAME [-y] [--force] [--dry-run] [--json]` (quits a
   process or an app after asking; `--force` sends SIGKILL, and a user
-  service is stopped through systemctl; it never signals pid 1, the
-  daemon, the compositor, your user manager, another user's processes,
-  kernel threads, anything outside your user slice, rootless containers,
-  or the program asking and its parents), `bar ITEM [--watch]
+  service is stopped through systemctl, and the list shows the other
+  services that stop with it and warns before the sound server or a
+  desktop portal is stopped; it never signals pid 1, the daemon, the
+  compositor, your user manager, the session bus, another user's
+  processes, kernel threads, anything outside your user slice, rootless
+  containers, or the program asking and its parents), `bar ITEM [--watch]
   [--interval SEC] [--format waybar|plain|json]` and `bar --list`
   (readings for a status bar),
   `help [COMMAND]`, `--help` and `--version`.

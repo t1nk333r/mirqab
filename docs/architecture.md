@@ -315,23 +315,23 @@ DankMaterialShell (MIT); `NOTICE.md` carries both notices.
 ← {"type":"reply","id":1,"result":{"stream":"system","interval":1000}}
 ← {"type":"event","stream":"system","data":{…}}
 → {"id":2,"method":"action","params":{"name":"ports.stop","args":{"port":3000},"dryRun":true}}
-← {"type":"reply","id":2,"result":{"wouldDo":[{"signal":"TERM","pid":4242,"name":"vite"}]}}
+← {"type":"reply","id":2,"result":{"wouldDo":[{"signal":"TERM","pid":4242,"name":"vite"}],"skipped":[],"warnings":[]}}
 ← {"type":"reply","id":3,"error":{"code":"refused","message":"pid 1 is never signalled"}}
 → {"id":4,"method":"action","params":{"name":"apps.quit","args":{"pid":2001}}}
-← {"type":"reply","id":4,"error":{"code":"needs-confirm","message":"…","data":{"plan":"plan-…","wouldDo":[{"signal":"TERM","pid":2001,"start":5010,"name":"browser"}],"skipped":[]}}}
+← {"type":"reply","id":4,"error":{"code":"needs-confirm","message":"…","data":{"plan":"plan-…","wouldDo":[{"signal":"TERM","pid":2001,"start":5010,"name":"browser"}],"skipped":[],"warnings":[]}}}
 → {"id":5,"method":"action","params":{"name":"apps.quit","args":{"pid":2001},"confirm":true,"plan":"plan-…"}}
 ← {"type":"reply","id":5,"result":{"done":[…],"gone":[],"failed":[],"skipped":[]}}
 ```
 
 | Method | Params | Result |
 |--------|--------|--------|
-| `subscribe` | `stream`, `params.interval` (ms, optional), `params.live` (bool, optional; §5.3). Any other `params` key belongs to the stream (the `apps` stream's `sort`, `limit`, `expand`). One sample is taken per tick and each subscriber gets its own view of it, shaped by its own params. Subscribing again to the same stream replaces the params | The effective interval; then events |
+| `subscribe` | `stream`, `params.interval` (ms, optional), `params.live` (bool, optional; §5.3). Any other `params` key belongs to the stream (the `apps` stream's `sort`, `limit`, `expand`; the `process` stream's `pid` and `start`). One sample is taken per tick and each subscriber gets its own view of it, shaped by its own params. Subscribing again to the same stream replaces the params. Params a stream cannot serve are `bad-request` | The effective interval; then events |
 | `unsubscribe` | `stream` | — |
 | `get` | `stream`, `params` | One snapshot, no subscription, shaped by `params` as a subscription's view is. `stream` may be `<stream>.<query>` (`apps.inspect` with `params.pid`), answered by that stream's sampler; an unknown query is `unknown-stream` |
 | `history.query` | `series[]`, `range` (`1h`, `24h`, `7d`, `30d`) or `from`/`to` (unix seconds) | Per series its `unit` and `points`, each `[unixSeconds, avg, max]` unscaled; empty buckets omitted |
 | `history.events` | `kind`, `from`, `to` | Event rows |
 | `history.list` | — | The series history keeps: key, unit, scale |
-| `action` | `name`, `args`, `dryRun`; for a destructive action `confirm` (a boolean) and `plan` | What was done, or `wouldDo`. A destructive action without `confirm: true` and a plan is the error `needs-confirm`, whose `data` holds `plan`, `wouldDo` and `skipped` (§5.4) |
+| `action` | `name`, `args`, `dryRun`; for a destructive action `confirm` (a boolean) and `plan` | What was done, or `wouldDo`. A destructive action without `confirm: true` and a plan is the error `needs-confirm`, whose `data` holds `plan`, `wouldDo`, `skipped` and `warnings` (§5.4) |
 | `config.get` / `config.set` | key paths | The config; the daemon is the only writer |
 | `capabilities` | — | The list from `hello`: the streams this machine serves, plus `history` when the history file is open (a capability, not a stream) |
 | `status` | — | Version, uptime, subscribers, self-cost |
@@ -353,9 +353,9 @@ Rules:
 
 ### 5.3 Streams and samplers
 
-Streams: `system`, `apps`, `ports`, `agents`, `awake`, `disk`, `net`,
-`devices`, `battery`, `audio`, `fans`, `time`, `weather`, `alerts`, `self`,
-`ui`. One sampler per stream.
+Streams: `system`, `apps`, `process`, `ports`, `agents`, `awake`, `disk`,
+`net`, `devices`, `battery`, `audio`, `fans`, `time`, `weather`, `alerts`,
+`self`, `ui`. One sampler per stream.
 
 - **A sampler runs only while something subscribes to it**: an open tab, a
   pinned Home card, a bar item, the tray tooltip or an enabled rule. With no
@@ -366,13 +366,32 @@ Streams: `system`, `apps`, `ports`, `agents`, `awake`, `disk`, `net`,
   sample and the subscriber's params in, its data out), so one reading
   serves a page, a card and the CLI with their own order and length; and
   may answer queries under its stream (`Sampler::query`, `get
-  <stream>.<query>`) about its subject that are not samples of it.
+  <stream>.<query>`) about its subject that are not samples of it. It may
+  check the params first (`Sampler::accepts`: Err is `bad-request` for a
+  subscribe or a `get`), and may be told the distinct params of its
+  subscribers before each sample (`Sampler::wants`), so it reads only what
+  they name. When a stream had no subscriber since its last sample, the
+  sampler is told before the next one (`Sampler::idle`) and forgets what it
+  kept for the earlier subscribers.
 - `apps` (plan 006, every 2 s, never `live`): `params.sort` (`cpu`,
   `mem`, `name`), `params.limit` (groups, default 50; the System group
   comes last, outside it, and `totals.groups` counts the groups before
   the limit) and `params.expand` (group ids whose processes are listed,
-  or `true` for all). The query `apps.inspect {pid}` explains one
-  process.
+  or `true` for all). Each listed process carries its `start` time, so
+  a pid and its start time name a row across frames. The query
+  `apps.inspect {pid}` explains one process.
+- `process` (plan 006, part 3, the Apps inspector's single-process
+  sample, `live`): `params.pid` and optionally `params.start`. Each tick
+  reads `stat` and `statm` of each distinct pid its subscribers name,
+  eight at most, and nothing else; a subscriber gets
+  `{pid, start, name, cpu, rssBytes, threads, state}` (`cpu` null on the
+  first reading), or `{pid, gone: true}` once the pid holds no process or
+  another one than asked for: the `start` it named, or without one the
+  process first seen at the pid while the stream had subscribers (a pin,
+  dropped when it has none). A pid past the eighth gets `{pid, capped:
+  true}`. A `get` reads the process at the pid now and no pin. It is its
+  own sampler with its own lock, so a 1 s reading never waits behind the
+  `apps` walk.
 - **Live sampling is 1 s, and only while a live graph is on screen**
   (owner, 2026-11-13). A subscription with `live: true` may ask for
   **1000 ms**, the lowest interval anywhere. The interface sets `live`
@@ -388,8 +407,9 @@ Streams: `system`, `apps`, `ports`, `agents`, `awake`, `disk`, `net`,
   plan states its interval: 2 s for rates with no graph on screen, 5 s
   for ports and agents, 30 s for disk space, 30 minutes for weather.
 - Only streams whose plan draws a live graph accept `live`: `system`,
-  `net`, `disk`, `battery`, `fans`, `self`, and the Apps inspector's
-  single-process sample. On any other stream the flag is ignored.
+  `net`, `disk`, `battery`, `fans`, `self`, and `process` (the Apps
+  inspector's single-process sample). On any other stream the flag is
+  ignored.
 - History is not affected: it stays one value a minute (§6).
 - Event-driven sources do not poll: logind, UPower, BlueZ, UDisks2 and bolt
   signals over D-Bus, udev over netlink, pidfd for process exit.
@@ -447,10 +467,26 @@ to a daemon:
   --user stop --no-block`, never one that holds a refused process; Force
   quit adds `systemctl --user kill --signal=KILL`. Its refusals
   are checked when the targets are resolved, and `systemctl` then acts on
-  the unit by name; units tied to it by `Requires=`, `BindsTo=` or
-  `PartOf=` stop with it unseen, `stop` runs `ExecStop=` and ends in
-  SIGKILL after `TimeoutStopSec`, and session services are not refused
-  (plan 006, "Known limits (part 2)"). Signals go through
+  the unit by name. Before a stop the daemon asks which active units name
+  the unit in `Requires=`, `Requisite=`, `BindsTo=` or `PartOf=`, or are
+  named in its `PropagatesStopTo=` (`systemctl --user show`, one level
+  deep); `wouldDo` lists them under the stop as `alsoStops` with their
+  processes, found for a dependent of any unit type (a service, a scope,
+  or a slice and what is under it), which pass the same refusals, so one
+  refused process among them refuses the stop; when the question fails the
+  entry says `alsoStopsUnknown` and the stop is still planned. The plan
+  keeps the dependents it showed: a confirmation whose unit would now take
+  a unit the plan did not show, or whose list cannot be told now when the
+  plan's could, is refused and nothing runs. The session bus
+  (`dbus.service`, `dbus-broker.service`, `dbus-daemon.service`) is never
+  stopped or signalled, and a stop that would also stop it is refused too,
+  as a dependent. Stopping the sound server (`pipewire`, `pipewire-pulse`,
+  `wireplumber`) or a desktop portal (`xdg-desktop-portal*`) is allowed; the
+  plan's `warnings` say what it breaks, the CLI prints them, and the
+  interface's dialog will show them in part 3b (owner, 2026-11-14). Quit
+  stays `stop`, which runs
+  `ExecStop=` and ends in SIGKILL after `TimeoutStopSec` (plan 006,
+  "Known limits (part 3a)"). Signals go through
   a pidfd opened before the last check, so the check and the signal are
   about the same process; the daemon signals for real only when its root
   is `/`, and records what it would have done on any other root (plan

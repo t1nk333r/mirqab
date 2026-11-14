@@ -51,6 +51,38 @@ pub fn ancestry_strict(root: &Root, pid: u32) -> Result<Vec<u32>, WalkError> {
     Ok(out)
 }
 
+/// The session bus's units: never stopped or signalled, whoever asks.
+/// Like the compositor, ending it ends the session (owner, 2026-11-14,
+/// plan 006 Q2). `dbus-daemon.service` is the reference bus's own name
+/// where `dbus.service` is only its alias (review of PR #18).
+pub const SESSION_BUS: &[&str] = &["dbus.service", "dbus-broker.service", "dbus-daemon.service"];
+
+/// Services Quit may stop, with a warning in the confirmation: the sound
+/// server and the desktop portals come back on next use, and stopping a
+/// stuck one is a real use (owner, 2026-11-14, plan 006 Q2).
+const SOUND: &[&str] = &[
+    "pipewire.service",
+    "pipewire-pulse.service",
+    "wireplumber.service",
+];
+const PORTAL_PREFIX: &str = "xdg-desktop-portal";
+
+/// Whether `unit` is the session bus.
+pub fn is_session_bus(unit: &str) -> bool {
+    SESSION_BUS.contains(&unit)
+}
+
+/// The warning a stop of `unit` carries, if any.
+pub fn session_warning(unit: &str) -> Option<String> {
+    if SOUND.contains(&unit) {
+        Some(strings::warn_sound(unit))
+    } else if unit.starts_with(PORTAL_PREFIX) && unit.ends_with(".service") {
+        Some(strings::warn_portal(unit))
+    } else {
+        None
+    }
+}
+
 /// The parent pid from `proc/<pid>/stat`: the field after the command,
 /// whose parentheses may hold spaces, parentheses and any byte a process
 /// set with `prctl`, so the line is read as bytes (review of PR #13: a
@@ -79,6 +111,31 @@ mod tests {
             act::write_file(&d.join(format!("proc/{pid}/stat")), stat.as_bytes(), false).unwrap();
         }
         (Root::new(&d), d)
+    }
+
+    #[test]
+    fn the_session_bus_is_named_and_sound_and_portals_warn() {
+        assert!(is_session_bus("dbus.service"));
+        assert!(is_session_bus("dbus-broker.service"));
+        assert!(is_session_bus("dbus-daemon.service"));
+        assert!(!is_session_bus("dbus.socket"));
+        assert!(!is_session_bus("dbus-broker-launch.service"));
+        for u in [
+            "pipewire.service",
+            "pipewire-pulse.service",
+            "wireplumber.service",
+        ] {
+            assert_eq!(session_warning(u), Some(strings::warn_sound(u)));
+        }
+        for u in [
+            "xdg-desktop-portal.service",
+            "xdg-desktop-portal-hyprland.service",
+        ] {
+            assert_eq!(session_warning(u), Some(strings::warn_portal(u)));
+        }
+        assert_eq!(session_warning("pipewire.socket"), None);
+        assert_eq!(session_warning("dbus-broker.service"), None);
+        assert_eq!(session_warning("example-sync.service"), None);
     }
 
     #[test]
