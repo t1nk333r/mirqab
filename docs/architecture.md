@@ -479,11 +479,12 @@ to a daemon:
   a unit the plan did not show, or whose list cannot be told now when the
   plan's could, is refused and nothing runs. The session bus
   (`dbus.service`, `dbus-broker.service`, `dbus-daemon.service`) is never
-  stopped or
-  signalled; stopping the sound server (`pipewire`, `pipewire-pulse`,
-  `wireplumber`) or a desktop portal (`xdg-desktop-portal*`) is allowed and
-  the plan's `warnings` say what it breaks, for the CLI to print and the
-  dialog to show (owner, 2026-11-14). Quit stays `stop`, which runs
+  stopped or signalled, and a stop that would also stop it is refused too,
+  as a dependent. Stopping the sound server (`pipewire`, `pipewire-pulse`,
+  `wireplumber`) or a desktop portal (`xdg-desktop-portal*`) is allowed; the
+  plan's `warnings` say what it breaks, the CLI prints them, and the
+  interface's dialog will show them in part 3b (owner, 2026-11-14). Quit
+  stays `stop`, which runs
   `ExecStop=` and ends in SIGKILL after `TimeoutStopSec` (plan 006,
   "Known limits (part 3a)"). Signals go through
   a pidfd opened before the last check, so the check and the signal are
