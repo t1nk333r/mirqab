@@ -1,25 +1,54 @@
-//! What an acting tool must never touch beyond architecture §5.4's
-//! refusals (plan 005, rule 4): the MCP server's own ancestry, so an agent
-//! cannot kill itself, its terminal or its editor by accident. Read through
-//! `Root`, so the walk is tested on fixture trees.
+//! What an action must never touch beyond architecture §5.4's fixed
+//! refusals (plan 005, rule 4; plan 006, decisions 6 and 7): the caller's
+//! own ancestry, so an agent or a shell cannot kill itself, its terminal or
+//! its editor by accident, and the compositor's. Read through `Root`, so
+//! the walk is tested on fixture trees.
 
+use crate::proto::strings;
 use crate::root::Root;
 
 /// The deepest walk: a loop in a broken tree must end.
 const MAX_DEPTH: usize = 64;
 
+/// Why a walk could not finish.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WalkError {
+    /// A `stat` on the way could not be read or parsed.
+    Unreadable(u32),
+    /// A pid came back: the parent links form a loop.
+    Loop(u32),
+    /// Deeper than MAX_DEPTH.
+    TooDeep,
+}
+
+impl std::fmt::Display for WalkError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&match self {
+            WalkError::Unreadable(pid) => strings::walk_unreadable(*pid),
+            WalkError::Loop(pid) => strings::walk_loop(*pid),
+            WalkError::TooDeep => strings::walk_too_deep(MAX_DEPTH),
+        })
+    }
+}
+
 /// `pid` and its ancestors up to (not including) pid 1, nearest first.
-pub fn ancestry(root: &Root, pid: u32) -> Vec<u32> {
+/// It fails closed: an unreadable `stat` on the way, a loop or a depth
+/// past 64 is an error, and an action that needed the walk is refused
+/// (plan 006: a quiet stop would leave the rest of the chain signallable).
+pub fn ancestry_strict(root: &Root, pid: u32) -> Result<Vec<u32>, WalkError> {
     let mut out = Vec::new();
     let mut cur = pid;
-    while cur > 1 && out.len() < MAX_DEPTH && !out.contains(&cur) {
-        out.push(cur);
-        match parent(root, cur) {
-            Some(p) => cur = p,
-            None => break,
+    while cur > 1 {
+        if out.contains(&cur) {
+            return Err(WalkError::Loop(cur));
         }
+        if out.len() >= MAX_DEPTH {
+            return Err(WalkError::TooDeep);
+        }
+        out.push(cur);
+        cur = parent(root, cur).ok_or(WalkError::Unreadable(cur))?;
     }
-    out
+    Ok(out)
 }
 
 /// The parent pid from `proc/<pid>/stat`: the field after the command,
@@ -62,7 +91,7 @@ mod tests {
                 (400, "zsh", 1),
             ],
         );
-        assert_eq!(ancestry(&root, 900), [900, 850, 400]);
+        assert_eq!(ancestry_strict(&root, 900), Ok(vec![900, 850, 400]));
         act::remove_path(&d, false).unwrap();
     }
 
@@ -75,15 +104,40 @@ mod tests {
             false,
         )
         .unwrap();
-        assert_eq!(ancestry(&root, 900), [900, 400]);
+        assert_eq!(ancestry_strict(&root, 900), Ok(vec![900, 400]));
         act::remove_path(&d, false).unwrap();
     }
 
     #[test]
-    fn a_loop_or_a_missing_parent_ends_the_walk() {
-        let (root, d) = tree("loop", &[(10, "a", 11), (11, "b", 10)]);
-        assert_eq!(ancestry(&root, 10), [10, 11]);
-        assert_eq!(ancestry(&root, 77), [77], "no stat: the pid itself");
+    fn a_loop_a_missing_parent_or_depth_is_an_error() {
+        let (root, d) = tree(
+            "loop",
+            &[(10, "a", 11), (11, "b", 10), (20, "c", 21), (40, "init", 0)],
+        );
+        assert_eq!(ancestry_strict(&root, 10), Err(WalkError::Loop(10)));
+        assert_eq!(
+            ancestry_strict(&root, 77),
+            Err(WalkError::Unreadable(77)),
+            "no stat: an error, not the pid alone"
+        );
+        assert_eq!(
+            ancestry_strict(&root, 20),
+            Err(WalkError::Unreadable(21)),
+            "a parent's stat missing"
+        );
+        assert_eq!(ancestry_strict(&root, 40), Ok(vec![40]), "ppid 0 ends it");
+        // A chain of 70: 1000 -> 1001 -> … -> 1069 -> 1.
+        let chain: Vec<(u32, String, u32)> = (1000..1070)
+            .map(|p| (p, "x".to_string(), if p == 1069 { 1 } else { p + 1 }))
+            .collect();
+        let rows: Vec<(u32, &str, u32)> = chain
+            .iter()
+            .map(|(p, c, pp)| (*p, c.as_str(), *pp))
+            .collect();
+        let (deep, d2) = tree("deep", &rows);
+        assert_eq!(ancestry_strict(&deep, 1000), Err(WalkError::TooDeep));
+        assert_eq!(ancestry_strict(&deep, 1010).map(|v| v.len()), Ok(60));
         act::remove_path(&d, false).unwrap();
+        act::remove_path(&d2, false).unwrap();
     }
 }

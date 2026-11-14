@@ -11,6 +11,7 @@ mod elevate;
 mod mcp;
 mod mcp_config;
 mod out;
+mod quit;
 mod tray;
 
 use mirqab_core::proto::strings;
@@ -108,6 +109,7 @@ fn main() -> ExitCode {
         }
         "bar" => bar::run(args),
         "apps" | "what" => apps::run(&command, args),
+        "quit" => quit::run(args),
         // With no socket to name, the server still starts: each tool then
         // says there is no daemon, which the agent can tell the user.
         "mcp" | "--mcp" if !args.rest.is_empty() => {

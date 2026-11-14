@@ -24,6 +24,13 @@ impl Root {
         &self.base
     }
 
+    /// Whether this root is the live machine. Only then does the daemon
+    /// signal processes or probe the compositor's socket (plan 006): a
+    /// fixture's pid 2001 may be a real process of whoever runs the tests.
+    pub fn is_host(&self) -> bool {
+        self.base == Path::new("/")
+    }
+
     /// The real path of `rel` ("proc/stat") under the root. Absolute paths and
     /// `..` are refused, so nothing names a file outside the tree by its text.
     /// (A symlink inside a fixture can still point out; fixtures are ours.)
@@ -87,7 +94,7 @@ impl Root {
     pub fn read_prefix(&self, rel: &str, n: usize) -> io::Result<Vec<u8>> {
         use std::io::Read;
         let path = self.path(rel)?;
-        if self.base != Path::new("/") {
+        if !self.is_host() {
             let real = std::fs::canonicalize(&path)?;
             let base = std::fs::canonicalize(&self.base)?;
             if !real.starts_with(&base) {

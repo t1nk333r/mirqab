@@ -15,6 +15,10 @@ pub const APPS: &str = "apps";
 /// `get apps.inspect {pid}`: one process explained (plan 006). A request
 /// under the `apps` stream, not a stream of its own.
 pub const APPS_INSPECT: &str = "apps.inspect";
+/// The `action`s that end an app or a process (plan 006, part 2): SIGTERM,
+/// and SIGKILL for Force quit. Both need `confirm`.
+pub const APPS_QUIT: &str = "apps.quit";
+pub const APPS_KILL: &str = "apps.kill";
 
 /// The `self` stream: what mirqab costs (plan 001).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

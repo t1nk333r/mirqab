@@ -16,7 +16,12 @@ pub enum Answer {
 }
 
 pub fn ask(would_do: &[String], yes: bool, dry_run: bool) -> Answer {
-    out::line(strings::CONFIRM_WILL);
+    ask_with(strings::CONFIRM_WILL, would_do, yes, dry_run)
+}
+
+/// `ask` under another first line (`mirqab quit`'s "This will quit:").
+pub fn ask_with(header: &str, would_do: &[String], yes: bool, dry_run: bool) -> Answer {
+    out::line(header);
     for w in would_do {
         out::line(&format!("  {w}"));
     }

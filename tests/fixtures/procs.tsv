@@ -16,7 +16,9 @@
 #            fd=N:TARGET; drm=FD:CLIENT:VRAM:GTT:CPU (KiB, amdgpu fdinfo);
 #            smaps=PSS:SWAP (kB); flatpak=APPID; nnp; seccomp=N;
 #            capeff=HEX; ns=mnt+pid+... (namespaces that differ from the
-#            daemon's); cwd=PATH (default the home directory)
+#            daemon's); cwd=PATH (default the home directory);
+#            uids=REAL:EFFECTIVE:SAVED:FS (default the row's uid four
+#            times; pid 6300 is a setuid-root program, plan 006 part 2)
 #
 # The user is uid 1000 with the home /users/user (etc/passwd), and
 # proc/self/status says the daemon runs as 1000. A home under /users
@@ -70,3 +72,4 @@ both	7400	1100	1000	S	tworeader	7400	7400	-	35500	100	20	100	20	4	15000	6000	~/a
 both	7500	1050	1000	S	python3	7500	7500	-	36000	400	40	404	40	2	12000	3000	~/app.slice/app-Hyprland-script-1a2b3c4d.scope	/usr/bin/python3	python3 /users/user/bin/report.py	-
 t0	7200	1050	1000	S	worker	7200	7200	-	310000	5000	1000	-	-	1	2000	1000	~/app.slice/app-Hyprland-worker-33333333.scope	/usr/bin/worker	worker	-
 t1	7200	1050	1000	S	worker	7200	7200	-	361000	-	-	7000	1000	1	2000	1000	~/app.slice/app-Hyprland-worker-33333333.scope	/usr/bin/worker	worker	-
+both	6300	1050	1000	S	suidtool	6300	6300	-	37000	20	10	20	10	1	3000	2000	~/app.slice/app-Hyprland-suidtool-5e5e5e5e.scope	/usr/bin/suidtool	suidtool --check	uids=1000:0:0:1000

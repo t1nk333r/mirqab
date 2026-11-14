@@ -121,7 +121,7 @@ pub(super) fn send(socket: &Path, what: &'static str, req: Request) {
             let why = match call(&socket, req) {
                 Ok(_) => return,
                 Err(CallError::NoDaemon(why)) => why,
-                Err(CallError::Daemon(code, message)) => format!("{code}: {message}"),
+                Err(CallError::Daemon(code, message, _)) => format!("{code}: {message}"),
             };
             server::log(&strings::tray_action_failed(what, &why));
         });

@@ -154,6 +154,24 @@ pub fn container_id(cgroup: &str) -> Option<String> {
     None
 }
 
+/// The command that stops the container a cgroup path is in, for a
+/// message: `podman` for a `libpod-` scope, `docker` for a `docker-` scope
+/// or a `docker/<id>` pair; None for other runtimes.
+pub fn container_runtime(cgroup: &str) -> Option<&'static str> {
+    container_id(cgroup)?;
+    let parts: Vec<&str> = cgroup.split('/').collect();
+    if parts.iter().any(|p| p.starts_with("libpod-")) {
+        Some("podman")
+    } else if parts
+        .iter()
+        .any(|p| p.starts_with("docker-") || *p == "docker")
+    {
+        Some("docker")
+    } else {
+        None
+    }
+}
+
 /// A unit name's `\xNN` escapes decoded (systemd escapes `-` inside an
 /// application id as `\x2d`, a space as `\x20`, systemd.unit(5)). Any other
 /// backslash is left as written. Applied to the ids taken from a unit name,
@@ -263,7 +281,7 @@ fn base(p: &Proc, own_uid: u32) -> Base {
 
 /// The oldest member that is not a shell (a launcher script's shell is
 /// older than the app it starts), else the oldest.
-fn main_process(procs: &[Proc], members: &[usize]) -> usize {
+pub fn main_process(procs: &[Proc], members: &[usize]) -> usize {
     let oldest = |it: &mut dyn Iterator<Item = &usize>| {
         it.min_by_key(|&&i| (procs[i].stat.start, procs[i].pid()))
             .copied()
@@ -582,6 +600,19 @@ mod tests {
             "conmon is not the container"
         );
         assert_eq!(container_id("/system.slice/docker.service"), None);
+        assert_eq!(
+            container_runtime(&format!("/user.slice/x/libpod-{id}.scope/container")),
+            Some("podman")
+        );
+        assert_eq!(
+            container_runtime(&format!("/system.slice/docker-{id}.scope")),
+            Some("docker")
+        );
+        assert_eq!(
+            container_runtime(&format!("/kubepods/crio-{id}.scope")),
+            None
+        );
+        assert_eq!(container_runtime("/system.slice/docker.service"), None);
 
         // A sub-uid process stays in a rootless container under the user's
         // manager; a foreign uid in a container under system.slice stays

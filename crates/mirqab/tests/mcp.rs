@@ -174,6 +174,14 @@ fn a_legacy_client_initializes_lists_and_reads_the_load() {
             "what_is_process"
         ]
     );
+    // MCP stays read only through plan 006: Quit and Force quit are the
+    // daemon's and the CLI's, and no tool acts until plan 007's kill_port.
+    assert!(
+        names
+            .iter()
+            .all(|n| *n != "quit" && !n.starts_with("kill") && !n.contains("quit")),
+        "no acting tool is listed: {names:?}"
+    );
     let what = &list["result"]["tools"][3]["inputSchema"];
     assert_eq!(what["required"], json!(["pid"]), "{what}");
     assert_eq!(what["additionalProperties"], false);
@@ -239,7 +247,7 @@ fn top_apps_and_what_is_process_read_the_fixture() {
         keys(&groups[0]),
         ["cpu", "id", "kind", "name", "procs", "rssBytes", "top"]
     );
-    assert_eq!(top["structuredContent"]["totals"]["groups"], 23);
+    assert_eq!(top["structuredContent"]["totals"]["groups"], 24);
     assert_eq!(top["structuredContent"]["sort"], "mem");
     let text = top["content"][0]["text"].as_str().unwrap();
     assert!(text.contains("Example Browser"), "{text}");
