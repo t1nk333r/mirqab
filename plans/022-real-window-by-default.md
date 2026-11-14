@@ -53,8 +53,9 @@ stays as an opt-in mode.
 | E16 | GTK 4 removed the window position API: "This includes gtk_window_set_position(), … gtk_window_move(), gtk_window_parse_geometry()". | https://docs.gtk.org/gtk4/migrating-3to4.html (read 2026-11-14) |
 | E17 | `gtk_window_present`: "This may mean raising the window in the stacking order, unminimizing it, moving it to the current desktop and/or giving it the keyboard focus (possibly dependent on the user's platform, window manager and preferences)." | https://docs.gtk.org/gtk4/method.Window.present.html (read 2026-11-14) |
 | E18 | The docs and help that say the popover is the default. | docs/architecture.md:223-242, :265-271, :550, :555; README.md:59-67; strings.rs:42, :849; docs/cli.md:28; plans/001-foundation.md:162, :256-262, :367-370 |
-| E19 | Hyprland's Lua rule form is `hl.window_rule({ name, match = { class = … }, float = true })`; a class pattern is matched against the whole string. | haseen `share/haseen/default/hypr/windowrules.lua:1-3`, `:28-30` |
+| E19 | Hyprland's Lua rule form is `hl.window_rule({ name, match = { class = … }, float = true, center = true })`; a class pattern is matched against the whole string. | haseen `share/haseen/default/hypr/windowrules.lua:1-3`, `:27-32` |
 | E20 | Versions on the owner's machine: gtk4 4.24.1, libadwaita 1.10.0, gtk4-layer-shell 1.3.0, hyprland 0.56.2. | `pacman -Q`, 2026-11-14 **[machine]** |
+| E21 | A window's default size follows a resize: "The default size will be updated whenever the window is resized to reflect the new size, unless the window is forced to a size, like when it is maximized or fullscreened." So a hidden window that is shown again has the dragged size. | GTK 4.24.1 API docs, gtk_window_set_default_size (/usr/share/gir-1.0/Gtk-4.0.gir) |
 
 ## Design
 
@@ -77,7 +78,7 @@ desktop entry keeps using it. No `--popover` flag is added (Rejected).
   compositor the compositor decides the size; the default matters when the
   window floats.
 - **Size is remembered while the process lives**, because a hidden window
-  is reused (E6). After the 60 s exit the next open starts from
+  is reused (E6, E21). After the 60 s exit the next open starts from
   `widthEm`/`heightEm` again. Those two keys are the remembered size; the
   dragged size is not written to the config in this plan (Rejected).
 - **Position is never remembered, and cannot be.** GTK 4 has no call to
@@ -247,7 +248,8 @@ Affected scope only: the unit tests of mirqab-core and mirqab-view,
 - [ ] U1: on Hyprland, with the window visible on another workspace, run
       `mirqab open`. Record what `present()` does; decide the D4 fallback.
 - [ ] U2: on Hyprland, see the window-mode header with `WindowControls`
-      (which buttons show, whether the handle drags a floating window).
+      (which buttons show, whether the handle drags a floating window); the
+      empty start-side controls add no gap before the title.
 - [ ] U3: check the rule in D7 on Hyprland 0.56, and the key names for a
       size; write only what was run.
 - [ ] U4: with the window focused, click the tray icon with
@@ -265,15 +267,18 @@ Affected scope only: the unit tests of mirqab-core and mirqab-view,
   Settings lists Window first. `Mode::closes_on_escape()` is true for
   Popover only; window.rs binds Escape to hide only then, and `Ctrl+W`
   (`<Control>w`) otherwise.
-- The header row is a `gtk::WindowHandle` around the old header box; in
-  window mode the box ends with `gtk::WindowControls::new(PackType::End)`.
+- In window mode the header row is a `gtk::WindowHandle` around the old
+  header box, which starts and ends with `gtk::WindowControls`
+  (`PackType::Start`, `PackType::End`): GTK means them to be used in
+  pairs, and a left-side button layout would otherwise show no close
+  button. The popover's header is the plain box, unchanged.
   The controls follow the mode the window **got**, not the one asked for,
   so a popover that falls back to a window (no layer shell) gets them too:
   it is a real window. The plan's test expected none there; the test now
-  expects one.
+  expects two.
 - `--selftest` opens with the config's mode (`None`), so the Broadway test
   tells the modes apart by the `POPOVER_UNSUPPORTED` notice.
-- `test-ui-shell.sh`: the default selftest has no notice, one
+- `test-ui-shell.sh`: the default selftest has no notice, two
   `GtkWindowControls` and one `GtkWindowHandle`; after `config.set
   window.mode popover` (over `socat`, as test-ui-home.sh does) the notice
   shows; `mirqab open` (no `--window`), `toggle`, `toggle` keeps one
@@ -286,6 +291,8 @@ Affected scope only: the unit tests of mirqab-core and mirqab-view,
   and `center` (both from haseen's working rules, E19). No size line
   (U3). The bind lines stay in the older syntax.
 - The D4 fallback (re-map on `show`) is not built; it waits on U1.
+- Left for later: Settings still offers Corner while Opens as is Window,
+  where it does nothing.
 - Tests: `cargo test -p mirqab-view --lib` 2/2, `-p mirqab-core --lib
   config` 9/9, `tests/run.sh tests/test-ui-shell.sh` 27/27.
 
@@ -299,9 +306,12 @@ Affected scope only: the unit tests of mirqab-core and mirqab-view,
 - **U2 — window controls on Hyprland.** That `gtk::WindowControls` shows a
   close button under libadwaita 1.10 on Hyprland, and that it looks right
   beside the page title, is from the GTK API, not from a run.
-- **U3 — the rule.** The `float = true` form is copied from haseen's
-  working rules (E19). The keys for size and centring, and the equivalent
-  in the older config syntax, were not checked against Hyprland 0.56.
+- **U3 — the rule.** The `float = true` and `center = true` keys are
+  copied from haseen's working rule (E19). mirqab's own rule was not
+  loaded on Hyprland 0.56, and the key for a size and the equivalent in
+  the older config syntax were not checked.
+- **The size after a hide.** From GTK's docs (E21), not from a resize on
+  Hyprland (acceptance 2).
 - **U4 — toggle from the tray.** D3 does not depend on focus by design
   (E7); the click path on the owner's bar is still worth one look.
 - **A re-shown window lands on the current workspace** (D4, acceptance 3).

@@ -283,7 +283,7 @@ as such in its plan.
 **Other compositors.** The popover needs `wlr-layer-shell`.
 `gtk4_layer_shell::is_supported()` answers before the first window is
 built; where it is false (GNOME) the interface uses window mode and says
-so once in Settings.
+so once in the footer.
 
 ## 5. The daemon
 

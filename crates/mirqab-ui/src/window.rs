@@ -100,16 +100,20 @@ impl Window {
         let header = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         header.add_css_class("mirqab-header");
         header.append(&title);
-        if mode == Mode::Popover {
+        // A normal window has no header bar: the row drags it and holds the
+        // desktop's own buttons, whose close hides (plan 022). A popover's
+        // header is a plain row: a layer surface has nothing to drag.
+        let header_row: gtk::Widget = if mode == Mode::Popover {
             header.append(&pinned);
             header.append(&close);
+            header.clone().upcast()
         } else {
-            // A normal window has no header bar: the row drags it and ends
-            // with the desktop's own buttons, whose close hides (plan 022).
+            header.prepend(&gtk::WindowControls::new(gtk::PackType::Start));
             header.append(&gtk::WindowControls::new(gtk::PackType::End));
-        }
-        let header_row = gtk::WindowHandle::new();
-        header_row.set_child(Some(&header));
+            let handle = gtk::WindowHandle::new();
+            handle.set_child(Some(&header));
+            handle.upcast()
+        };
 
         let pages = Pages::new();
         let column = gtk::Box::new(gtk::Orientation::Vertical, 0);
@@ -225,8 +229,8 @@ impl Window {
         });
     }
 
-    /// Escape closes; Ctrl+1…9 and Ctrl+Tab move between tabs (one
-    /// controller on the window).
+    /// Escape closes a popover and Ctrl+W a window; Ctrl+1…9 and Ctrl+Tab
+    /// move between tabs (one controller on the window).
     fn shortcuts(&self, ctx: &Rc<Ctx>) {
         let sc = gtk::ShortcutController::new();
         sc.set_scope(gtk::ShortcutScope::Managed);

@@ -64,7 +64,8 @@ System) is done.
   and memory, the machine line, and a Settings button. The close button,
   Ctrl+W, the compositor's close key, the tray click or `mirqab close`
   hides the window; the process quits 60 s after it was last hidden, and
-  until then the window comes back at the size it had.
+  until then a floating window comes back at the size it had (a tiled one
+  gets the size the compositor gives it).
 - Settings → Opens as → Popover (or `window.mode` set to `popover`)
   makes it a popover anchored to a screen corner, on compositors with
   wlr-layer-shell such as Hyprland. Escape closes a popover, and so does
@@ -267,7 +268,7 @@ into your icon theme:
 install -Dm644 dist/icons/mirqab-symbolic.svg ~/.local/share/icons/hicolor/symbolic/apps/mirqab-symbolic.svg
 ```
 
-To toggle the window from a key in Hyprland:
+To toggle the window from a key in Hyprland (the `hyprland.conf` syntax):
 
 ```
 bind = SUPER, M, exec, mirqab toggle
@@ -275,9 +276,12 @@ bind = SUPER SHIFT, M, exec, mirqab toggle system
 ```
 
 `mirqab toggle` hides a shown window wherever it is, and shows a hidden
-one where you are, so a window left on another workspace comes to you on
+one as a new window, which a compositor normally opens on the workspace
+you are on. So a window left on another workspace should come to you on
 the second press. Hyprland tiles the window like any app. To float it
-instead, a rule in Hyprland's Lua config:
+instead, a rule for Hyprland's Lua config (`hyprland.lua`). The same rule
+in the `hyprland.conf` syntax, and the binds in Lua, have not been checked
+here:
 
 ```lua
 hl.window_rule({

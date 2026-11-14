@@ -30,7 +30,7 @@ like "Home shows its seeded cards" "$(q '[.. | objects | select(.visible) | .tex
 is "no tile tooltip is missing" 0 "$(q '[.. | objects | select((.classes // []) | index("mirqab-tile")) | select(.tooltip == null)] | length')"
 notice="This compositor has no layer shell, so mirqab opens as a window"
 is "the default opens a window, not a popover" 0 "$(jq --arg n "$notice" '[.. | objects | select(.text? == $n)] | length' <<<"$tree")"
-is "the window has the desktop's buttons" 1 "$(q '[.. | objects | select(.type == "GtkWindowControls")] | length')"
+is "the window has the desktop's buttons on both sides" 2 "$(q '[.. | objects | select(.type == "GtkWindowControls")] | length')"
 is "its header row drags it" 1 "$(q '[.. | objects | select(.type == "GtkWindowHandle")] | length')"
 
 capture timeout 20 "$BIN/mirqab-ui" --socket "$MIRQAB_SOCKET" --selftest nonsense
@@ -46,7 +46,7 @@ capture timeout 20 "$BIN/mirqab-ui" --socket "$MIRQAB_SOCKET" --selftest home
 status_is "--selftest home exits 0 with a popover config" 0 "$STATUS"
 tree="$(grep -m1 '^{' <<<"$OUTPUT" || true)"
 is "a popover config asks for the popover" 1 "$(jq --arg n "$notice" '[.. | objects | select(.text? == $n)] | length' <<<"$tree")"
-is "the window it falls back to has the desktop's buttons" 1 "$(q '[.. | objects | select(.type == "GtkWindowControls")] | length')"
+is "the window it falls back to has the desktop's buttons" 2 "$(q '[.. | objects | select(.type == "GtkWindowControls")] | length')"
 reply="$(printf '{"id":1,"method":"config.set","params":{"key":"window.mode","value":"window"}}\n' |
     timeout 5 socat -t 2 - "UNIX-CONNECT:$MIRQAB_SOCKET")"
 unlike "window.mode window is accepted" "$reply" '"error"'
