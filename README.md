@@ -63,8 +63,8 @@ System) is done.
   has not landed shows a placeholder. The footer shows mirqab's own CPU
   and memory, the machine line, and a Settings button. The close button,
   Ctrl+W, the compositor's close key, the tray click or `mirqab close`
-  hides the window; the process quits 60 s after it was last hidden, and
-  until then a floating window comes back at the size it had (a tiled one
+  hides the window; the process quits 60 s after it was last hidden. Until
+  then a floating window should come back at the size it had (a tiled one
   gets the size the compositor gives it).
 - Settings → Opens as → Popover (or `window.mode` set to `popover`)
   makes it a popover anchored to a screen corner, on compositors with
@@ -279,9 +279,9 @@ bind = SUPER SHIFT, M, exec, mirqab toggle system
 one as a new window, which a compositor normally opens on the workspace
 you are on. So a window left on another workspace should come to you on
 the second press. Hyprland tiles the window like any app. To float it
-instead, a rule for Hyprland's Lua config (`hyprland.lua`). The same rule
-in the `hyprland.conf` syntax, and the binds in Lua, have not been checked
-here:
+instead, add this rule to Hyprland's Lua config (`hyprland.lua`). It is
+copied from a rule that works in haseen, but it has not been loaded on
+Hyprland yet, and its `hyprland.conf` form has not been checked:
 
 ```lua
 hl.window_rule({

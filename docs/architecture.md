@@ -225,8 +225,9 @@ Four ways in, one daemon behind them.
    header row is a `GtkWindowHandle` that drags it and ends with
    `GtkWindowControls`, the desktop's buttons; close hides. Escape does
    nothing (a window that vanished on Escape would surprise); Ctrl+W
-   hides. Its size is `widthEm` × `heightEm` at first and lasts while the
-   process does; its position is the compositor's, since GTK 4 has no call
+   hides. Its size is `widthEm` × `heightEm` at first, and GTK is expected
+   to keep the size across a hide (not yet checked on Hyprland). Its
+   position is the compositor's, since GTK 4 has no call
    to place a toplevel. The `.desktop` entry asks for this mode with
    `--window`, which overrides a config that asks for the popover.
 2. **Popover (opt-in).** Settings or `window.mode = "popover"`. The same
@@ -238,7 +239,7 @@ Four ways in, one daemon behind them.
    window's `is-active` property turns false and the window hides. With
    focus-follows-mouse (Hyprland's `follow_mouse = 1`) that is as soon as
    the pointer crosses another window, which is why the window is the
-   default (owner, 2026-11-14). A "Pinned" toggle keeps it open and stops
+   default (owner, 2026-11-14). A "Keep open" toggle keeps it open and stops
    that close. Whether a window is a layer surface is fixed when it is
    first shown, so switching mode builds a new window around the same
    content widget.
@@ -558,7 +559,7 @@ own tokens, icons and words:
   has a title, an optional range picker (2m, 1h, 24h, 7d, 30d) and a
   "Pin to Home" control.
 - **Header**: the page title; in a window it drags the window and ends
-  with the desktop's buttons, in a popover it holds "Pinned" and close.
+  with the desktop's buttons, in a popover it holds "Keep open" and close.
 - **Footer**: `self 0.2% · 14 MB` (daemon plus interface; the tooltip
   splits them), the machine line (CPU model, uptime), a health shortcut to
   Support, Settings, and a menu (window mode, quit daemon).
