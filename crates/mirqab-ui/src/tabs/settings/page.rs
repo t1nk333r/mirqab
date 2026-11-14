@@ -14,7 +14,7 @@ use serde_json::{Value, json};
 use std::cell::Cell;
 use std::rc::Rc;
 
-const MODES: &[&str] = &["popover", "window"];
+const MODES: &[&str] = &["window", "popover"];
 const TEMPERATURES: &[&str] = &["c", "f"];
 const CLOCKS: &[&str] = &["auto", "12", "24"];
 

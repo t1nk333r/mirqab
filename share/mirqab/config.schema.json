@@ -8,7 +8,7 @@
     "window": {
       "type": "object",
       "properties": {
-        "mode": {"enum": ["popover", "window"], "default": "popover"},
+        "mode": {"enum": ["popover", "window"], "default": "window"},
         "anchor": {"enum": ["top-left", "top", "top-right", "bottom-left", "bottom", "bottom-right"], "default": "top-right"},
         "marginEm": {"type": "number", "minimum": 0, "maximum": 10, "default": 0.5},
         "widthEm": {"type": "number", "minimum": 30, "maximum": 120, "default": 58},

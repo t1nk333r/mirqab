@@ -11,7 +11,9 @@
 - **Category**: core
 - **Planned at**: 2026-11-13, from the owner
 - **State**: DONE (2026-11-13). Two owner checks stay open: one page by
-  eye at scale 1.25, and the popover closing on focus loss on Hyprland.
+  eye at scale 1.25, and the popover closing on focus loss on Hyprland
+  (answered 2026-11-14: it closes, too eagerly; plan 022 makes the window
+  the default).
   Phase A (skeleton and gates) implemented 2026-11-13: `tools/lint.sh`, `tools/check-docs.sh`, `tools/secrets.sh`
   pass on the branch, and `tests/run.sh` 93/93. Phase B (daemon and
   protocol) implemented 2026-11-13: `tests/run.sh --affected` 140/140.
@@ -167,6 +169,8 @@ the stream accepts `live` for a pinned self-cost graph):
  "tabs":{"hidden":[]}}
 ```
 
+(Plan 022, 2026-11-14: the default `window.mode` is now `"window"`.)
+
 `live.intervalMs` is the interval of a live graph on screen: 1000 by
 default, settable from 1000 to 5000 for a user who wants less work. It
 does not change any other interval.
@@ -259,7 +263,9 @@ focuses a page's search field when it has one (one
 Tab and has an accessible label (architecture §7.2).
 
 The popover closes on Escape, and when the window's `is-active` property
-turns false unless Pinned is on.
+turns false unless Pinned is on. (Plan 022, 2026-11-14: the default
+`window.mode` is now `"window"`; in a window Escape does nothing and Ctrl+W
+hides.)
 
 ### The repository, CI and branch protection
 
@@ -367,7 +373,8 @@ sandbox, export `GDK_BACKEND=broadway`, `BROADWAY_DISPLAY=:N`,
 3. `mirqab open` shows the popover with sixteen tiles, the footer with a
    live self-cost and the machine line. `mirqab open --window` shows the
    same content in a normal window. Escape closes; the `mirqab-ui` process is
-   gone 60 to 70 s later (`pgrep -x mirqab-ui`).
+   gone 60 to 70 s later (`pgrep -x mirqab-ui`). (Since plan 022 `open`
+   shows a normal window by default and the popover is opt-in.)
 4. After ten minutes, `mirqab history cpu.total --range 1h --json` returns
    about ten points, and they match `/proc/stat` deltas within 1 %.
 5. `tools/bench-idle.sh` reports under 0.3 % of one core and under
@@ -989,7 +996,10 @@ Each is a first step of the phase that needs it.
   turns false on a layer surface with keyboard mode `OnDemand` when the
   user clicks another window on Hyprland. If it does not, close on the
   `leave` of a `gtk::EventControllerFocus` on the window, or keep Escape
-  and the tray click as the only ways and say so.
+  and the tray click as the only ways and say so. **Answered** (owner,
+  2026-11-14): it does turn false, and with Hyprland's `follow_mouse = 1`
+  already when the pointer crosses another window. Plan 022 makes the
+  window the default.
 - **Broadway in the CI container** (phase A). `gtk4-broadwayd` starts as
   an unprivileged user with no display and `#[gtk::test]` runs against
   it. If it does not, fall back to `xorg-server-xvfb` with

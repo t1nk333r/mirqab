@@ -27,6 +27,7 @@ Read `docs/architecture.md` first: it is the contract the plans build to.
 | 019 | Support tab and the health report | M7 | P3 | M | 010 012 013 018 | PLANNED |
 | 020 | Packaging and release | M8 | P2 | S | 001–005 | PLANNED |
 | 021 | Tray icon on any bar | M2 | P1 | S | 004 | DONE |
+| 022 | A real window by default | M2 | P1 | S | 001 004 | DONE |
 
 ## Milestones
 
@@ -38,7 +39,7 @@ moved" below).
 | Milestone | Plans | What the user has afterwards |
 |-----------|-------|------------------------------|
 | **M1 Running app** | 001, 002, 003 | `mirqab open` shows the window with sidebar and footer, a System tab whose graphs update every second while on screen, with 30 days of history, and a Home tab of pinned cards. Gates and CI exist, and `main` is protected |
-| **M2 Outside the window** | 004, 005, 021 | A tray icon, bar items for Waybar and haseen, the CLI's read commands and the MCP server |
+| **M2 Outside the window** | 004, 005, 021, 022 | A tray icon, bar items for Waybar and haseen, the CLI's read commands and the MCP server, and a real window by default |
 | **M3 Developer tabs** | 006, 007, 008, 009 | Apps, Ports, Agents and Awake, each with its CLI commands and MCP tools |
 | **M4 Machine tabs** | 010, 011, 012, 013, 014 | Disk, Network, Devices, Battery and Volume |
 | **M5 Fans** | 015 | Fan readings for everyone; curves for those who enable the root helper |
