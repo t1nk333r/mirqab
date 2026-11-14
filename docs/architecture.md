@@ -424,9 +424,9 @@ to a daemon:
   plan is bound to its action and subject, used once, expires after
   120 s on the boot-time clock, and at most 64 are alive. `confirm` that
   is not a boolean, or `false` with a plan, is `bad-request`. The
-  interface shows the list in a dialog; the CLI asks `[y/N]` unless `-y`;
-  the MCP server returns the list and acts only when the tool call sets
-  `confirm`. Every redeemed plan is one `event` row of kind `action`
+  interface will show the list in a dialog; the CLI asks `[y/N]` unless
+  `-y`; the MCP server has no acting tool (plan 006 keeps it read-only).
+  Every redeemed plan is one `event` row of kind `action`
   (the action, the target, the caller's pid and name, each process's
   result; never a command line). The redeem reply's `recorded` says
   whether the row was written; when the history cannot be written the act
@@ -434,14 +434,18 @@ to a daemon:
 - Refused always, whatever the caller says: signalling pid 1, the daemon
   itself, a process where any of the four `Uid:` numbers is another
   user's (so a setuid program too), a kernel thread, anything outside the
-  user's own cgroup subtree (`/user.slice/user-<uid>.slice/`), the user
-  manager (`user@<uid>.service/init.scope`), the session's compositor and
+  user's own cgroup subtree (`/user.slice/user-<uid>.slice/`), a rootless
+  container whose processes run as another uid (a group asked for is
+  refused whole, and the reply names its runtime's stop command, podman
+  or docker where the cgroup shows it), the user manager
+  (`user@<uid>.service/init.scope`), the session's compositor and
   its parents, and the caller and its parents (the socket peer's pid,
-  walked strictly: an unreadable `stat`, a loop or depth 64 refuses the
-  action), and a compositor that cannot be told (a `wayland-*` socket
-  that cannot be probed). A user service, the first unit under the user
-  manager and never one nested in it, is stopped with `systemctl --user
-  stop --no-block`, never one that holds a refused process. Its refusals
+  walked strictly: an unreadable `stat`, a loop, or more than 64 parents,
+  refuses the action), and a compositor that cannot be told (a `wayland-*`
+  socket that cannot be probed). A user service, the first unit under the
+  user manager and never one nested in it, is stopped with `systemctl
+  --user stop --no-block`, never one that holds a refused process; Force
+  quit adds `systemctl --user kill --signal=KILL`. Its refusals
   are checked when the targets are resolved, and `systemctl` then acts on
   the unit by name; units tied to it by `Requires=`, `BindsTo=` or
   `PartOf=` stop with it unseen, `stop` runs `ExecStop=` and ends in
@@ -939,11 +943,13 @@ mirqab daemon [--root DIR] [--socket PATH]
 ```
 
 The MCP server speaks JSON-RPC over stdio and is a thin client of the same
-socket. Tools: `list_ports`, `whats_on_port`, `kill_port`, `top_apps`,
-`system_load`, `agent_sessions`, `orphans`, `cleanup_agent_leftovers`,
-`keep_awake`, `sleep_blockers`, `explain_slowness`, `what_is_process`. A
-destructive tool returns what it would stop and acts only when called again
-with `confirm: true`; the refusals in §5.4 apply. Plan 005.
+socket. Its tools only read: `system_load`, `explain_slowness`, `top_apps`
+and `what_is_process`; Quit and Force quit are the CLI's and the daemon's
+(plan 006). The tools planned for later are `list_ports`, `whats_on_port`,
+`kill_port`, `agent_sessions`, `orphans`, `cleanup_agent_leftovers`,
+`keep_awake` and `sleep_blockers`. A destructive one will return what it
+would stop and act only when called again with `confirm: true`; the
+refusals in §5.4 will apply. Plan 005.
 
 ## 12. Repository layout
 

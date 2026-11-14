@@ -52,13 +52,16 @@ System) is done.
   `apps [--sort cpu|mem|name] [--all] [--json]` (apps by CPU, memory or
   name; `--all` lists every process), `what PID [--json]` (explains one
   process), `quit PID|NAME [-y] [--force] [--dry-run] [--json]` (quits a
-  process or an app after asking; `--force` sends SIGKILL; it never
-  signals pid 1, another user's processes, the daemon, the compositor,
-  your user manager, or the program asking and its parents), `bar ITEM [--watch] [--interval SEC] [--format waybar|plain|json]`
-  and `bar --list` (readings for a status bar),
+  process or an app after asking; `--force` sends SIGKILL, and a user
+  service is stopped through systemctl; it never signals pid 1, the
+  daemon, the compositor, your user manager, another user's processes,
+  kernel threads, anything outside your user slice, rootless containers,
+  or the program asking and its parents), `bar ITEM [--watch]
+  [--interval SEC] [--format waybar|plain|json]` and `bar --list`
+  (readings for a status bar),
   `help [COMMAND]`, `--help` and `--version`.
-  Every command takes `--socket PATH`. `open`, `toggle` and `close` take
-  `--dry-run`, which prints what the action would do.
+  Every command takes `--socket PATH`. `open`, `toggle`, `close` and `quit`
+  take `--dry-run`, which prints what the action would do.
 - Theme tokens can be overridden in `~/.config/mirqab/theme.json`, one
   key per CSS variable name. The view crate checks the file, and the
   window applies it and reloads it when the file changes.
@@ -330,7 +333,7 @@ mirqab completions zsh > ~/.zfunc/_mirqab    # with fpath+=(~/.zfunc) before com
 mirqab completions fish > ~/.config/fish/completions/mirqab.fish
 ```
 
-Exit codes: 0 done, 1 refused or failed, 2 no daemon, 3 not confirmed (see `quit` and `mcp-config --write`), 64 usage error.
+Exit codes: 0 done, 1 refused, failed or nothing done, 2 no daemon, 3 not confirmed (see `quit` and `mcp-config --write`), 64 usage error.
 
 ## Planned usage
 
