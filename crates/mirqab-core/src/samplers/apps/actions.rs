@@ -919,6 +919,12 @@ mod tests {
         assert!(d.join("wayland-9").exists(), "the socket file stays");
         assert_eq!(compositor_sockets(&d), Ok(vec![]), "nobody listens");
         assert_eq!(compositor_sockets(&d.join("missing")), Ok(vec![]));
+        // What cannot be told apart from a compositor refuses (K7): a runtime
+        // dir that is not a directory, and a socket a stream cannot reach.
+        assert!(compositor_sockets(&d.join("wayland-8")).is_err());
+        let dgram = std::os::unix::net::UnixDatagram::bind(d.join("wayland-7")).unwrap();
+        assert!(compositor_sockets(&d).is_err());
+        drop(dgram);
         let _ = act::remove_path(&d, false);
     }
 
