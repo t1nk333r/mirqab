@@ -16,9 +16,30 @@ pub enum Answer {
 }
 
 pub fn ask(would_do: &[String], yes: bool, dry_run: bool) -> Answer {
-    out::line(strings::CONFIRM_WILL);
+    ask_with(strings::CONFIRM_WILL, would_do, yes, dry_run, false)
+}
+
+/// `ask` under another first line (`mirqab quit`'s "This will quit:").
+/// With `to_stderr` the header and the list go to stderr, so stdout holds
+/// only a `--json` answer (review of PR #17); the prompt still needs
+/// stdout to be a terminal.
+pub fn ask_with(
+    header: &str,
+    would_do: &[String],
+    yes: bool,
+    dry_run: bool,
+    to_stderr: bool,
+) -> Answer {
+    let say = |text: &str| {
+        if to_stderr {
+            out::err(text)
+        } else {
+            out::line(text)
+        }
+    };
+    say(header);
     for w in would_do {
-        out::line(&format!("  {w}"));
+        say(&format!("  {w}"));
     }
     if dry_run {
         return Answer::DryRun;

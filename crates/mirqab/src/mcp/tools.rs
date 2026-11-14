@@ -135,7 +135,7 @@ fn failed(text: String) -> Value {
 fn fetch(socket: &Path, req: Request) -> Result<Value, Value> {
     call(socket, req).map_err(|e| match e {
         CallError::NoDaemon(why) => failed(strings::no_daemon(&socket.display().to_string(), &why)),
-        CallError::Daemon(code, message) => failed(strings::daemon_error(&code, &message)),
+        CallError::Daemon(code, message, _) => failed(strings::daemon_error(&code, &message)),
     })
 }
 

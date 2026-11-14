@@ -374,6 +374,27 @@
     {
       "cpu": 0.0,
       "icon": null,
+      "id": "scope:app-Hyprland-suidtool-5e5e5e5e",
+      "ioReadPerSec": 0.0,
+      "ioWritePerSec": 0.0,
+      "kind": "app",
+      "name": "suidtool",
+      "pids": [
+        6300
+      ],
+      "procs": 1,
+      "rssBytes": 12288000,
+      "threads": 1,
+      "top": {
+        "cpu": 0.0,
+        "name": "suidtool",
+        "pid": 6300
+      },
+      "unit": "app-Hyprland-suidtool-5e5e5e5e.scope"
+    },
+    {
+      "cpu": 0.0,
+      "icon": null,
       "id": "service:init",
       "ioReadPerSec": 0.0,
       "ioWritePerSec": 0.0,
@@ -508,8 +529,8 @@
   "totals": {
     "cores": 16,
     "cpu": 201.5,
-    "groups": 23,
-    "procs": 43,
-    "threads": 326
+    "groups": 24,
+    "procs": 44,
+    "threads": 327
   }
 }

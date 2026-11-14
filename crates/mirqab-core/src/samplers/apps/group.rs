@@ -119,6 +119,25 @@ pub fn user_unit(cgroup: &str) -> Option<&str> {
         .copied()
 }
 
+/// The user service a process belongs to on the host, for `systemctl
+/// --user`: the first unit under the user manager once its slices are
+/// skipped, and only when that unit is a `.service`. A cgroup nested inside
+/// it (a rootless container running its own systemd,
+/// `…/libpod-<id>.scope/container/system.slice/dbus-broker.service`, or a
+/// service's own sub-cgroups) names units of another manager, never the
+/// host's: the deepest name would stop the wrong unit (review of PR #17).
+pub fn host_service(cgroup: &str) -> Option<&str> {
+    let parts: Vec<&str> = cgroup.split('/').collect();
+    let manager = parts
+        .iter()
+        .position(|p| p.starts_with("user@") && p.ends_with(".service"))?;
+    parts[manager + 1..]
+        .iter()
+        .find(|p| !p.ends_with(".slice"))
+        .copied()
+        .filter(|p| p.ends_with(".service"))
+}
+
 /// The deepest unit anywhere in a cgroup path, for the inspector.
 pub fn any_unit(cgroup: &str) -> Option<&str> {
     cgroup
@@ -152,6 +171,24 @@ pub fn container_id(cgroup: &str) -> Option<String> {
         }
     }
     None
+}
+
+/// The command that stops the container a cgroup path is in, for a
+/// message: `podman` for a `libpod-` scope, `docker` for a `docker-` scope
+/// or a `docker/<id>` pair; None for other runtimes.
+pub fn container_runtime(cgroup: &str) -> Option<&'static str> {
+    container_id(cgroup)?;
+    let parts: Vec<&str> = cgroup.split('/').collect();
+    if parts.iter().any(|p| p.starts_with("libpod-")) {
+        Some("podman")
+    } else if parts
+        .iter()
+        .any(|p| p.starts_with("docker-") || *p == "docker")
+    {
+        Some("docker")
+    } else {
+        None
+    }
 }
 
 /// A unit name's `\xNN` escapes decoded (systemd escapes `-` inside an
@@ -263,7 +300,7 @@ fn base(p: &Proc, own_uid: u32) -> Base {
 
 /// The oldest member that is not a shell (a launcher script's shell is
 /// older than the app it starts), else the oldest.
-fn main_process(procs: &[Proc], members: &[usize]) -> usize {
+pub fn main_process(procs: &[Proc], members: &[usize]) -> usize {
     let oldest = |it: &mut dyn Iterator<Item = &usize>| {
         it.min_by_key(|&&i| (procs[i].stat.start, procs[i].pid()))
             .copied()
@@ -508,6 +545,27 @@ mod tests {
             None
         );
         assert_eq!(user_unit("/system.slice/sshd.service"), None);
+        // The host's service, never one nested in it (review of PR #17).
+        let nested = format!(
+            "{u}/user.slice/libpod-{}.scope/container/system.slice/dbus-broker.service",
+            "c0ffee00".repeat(8)
+        );
+        assert_eq!(host_service(&nested), None);
+        assert_eq!(
+            host_service(&format!(
+                "{u}/app.slice/outer.service/payload/inner.service"
+            )),
+            Some("outer.service")
+        );
+        assert_eq!(
+            host_service(&format!(
+                "{u}/app.slice/app-org.example.Sync@autostart.service"
+            )),
+            Some("app-org.example.Sync@autostart.service")
+        );
+        assert_eq!(host_service(&format!("{u}/init.scope")), None);
+        assert_eq!(host_service(&format!("{u}/app.slice/app-x-1.scope")), None);
+        assert_eq!(host_service("/system.slice/sshd.service"), None);
         assert_eq!(any_unit("/system.slice/sshd.service"), Some("sshd.service"));
         // The unit name stays escaped; only ids taken from it are decoded.
         let escaped = format!("{u}/app.slice/app-flatpak-org.example.Two\\x2dWords-123.scope");
@@ -582,6 +640,19 @@ mod tests {
             "conmon is not the container"
         );
         assert_eq!(container_id("/system.slice/docker.service"), None);
+        assert_eq!(
+            container_runtime(&format!("/user.slice/x/libpod-{id}.scope/container")),
+            Some("podman")
+        );
+        assert_eq!(
+            container_runtime(&format!("/system.slice/docker-{id}.scope")),
+            Some("docker")
+        );
+        assert_eq!(
+            container_runtime(&format!("/kubepods/crio-{id}.scope")),
+            None
+        );
+        assert_eq!(container_runtime("/system.slice/docker.service"), None);
 
         // A sub-uid process stays in a rootless container under the user's
         // manager; a foreign uid in a container under system.slice stays

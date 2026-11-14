@@ -649,6 +649,123 @@ fn a_dry_run_flag_that_is_not_a_boolean_is_refused() {
 }
 
 #[test]
+fn quit_takes_strict_arguments_and_fails_closed_without_its_caller() {
+    let d = start("quit");
+    let mut c = Client::connect(&d);
+    c.hello();
+    for bad in [
+        json!({"name": "apps.quit"}),
+        json!({"name": "apps.quit", "args": {"pid": "2001"}}),
+        json!({"name": "apps.quit", "args": {"pid": 2001, "group": "system"}}),
+        json!({"name": "apps.kill", "args": {"pid": 2001}, "confirm": "true"}),
+        json!({"name": "apps.quit", "args": {"pid": 2001}, "confirm": false, "plan": "plan-x"}),
+        json!({"name": "apps.quit", "args": {"pid": 2001}, "dryRun": 1}),
+    ] {
+        assert_eq!(
+            c.call("action", None, bad.clone()),
+            Err("bad-request".into()),
+            "{bad}"
+        );
+    }
+    // The test's own pid has no proc entry in the fixture, so the caller's
+    // ancestry cannot be walked and the action is refused, dry run or not
+    // (plan 006, decision 7). A pid that happens to be a fixture's is
+    // skipped: its walk would succeed.
+    let own = fixture("root-desktop").join(format!("proc/{}", std::process::id()));
+    if !own.exists() {
+        for dry in [false, true] {
+            assert_eq!(
+                c.call(
+                    "action",
+                    None,
+                    json!({"name": "apps.quit", "args": {"pid": 2001}, "dryRun": dry})
+                ),
+                Err("refused".into())
+            );
+        }
+    }
+}
+
+fn copy_tree(from: &std::path::Path, to: &std::path::Path) {
+    std::fs::create_dir_all(to).unwrap();
+    for e in std::fs::read_dir(from).unwrap() {
+        let e = e.unwrap();
+        let dest = to.join(e.file_name());
+        let kind = e.file_type().unwrap();
+        if kind.is_symlink() {
+            // The fixtures' links name paths of an imagined machine:
+            // copied as links, never followed.
+            std::os::unix::fs::symlink(std::fs::read_link(e.path()).unwrap(), dest).unwrap();
+        } else if kind.is_dir() {
+            copy_tree(&e.path(), &dest);
+        } else {
+            std::fs::copy(e.path(), dest).unwrap();
+        }
+    }
+}
+
+#[test]
+fn an_act_with_no_writable_history_runs_and_says_it_was_not_recorded() {
+    let dir = PathBuf::from("/tmp").join(format!("mqp-unrec-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let tree = dir.join("root");
+    copy_tree(&fixture("root-desktop"), &tree);
+    // This test is the caller: it sits under the fixture's python3 (3060),
+    // so the strict walk of its ancestry succeeds on the copy.
+    let me = std::process::id();
+    std::fs::create_dir_all(tree.join(format!("proc/{me}"))).unwrap();
+    std::fs::write(
+        tree.join(format!("proc/{me}/stat")),
+        format!("{me} (protocol) S 3060 {me} 3050 0 -1 0 0 0 0 0 1 1 0 0 20 0 1 0 99999 0 0\n"),
+    )
+    .unwrap();
+    // A directory where the history file should be: it cannot be opened.
+    let history = dir.join("history.db");
+    std::fs::create_dir_all(&history).unwrap();
+    let socket = dir.join("run/daemon.sock");
+    let server = server::listen(Options {
+        socket: socket.clone(),
+        root: Root::new(&tree),
+        config_path: dir.join("config.json"),
+        samplers: Vec::new(),
+        history: Some(history),
+    })
+    .expect("listens with history off");
+    std::thread::spawn(move || server.serve());
+    let d = Daemon { socket, dir };
+    let mut c = Client::connect(&d);
+    c.hello();
+    let status = c.call("status", None, Value::Null).unwrap();
+    assert_eq!(status["history"]["enabled"], false, "{status}");
+
+    let quit = json!({"name": "apps.quit", "args": {"pid": 7100}});
+    let listed = c
+        .call(
+            "action",
+            None,
+            json!({"name": "apps.quit", "args": {"pid": 7100}, "dryRun": true}),
+        )
+        .unwrap();
+    assert_eq!(listed["wouldDo"][0]["pid"], 7100);
+    let id = c.send("action", None, quit.clone());
+    let plan = loop {
+        if let Some(ServerFrame::Reply(r)) = c.frame()
+            && r.id == id
+        {
+            let e = r.error.expect("needs-confirm");
+            assert_eq!(e.code.as_str(), "needs-confirm");
+            break e.data.unwrap()["plan"].as_str().unwrap().to_string();
+        }
+    };
+    let mut redeem = quit;
+    redeem["confirm"] = json!(true);
+    redeem["plan"] = json!(plan);
+    let done = c.call("action", None, redeem).unwrap();
+    assert_eq!(done["done"][0]["pid"], 7100, "the act ran: {done}");
+    assert_eq!(done["recorded"], false);
+}
+
+#[test]
 fn the_subscribe_reply_comes_before_the_first_event() {
     let d = start("order");
     for i in 0..100 {

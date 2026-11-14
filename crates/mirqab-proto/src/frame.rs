@@ -49,11 +49,16 @@ impl Request {
     }
 }
 
-/// The body of an error reply. `code` is one of the closed list.
+/// The body of an error reply. `code` is one of the closed list. `data`
+/// carries what the error needs beside its message: a `needs-confirm`
+/// reply's plan and `wouldDo` (plan 006). It is omitted when empty, and a
+/// new field does not change the protocol (architecture §5.2).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ErrorBody {
     pub code: Code,
     pub message: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data: Option<Value>,
 }
 
 /// Everything the daemon sends, told apart by `type`.
@@ -93,12 +98,18 @@ impl Reply {
     }
 
     pub fn err(id: u64, code: Code, message: impl Into<String>) -> Self {
+        Self::err_data(id, code, message, None)
+    }
+
+    /// An error with `data` beside its message.
+    pub fn err_data(id: u64, code: Code, message: impl Into<String>, data: Option<Value>) -> Self {
         Reply {
             id,
             result: None,
             error: Some(ErrorBody {
                 code,
                 message: message.into(),
+                data,
             }),
         }
     }
@@ -160,6 +171,19 @@ mod tests {
         assert_eq!(v["type"], "reply");
         assert_eq!(v["error"]["code"], "needs-confirm");
         assert!(v.get("result").is_none());
+        assert!(v["error"].get("data").is_none(), "no data, no field");
+        let with = encode(&ServerFrame::Reply(Reply::err_data(
+            4,
+            Code::NeedsConfirm,
+            "confirm",
+            Some(json!({"plan": "plan-1", "wouldDo": []})),
+        )));
+        let v: Value = serde_json::from_slice(&with).unwrap();
+        assert_eq!(v["error"]["data"]["plan"], "plan-1");
+        let back: ServerFrame = serde_json::from_slice(&with).unwrap();
+        assert!(
+            matches!(back, ServerFrame::Reply(r) if r.error.as_ref().is_some_and(|e| e.data.is_some()))
+        );
     }
 
     #[test]

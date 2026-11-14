@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 /// PF_KTHREAD in `stat`'s flags (include/linux/sched.h).
-const PF_KTHREAD: u64 = 0x0020_0000;
+pub const PF_KTHREAD: u64 = 0x0020_0000;
 /// The kernel cuts a command name to 15 bytes (TASK_COMM_LEN − 1).
 const COMM_MAX: usize = 15;
 
