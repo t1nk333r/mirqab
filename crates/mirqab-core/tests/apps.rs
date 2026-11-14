@@ -730,3 +730,50 @@ fn the_process_stream_takes_only_a_pid_and_a_start() {
     assert!(p.live(), "a live graph may ask for 1 s");
     assert_eq!(p.stream(), "process");
 }
+
+#[test]
+fn a_pin_does_not_outlive_its_subscribers() {
+    // Review of PR #18: with no subscriber the loop tells the sampler
+    // (`idle`), and the next one watches the process at the pid now.
+    let ask = [json!({"pid": 7000})];
+    let mut p = process_probed();
+    let t0 = Instant::now();
+    p.wants(&ask);
+    let old = p.sample(&fixture("root-desktop"), t0);
+    assert_eq!(process::view(&old, &ask[0])["name"], "oldjob");
+    p.idle();
+    p.wants(&ask);
+    let new = p.sample(&fixture("root-desktop.t1"), t0 + Duration::from_secs(2));
+    assert_eq!(process::view(&new, &ask[0])["name"], "newjob");
+    assert_eq!(
+        process::view(&new, &ask[0])["cpu"],
+        Value::Null,
+        "no baseline kept"
+    );
+
+    // A get never reads the pins: the process at the pid now.
+    let mut p = process_probed();
+    p.wants(&ask);
+    p.sample(&fixture("root-desktop"), t0);
+    p.wants(&ask);
+    let got = p.snapshot(&fixture("root-desktop.t1"), Instant::now());
+    assert_eq!(process::view(&got, &ask[0])["name"], "newjob");
+}
+
+#[test]
+fn a_get_of_a_missing_pid_does_not_wait() {
+    let mut p = process_probed();
+    let ask = [json!({"pid": 99999})];
+    p.wants(&ask);
+    let t = Instant::now();
+    let got = p.snapshot(&fixture("root-desktop"), t);
+    assert!(
+        t.elapsed() < Duration::from_millis(500),
+        "{:?}",
+        t.elapsed()
+    );
+    assert_eq!(
+        process::view(&got, &ask[0]),
+        json!({"pid": 99999, "gone": true})
+    );
+}

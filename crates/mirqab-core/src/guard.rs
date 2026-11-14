@@ -53,8 +53,9 @@ pub fn ancestry_strict(root: &Root, pid: u32) -> Result<Vec<u32>, WalkError> {
 
 /// The session bus's units: never stopped or signalled, whoever asks.
 /// Like the compositor, ending it ends the session (owner, 2026-11-14,
-/// plan 006 Q2).
-pub const SESSION_BUS: &[&str] = &["dbus.service", "dbus-broker.service"];
+/// plan 006 Q2). `dbus-daemon.service` is the reference bus's own name
+/// where `dbus.service` is only its alias (review of PR #18).
+pub const SESSION_BUS: &[&str] = &["dbus.service", "dbus-broker.service", "dbus-daemon.service"];
 
 /// Services Quit may stop, with a warning in the confirmation: the sound
 /// server and the desktop portals come back on next use, and stopping a
@@ -116,6 +117,7 @@ mod tests {
     fn the_session_bus_is_named_and_sound_and_portals_warn() {
         assert!(is_session_bus("dbus.service"));
         assert!(is_session_bus("dbus-broker.service"));
+        assert!(is_session_bus("dbus-daemon.service"));
         assert!(!is_session_bus("dbus.socket"));
         assert!(!is_session_bus("dbus-broker-launch.service"));
         for u in [

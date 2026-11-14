@@ -14,7 +14,9 @@
 //! A process is its pid and start time, as in the `apps` sampler: the CPU
 //! baseline is keyed by both, and a subscriber that names `start` (or,
 //! without it, the process first seen at that pid) gets `gone` once the pid
-//! holds another process or none.
+//! holds another process or none. The pins and the baseline belong to the
+//! subscribers: they are dropped once the stream had none (`idle`), and a
+//! `get` reads the process at the pid now.
 
 use crate::proto::stream::{PROCESS, PROCESS_MAX_PIDS, ProcessData};
 use crate::proto::strings;
@@ -152,8 +154,16 @@ impl Process {
 
     /// The sample every view is cut from: one entry per pid read, with the
     /// start time first seen there (`first`, absent when the pid was empty
-    /// then), and the pids asked for beyond the cap.
-    fn data(&self, readings: &[(u32, Reading)], base: Option<&Base>, at: Instant) -> Value {
+    /// then), and the pids asked for beyond the cap. With `pinned` false (a
+    /// `get`) `first` is the process read now: a `get` never reads the
+    /// subscribers' pins (review of PR #18).
+    fn data(
+        &self,
+        readings: &[(u32, Reading)],
+        base: Option<&Base>,
+        at: Instant,
+        pinned: bool,
+    ) -> Value {
         let secs = base
             .map(|b| at.saturating_duration_since(b.at).as_secs_f64())
             .filter(|s| *s > 0.0);
@@ -165,10 +175,10 @@ impl Process {
                 }),
                 _ => None,
             };
-            let first = match self.pins.get(pid) {
+            let first = match self.pins.get(pid).filter(|_| pinned) {
                 Some(Pin::Start(s)) => Some(*s),
                 Some(Pin::Missing) => None,
-                // A `get` for a pid no subscriber watches: the process now.
+                // A `get`, or a pid no subscriber watches: the process now.
                 None => Some(r.stat.start),
             };
             let reading = ProcessData {
@@ -255,16 +265,28 @@ impl Sampler for Process {
             .base
             .take()
             .filter(|b| now.saturating_duration_since(b.at) <= LIVE_STALE);
-        let data = self.data(&readings, base.as_ref(), now);
+        let data = self.data(&readings, base.as_ref(), now, true);
         self.base = Some(Base::of(&readings, now));
         data
     }
 
+    /// No subscriber since the last sample: the pins and the baseline were
+    /// theirs (review of PR #18).
+    fn idle(&mut self) {
+        self.pins.clear();
+        self.base = None;
+    }
+
     /// `get`: against a subscriber's baseline when it is 1–10 s old and
-    /// holds the process, without moving it or the pins; otherwise against
-    /// a second reading of its own half a second later.
+    /// holds the process, without moving it, and never reading the pins;
+    /// otherwise against a second reading of its own half a second later.
+    /// Nothing read is answered at once: a missing pid must not hold the
+    /// stream's lock, and delay the live tick, for half a second.
     fn snapshot(&mut self, root: &Root, now: Instant) -> Value {
         let first = self.read_all(root);
+        if first.is_empty() {
+            return self.data(&first, None, now, false);
+        }
         let usable = self.base.as_ref().filter(|b| {
             (BASELINE_MIN..=LIVE_STALE).contains(&now.saturating_duration_since(b.at))
                 && first
@@ -272,12 +294,12 @@ impl Sampler for Process {
                     .all(|(pid, r)| b.ticks.contains_key(&(*pid, r.stat.start)))
         });
         if usable.is_some() {
-            return self.data(&first, usable, now);
+            return self.data(&first, usable, now, false);
         }
         let base = Base::of(&first, Instant::now());
         std::thread::sleep(SNAPSHOT_GAP);
         let readings = self.read_all(root);
-        self.data(&readings, Some(&base), Instant::now())
+        self.data(&readings, Some(&base), Instant::now(), false)
     }
 
     fn view(&self) -> Option<View> {

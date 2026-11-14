@@ -67,6 +67,12 @@ pub trait Sampler: Send {
     /// ignore it.
     fn wants(&mut self, _params: &[Value]) {}
 
+    /// No subscriber held the stream since the last sample: forget what was
+    /// kept for them. Called under the sampler's lock just before the next
+    /// sample (the `process` stream drops its pins and baseline, so a pin
+    /// does not outlive its subscribers; review of PR #18).
+    fn idle(&mut self) {}
+
     /// `get <stream>.<name>`: a request about the stream's subject that is
     /// not a sample of it (`get apps.inspect {pid}`, plan 006). None when
     /// the sampler has no query by that name.

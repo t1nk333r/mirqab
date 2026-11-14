@@ -109,6 +109,9 @@ struct SlotRun {
     last: Option<Instant>,
     /// Sample at once: a new subscriber should not wait a whole interval.
     now: bool,
+    /// The stream had no subscriber since its last sample: the sampler is
+    /// told (`Sampler::idle`) before the next one.
+    idle: bool,
 }
 
 struct Slot {
@@ -565,6 +568,8 @@ fn sampler_loop(inner: Arc<Inner>, name: String, slot: Arc<Slot>) {
         let run = state.runs.entry(name.clone()).or_default();
         let Some(ms) = interval else {
             run.now = false;
+            // Only after a sample: before the first there is nothing kept.
+            run.idle = run.last.is_some();
             state = slot.wake.wait(state).unwrap_or_else(|p| p.into_inner());
             continue;
         };
@@ -586,6 +591,7 @@ fn sampler_loop(inner: Arc<Inner>, name: String, slot: Arc<Slot>) {
         }
         run.now = false;
         run.last = Some(now);
+        let was_idle = std::mem::take(&mut run.idle);
         // The params each subscriber shapes its view with, taken while the
         // lock is held anyway; the views are made after it is released.
         let mut wanted: Vec<Value> = Vec::new();
@@ -603,6 +609,9 @@ fn sampler_loop(inner: Arc<Inner>, name: String, slot: Arc<Slot>) {
         // and a rate over a stale stamp reads high (review of PR #16).
         let data = {
             let mut sampler = lock(&slot.sampler);
+            if was_idle {
+                sampler.idle();
+            }
             sampler.wants(&wanted);
             sampler.sample(&inner.root, Instant::now())
         };

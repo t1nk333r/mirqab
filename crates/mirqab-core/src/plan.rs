@@ -37,6 +37,9 @@ struct Plan {
     tool: String,
     subject: Value,
     targets: Vec<Target>,
+    /// The units the plan showed would stop with its unit; None when it
+    /// has no unit, or the list was unknown (plan 006, part 3a review).
+    also: Option<Vec<String>>,
     /// Boot-time clock when it was made.
     made: Duration,
     /// Orders plans made within one clock tick.
@@ -77,6 +80,8 @@ pub struct Redeemed {
     pub kept: Vec<Target>,
     /// Planned and not there any more (exited, or the pid reused).
     pub gone: Vec<Target>,
+    /// The dependents the plan showed (`make`'s `also`).
+    pub also: Option<Vec<String>>,
 }
 
 impl Plans {
@@ -94,12 +99,14 @@ impl Plans {
     }
 
     /// Records the targets `tool` would act on for `subject` at `now` (the
-    /// boot-time clock) and returns the plan's id.
+    /// boot-time clock), and the dependents it showed (`also`), and returns
+    /// the plan's id.
     pub fn make(
         &mut self,
         tool: &str,
         subject: Value,
         targets: Vec<Target>,
+        also: Option<Vec<String>>,
         now: Duration,
     ) -> String {
         self.plans
@@ -126,6 +133,7 @@ impl Plans {
                 tool: tool.to_string(),
                 subject,
                 targets,
+                also,
                 made: now,
                 seq: self.counter,
             },
@@ -158,7 +166,11 @@ impl Plans {
             .into_iter()
             .filter(|t| !kept.contains(t))
             .collect();
-        Ok(Redeemed { kept, gone })
+        Ok(Redeemed {
+            kept,
+            gone,
+            also: plan.also,
+        })
     }
 }
 
@@ -181,6 +193,7 @@ mod tests {
             "apps.quit",
             subject.clone(),
             vec![t(101, 5), t(102, 6), t(104, 8)],
+            None,
             T0,
         );
         // 102 has gone, 103 appeared since, 104's pid was reused: only 101.
@@ -195,7 +208,8 @@ mod tests {
             ),
             Ok(Redeemed {
                 kept: vec![t(101, 5)],
-                gone: vec![t(102, 6), t(104, 8)]
+                gone: vec![t(102, 6), t(104, 8)],
+                also: None,
             })
         );
         assert_eq!(
@@ -209,14 +223,14 @@ mod tests {
     fn expiry_is_on_the_boot_time_clock() {
         let mut p = Plans::new();
         let s = json!({"pid": 7});
-        let id = p.make("apps.quit", s.clone(), vec![t(7, 1)], T0);
+        let id = p.make("apps.quit", s.clone(), vec![t(7, 1)], None, T0);
         // A suspend of an hour moves the boot-time clock by an hour.
         let after_suspend = T0 + Duration::from_secs(3600);
         assert_eq!(
             p.redeem(&id, "apps.quit", &s, &[t(7, 1)], after_suspend),
             Err(PlanError::Expired)
         );
-        let id = p.make("apps.quit", s.clone(), vec![t(7, 1)], T0);
+        let id = p.make("apps.quit", s.clone(), vec![t(7, 1)], None, T0);
         let just_in_time = T0 + PLAN_TTL - Duration::from_millis(1);
         assert!(
             p.redeem(&id, "apps.quit", &s, &[t(7, 1)], just_in_time)
@@ -228,12 +242,12 @@ mod tests {
     fn foreign_and_made_up_plans_are_refused() {
         let mut p = Plans::new();
         let s = json!({"pid": 7});
-        let id = p.make("apps.quit", s.clone(), vec![t(7, 1)], T0);
+        let id = p.make("apps.quit", s.clone(), vec![t(7, 1)], None, T0);
         assert_eq!(
             p.redeem(&id, "apps.kill", &s, &[t(7, 1)], T0),
             Err(PlanError::OtherTool)
         );
-        let id = p.make("apps.quit", s.clone(), vec![t(7, 1)], T0);
+        let id = p.make("apps.quit", s.clone(), vec![t(7, 1)], None, T0);
         assert_eq!(
             p.redeem(&id, "apps.quit", &json!({"pid": 8}), &[t(7, 1)], T0),
             Err(PlanError::OtherTool),
@@ -243,18 +257,18 @@ mod tests {
             p.redeem("plan-0000000000000000", "apps.quit", &s, &[], T0),
             Err(PlanError::Unknown)
         );
-        let a = p.make("x", Value::Null, vec![], T0);
-        let b = p.make("x", Value::Null, vec![], T0);
+        let a = p.make("x", Value::Null, vec![], None, T0);
+        let b = p.make("x", Value::Null, vec![], None, T0);
         assert_ne!(a, b, "ids are unique");
     }
 
     #[test]
     fn the_cap_drops_the_oldest() {
         let mut p = Plans::new();
-        let first = p.make("x", Value::Null, vec![t(1, 1)], T0);
-        let second = p.make("x", Value::Null, vec![t(1, 1)], T0);
+        let first = p.make("x", Value::Null, vec![t(1, 1)], None, T0);
+        let second = p.make("x", Value::Null, vec![t(1, 1)], None, T0);
         for _ in 0..MAX_PLANS - 1 {
-            p.make("x", Value::Null, vec![], T0 + Duration::from_secs(1));
+            p.make("x", Value::Null, vec![], None, T0 + Duration::from_secs(1));
         }
         assert_eq!(p.len(), MAX_PLANS);
         assert_eq!(
@@ -263,6 +277,18 @@ mod tests {
             "the oldest went"
         );
         assert!(p.redeem(&second, "x", &Value::Null, &[t(1, 1)], T0).is_ok());
+    }
+
+    #[test]
+    fn the_dependents_a_plan_showed_come_back_at_redeem() {
+        let mut p = Plans::new();
+        let s = json!({"pid": 7});
+        let shown = Some(vec!["one.service".to_string()]);
+        let id = p.make("apps.quit", s.clone(), vec![t(7, 1)], shown.clone(), T0);
+        assert_eq!(
+            p.redeem(&id, "apps.quit", &s, &[t(7, 1)], T0).unwrap().also,
+            shown
+        );
     }
 
     #[test]

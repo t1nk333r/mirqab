@@ -310,6 +310,19 @@ impl Resolution {
         out
     }
 
+    /// The unit this resolution stops and the dependents it would show
+    /// (None when they could not be told); None without a unit.
+    fn unit_also(&self) -> Option<(&str, Option<Vec<String>>)> {
+        self.steps.iter().find_map(|s| match s {
+            Step::Unit { unit, also, .. } => Some((
+                unit.as_str(),
+                also.as_ref()
+                    .map(|deps| deps.iter().map(|d| d.unit.clone()).collect()),
+            )),
+            Step::Signal { .. } => None,
+        })
+    }
+
     /// One line for each stopped unit that is part of the session's sound
     /// or a desktop portal (owner, 2026-11-14, Q2).
     fn warnings(&self) -> Vec<String> {
@@ -361,12 +374,7 @@ fn unit_commands(unit: &str, action: Action) -> Vec<Vec<String>> {
 
 /// A unit name mirqab passes to systemctl: `[A-Za-z0-9:_.@\-]+\.service`.
 fn unit_name_ok(unit: &str) -> bool {
-    unit.strip_suffix(".service").is_some_and(|stem| {
-        !stem.is_empty()
-            && stem
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || ":_.@\\-".contains(c))
-    })
+    act::unit_like(unit) && unit.len() > ".service".len() && unit.ends_with(".service")
 }
 
 fn facts_of(p: &Proc) -> Facts {
@@ -506,6 +514,11 @@ fn tgid(root: &Root, pid: u32) -> Option<u32> {
 /// the main process, then the other session and process-group leaders,
 /// then the rest, oldest first inside each class.
 fn ordered(procs: &[Proc], members: &[usize]) -> Vec<usize> {
+    // A dependent with no process (a target, an idle unit) has no main
+    // process to find (review of PR #18: `main_process` indexes the first).
+    if members.is_empty() {
+        return Vec::new();
+    }
     let main = group::main_process(procs, members);
     let class = |i: usize| {
         let s = &procs[i].stat;
@@ -522,8 +535,11 @@ fn ordered(procs: &[Proc], members: &[usize]) -> Vec<usize> {
     out
 }
 
-/// The processes of a host service, in signal order, each with the reason
-/// it is refused, if it is.
+/// The processes a stop of the host unit `unit` ends, in signal order,
+/// each with the reason it is refused, if it is. Any unit type: a service,
+/// a scope, or a slice and everything under it (`group::host_units`;
+/// review of PR #18). For a service this is the processes `service_of`
+/// names.
 fn unit_members(
     root: &Root,
     guard: &Guard,
@@ -533,7 +549,12 @@ fn unit_members(
     let members: Vec<usize> = procs
         .iter()
         .enumerate()
-        .filter(|(_, p)| service_of(p) == Some(unit))
+        .filter(|(_, p)| {
+            p.info
+                .cgroup
+                .as_deref()
+                .is_some_and(|c| group::host_units(c).contains(&unit))
+        })
         .map(|(i, _)| i)
         .collect();
     ordered(procs, &members)
@@ -804,10 +825,12 @@ impl Actions {
             }));
         }
         let Some(id) = &ask.redeem else {
+            let also = res.unit_also().and_then(|(_, a)| a);
             let plan = lock(&self.plans).make(
                 ask.action.name(),
                 ask.subject.to_value(),
                 res.targets(),
+                also,
                 now,
             );
             return Err(Failure {
@@ -847,6 +870,30 @@ impl Actions {
                 PlanError::Expired => Failure::new(Code::BadRequest, strings::PLAN_EXPIRED),
                 PlanError::OtherTool => Failure::new(Code::Refused, strings::PLAN_OTHER),
             })?;
+        // A confirmation does not stop a unit it did not show (review of
+        // PR #18): the dependents asked again now must be among those the
+        // plan listed, and must be known if the plan's were. A plan whose
+        // list was unknown confirmed "may stop too" and takes what is
+        // there. The plan is spent either way, and nothing runs.
+        if let (Some(shown), Some((unit, now))) = (&redeemed.also, res.unit_also()) {
+            match now {
+                None => {
+                    return Err(Failure::new(
+                        Code::Refused,
+                        strings::plan_dependents_unknown(unit),
+                    ));
+                }
+                Some(now) => {
+                    let new: Vec<String> = now.into_iter().filter(|n| !shown.contains(n)).collect();
+                    if !new.is_empty() {
+                        return Err(Failure::new(
+                            Code::Refused,
+                            strings::plan_dependents_changed(unit, &new),
+                        ));
+                    }
+                }
+            }
+        }
         let sig = ask.action.signal();
         let mut done: Vec<Value> = Vec::new();
         let mut gone: Vec<Value> = redeemed

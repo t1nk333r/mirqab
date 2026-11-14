@@ -37,8 +37,13 @@ impl Sampler for Fake {
 }
 
 /// A stream with a view that shows which sample and which params made
-/// each line: `{"n": <sample number>, "params": <the view's params>}`.
-struct Counted(u64);
+/// each line, and how often the stream was idle:
+/// `{"n": <sample number>, "idle": <idle calls>, "params": <the params>}`.
+#[derive(Default)]
+struct Counted {
+    n: u64,
+    idle: u64,
+}
 impl Sampler for Counted {
     fn stream(&self) -> &'static str {
         "counted"
@@ -47,11 +52,14 @@ impl Sampler for Counted {
         Ok(())
     }
     fn sample(&mut self, _root: &Root, _now: Instant) -> Value {
-        self.0 += 1;
-        json!({"n": self.0})
+        self.n += 1;
+        json!({"n": self.n, "idle": self.idle})
+    }
+    fn idle(&mut self) {
+        self.idle += 1;
     }
     fn view(&self) -> Option<mirqab_core::sampler::View> {
-        Some(|data, params| json!({"n": data["n"], "params": params}))
+        Some(|data, params| json!({"n": data["n"], "idle": data["idle"], "params": params}))
     }
 }
 
@@ -90,7 +98,7 @@ fn start(name: &str) -> Daemon {
         socket: socket.clone(),
         root: Root::new(fixture("root-desktop")),
         config_path: dir.join("config/mirqab/config.json"),
-        samplers: vec![Box::new(Fake), Box::new(Counted(0)), Box::new(Missing)],
+        samplers: vec![Box::new(Fake), Box::<Counted>::default(), Box::new(Missing)],
         history: None,
     })
     .expect("listens");
@@ -1016,6 +1024,23 @@ fn the_process_stream_serves_one_pid_live_and_checks_its_params() {
         .unwrap();
     assert_eq!(got["name"], "systemd-journal");
     assert_eq!(got["cpu"], 0.0, "a second reading of its own");
-    // The subscribers still get their own pids after it.
-    assert_eq!(a.event("process").unwrap()["pid"], 2001);
+    // The subscribers still get their own pids after it, with a rate.
+    let next = a.event("process").unwrap();
+    assert_eq!(next["pid"], 2001);
+    assert!(next["cpu"].is_number(), "{next}");
+}
+
+#[test]
+fn a_stream_left_without_subscribers_is_told_before_its_next_sample() {
+    let d = start("idle");
+    let mut c = Client::connect(&d);
+    c.hello();
+    c.call("subscribe", Some("counted"), json!({})).unwrap();
+    assert_eq!(c.event("counted").unwrap()["idle"], 0);
+    c.call("unsubscribe", Some("counted"), Value::Null).unwrap();
+    // The loop wakes on the unsubscribe and finds no subscriber.
+    std::thread::sleep(Duration::from_millis(300));
+    c.call("subscribe", Some("counted"), json!({})).unwrap();
+    assert_eq!(c.event("counted").unwrap()["idle"], 1, "one call");
+    assert_eq!(c.event("counted").unwrap()["idle"], 1, "and only one");
 }

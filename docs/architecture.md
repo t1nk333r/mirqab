@@ -315,7 +315,7 @@ DankMaterialShell (MIT); `NOTICE.md` carries both notices.
 ← {"type":"reply","id":1,"result":{"stream":"system","interval":1000}}
 ← {"type":"event","stream":"system","data":{…}}
 → {"id":2,"method":"action","params":{"name":"ports.stop","args":{"port":3000},"dryRun":true}}
-← {"type":"reply","id":2,"result":{"wouldDo":[{"signal":"TERM","pid":4242,"name":"vite"}]}}
+← {"type":"reply","id":2,"result":{"wouldDo":[{"signal":"TERM","pid":4242,"name":"vite"}],"skipped":[],"warnings":[]}}
 ← {"type":"reply","id":3,"error":{"code":"refused","message":"pid 1 is never signalled"}}
 → {"id":4,"method":"action","params":{"name":"apps.quit","args":{"pid":2001}}}
 ← {"type":"reply","id":4,"error":{"code":"needs-confirm","message":"…","data":{"plan":"plan-…","wouldDo":[{"signal":"TERM","pid":2001,"start":5010,"name":"browser"}],"skipped":[],"warnings":[]}}}
@@ -370,7 +370,9 @@ Streams: `system`, `apps`, `process`, `ports`, `agents`, `awake`, `disk`,
   check the params first (`Sampler::accepts`: Err is `bad-request` for a
   subscribe or a `get`), and may be told the distinct params of its
   subscribers before each sample (`Sampler::wants`), so it reads only what
-  they name.
+  they name. When a stream had no subscriber since its last sample, the
+  sampler is told before the next one (`Sampler::idle`) and forgets what it
+  kept for the earlier subscribers.
 - `apps` (plan 006, every 2 s, never `live`): `params.sort` (`cpu`,
   `mem`, `name`), `params.limit` (groups, default 50; the System group
   comes last, outside it, and `totals.groups` counts the groups before
@@ -384,8 +386,12 @@ Streams: `system`, `apps`, `process`, `ports`, `agents`, `awake`, `disk`,
   eight at most, and nothing else; a subscriber gets
   `{pid, start, name, cpu, rssBytes, threads, state}` (`cpu` null on the
   first reading), or `{pid, gone: true}` once the pid holds no process or
-  another one than asked for. It is its own sampler with its own lock, so
-  a 1 s reading never waits behind the `apps` walk.
+  another one than asked for: the `start` it named, or without one the
+  process first seen at the pid while the stream had subscribers (a pin,
+  dropped when it has none). A pid past the eighth gets `{pid, capped:
+  true}`. A `get` reads the process at the pid now and no pin. It is its
+  own sampler with its own lock, so a 1 s reading never waits behind the
+  `apps` walk.
 - **Live sampling is 1 s, and only while a live graph is on screen**
   (owner, 2026-11-13). A subscription with `live: true` may ask for
   **1000 ms**, the lowest interval anywhere. The interface sets `live`
@@ -462,12 +468,18 @@ to a daemon:
   quit adds `systemctl --user kill --signal=KILL`. Its refusals
   are checked when the targets are resolved, and `systemctl` then acts on
   the unit by name. Before a stop the daemon asks which active units name
-  the unit in `Requires=`, `BindsTo=` or `PartOf=` (`systemctl --user
-  show`, one level deep); `wouldDo` lists them under the stop as
-  `alsoStops` with their processes, which pass the same refusals, so one
+  the unit in `Requires=`, `Requisite=`, `BindsTo=` or `PartOf=`, or are
+  named in its `PropagatesStopTo=` (`systemctl --user show`, one level
+  deep); `wouldDo` lists them under the stop as `alsoStops` with their
+  processes, found for a dependent of any unit type (a service, a scope,
+  or a slice and what is under it), which pass the same refusals, so one
   refused process among them refuses the stop; when the question fails the
-  entry says `alsoStopsUnknown` and the stop is still planned. The session
-  bus (`dbus.service`, `dbus-broker.service`) is never stopped or
+  entry says `alsoStopsUnknown` and the stop is still planned. The plan
+  keeps the dependents it showed: a confirmation whose unit would now take
+  a unit the plan did not show, or whose list cannot be told now when the
+  plan's could, is refused and nothing runs. The session bus
+  (`dbus.service`, `dbus-broker.service`, `dbus-daemon.service`) is never
+  stopped or
   signalled; stopping the sound server (`pipewire`, `pipewire-pulse`,
   `wireplumber`) or a desktop portal (`xdg-desktop-portal*`) is allowed and
   the plan's `warnings` say what it breaks, for the CLI to print and the

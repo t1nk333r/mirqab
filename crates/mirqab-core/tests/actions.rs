@@ -7,7 +7,9 @@
 //! gets the real sender. Part 3: the units a stop takes with it
 //! (`alsoStops`, from the fixture's answer), a dependent that holds a
 //! refused process, a question that fails, the session bus refused and
-//! the sound server's warning.
+//! the sound server's warning. Review of PR #18: a quoted, escaped name in
+//! `systemctl show` found and checked; a dependent scope or slice checked;
+//! a confirmation refused when the dependents changed.
 
 use mirqab_core::Root;
 use mirqab_core::act::{self, Recording, Sender, Signal, Target};
@@ -823,7 +825,7 @@ fn the_session_bus_is_never_stopped() {
     use mirqab_core::proto::strings;
     let s = scratch("bus");
     let (a, rec) = recorded();
-    for unit in ["dbus-broker.service", "dbus.service"] {
+    for unit in ["dbus-broker.service", "dbus.service", "dbus-daemon.service"] {
         std::fs::write(
             s.0.join("proc/1300/cgroup"),
             format!("0::/user.slice/user-1000.slice/user@1000.service/session.slice/{unit}\n"),
@@ -839,4 +841,191 @@ fn the_session_bus_is_never_stopped() {
         assert_eq!(f.message, strings::refuse_session_bus_unit(unit));
     }
     assert!(rec.lines().is_empty());
+}
+
+const USER: &str = "0::/user.slice/user-1000.slice/user@1000.service";
+const HELD: &str = r"app-held\x2dterm-1.scope";
+
+/// Moves `pid` of the scratch tree into the host unit path `path` (after
+/// the user manager).
+fn move_to(s: &Scratch, pid: u32, path: &str) {
+    std::fs::write(
+        s.0.join(format!("proc/{pid}/cgroup")),
+        format!("{USER}/{path}\n"),
+    )
+    .unwrap();
+}
+
+/// Writes the fixture's answer for which units stop with `unit`.
+fn dependents(s: &Scratch, unit: &str, text: &str) {
+    let d = s.0.join("run/mirqab-test/dependents");
+    std::fs::create_dir_all(&d).unwrap();
+    let f = d.join(unit);
+    if f.is_dir() {
+        std::fs::remove_dir_all(&f).unwrap();
+    }
+    std::fs::write(f, text).unwrap();
+}
+
+#[test]
+fn a_dependent_of_any_unit_type_is_found_and_checked() {
+    use mirqab_core::proto::strings;
+    let s = scratch("anytype");
+    let root = Root::new(&s.0);
+    let (a, rec) = recorded();
+    // A scope holding the caller (3060): refused, with a backslash in its
+    // name end to end.
+    move_to(&s, CALLER, &format!("app.slice/{HELD}"));
+    dependents(&s, SYNC, &format!("{HELD} active\n"));
+    let f = a
+        .handle(&root, &ask(Action::Quit, json!({"args": pid(1300)})), None)
+        .unwrap_err();
+    assert_eq!(f.code, Code::Refused);
+    assert_eq!(
+        f.message,
+        strings::refuse_unit_dependent(SYNC, HELD, &strings::refuse_caller(CALLER))
+    );
+    assert_eq!(a.live_plans(), 0);
+    // A scope of ordinary processes: its pids are listed.
+    dependents(&s, SYNC, "app-Hyprland-browser.sh-5650fedc.scope active\n");
+    let v = dry(&a, &root, pid(1300)).unwrap();
+    assert_eq!(
+        v["wouldDo"][0]["alsoStops"],
+        json!([{"unit": "app-Hyprland-browser.sh-5650fedc.scope", "pids": [2001, 2000, 2010, 2011, 2012]}])
+    );
+    // A slice with a refused process in a unit under it: the daemon.
+    move_to(&s, 4321, "held.slice/held-inner.service");
+    dependents(&s, SYNC, "held.slice active\n");
+    let f = dry(&a, &root, pid(1300)).unwrap_err();
+    assert_eq!(
+        f.message,
+        strings::refuse_unit_dependent(SYNC, "held.slice", &strings::refuse_daemon(4321))
+    );
+    assert!(rec.lines().is_empty());
+}
+
+/// A sender that answers `unit_dependents` through `act::dependents_via`,
+/// as `Real` does, from `systemctl show` text in systemd 262's format.
+struct Showing {
+    rec: Recording,
+    first: String,
+    second: String,
+}
+
+impl Sender for Showing {
+    fn is_real(&self) -> bool {
+        false
+    }
+    fn open(&self, pid: u32) -> std::io::Result<Option<OwnedFd>> {
+        self.rec.open(pid)
+    }
+    fn send(&self, h: Option<&OwnedFd>, t: Target, s: Signal) -> std::io::Result<()> {
+        self.rec.send(h, t, s)
+    }
+    fn run(&self, argv: &[&str], timeout: Duration) -> Result<exec::Output, String> {
+        self.rec.run(argv, timeout)
+    }
+    fn unit_dependents(&self, _root: &Root, unit: &str) -> Result<Vec<String>, String> {
+        let show = |argv: &[&str]| -> Result<String, String> {
+            Ok(if argv.contains(&"Id") {
+                self.second.clone()
+            } else {
+                self.first.clone()
+            })
+        };
+        act::dependents_via(&show, unit)
+    }
+}
+
+#[test]
+fn quoted_escaped_names_from_systemctl_are_found_and_refused() {
+    // systemd quotes a list element that needs it and doubles its
+    // backslashes: `"app-held\\x2dterm-1.scope"`. Read word by word, that
+    // name failed the unit-name check and the stop became alsoStopsUnknown,
+    // with no refusal run on the scope's processes (review of PR #18, B1).
+    use mirqab_core::proto::strings;
+    let s = scratch("quoted");
+    let root = Root::new(&s.0);
+    let showing = |a: &str, b: &str| Showing {
+        rec: Recording::default(),
+        first: format!(
+            "RequiredBy=\nRequisiteOf=\nBoundBy={a} \"app-held\\\\x2dterm-1.scope\"\nConsistsOf=\nPropagatesStopTo=\n"
+        ),
+        second: format!("Id={a}\nActiveState=active\n\nId={HELD}\nActiveState={b}\n"),
+    };
+    let sender = Arc::new(showing("plain-dep.service", "active"));
+    let a = Actions::new(sender.clone());
+    let v = dry(&a, &root, pid(1300)).unwrap();
+    assert!(v["wouldDo"][0].get("alsoStopsUnknown").is_none(), "{v}");
+    assert_eq!(
+        v["wouldDo"][0]["alsoStops"],
+        json!([{"unit": "plain-dep.service", "pids": []}, {"unit": HELD, "pids": []}])
+    );
+    move_to(&s, CALLER, &format!("app.slice/{HELD}"));
+    let f = dry(&a, &root, pid(1300)).unwrap_err();
+    assert_eq!(
+        f.message,
+        strings::refuse_unit_dependent(SYNC, HELD, &strings::refuse_caller(CALLER))
+    );
+    assert!(sender.rec.lines().is_empty());
+}
+
+#[test]
+fn a_confirmation_does_not_stop_a_dependent_it_did_not_show() {
+    use mirqab_core::proto::strings;
+    let s = scratch("planalso");
+    let root = Root::new(&s.0);
+    let (a, rec) = recorded();
+    let unit = "pipewire.service";
+    // A unit that starts depending after the plan: refused, plan spent.
+    let data = plan(&a, &root, Action::Quit, pid(1210));
+    let id = data["plan"].as_str().unwrap();
+    dependents(
+        &s,
+        unit,
+        &format!("wireplumber.service active\n{SYNC} active\n"),
+    );
+    let f = confirm(&a, &root, Action::Quit, pid(1210), id, None).unwrap_err();
+    assert_eq!(f.code, Code::Refused);
+    assert_eq!(
+        f.message,
+        strings::plan_dependents_changed(unit, &[SYNC.to_string()])
+    );
+    assert!(rec.lines().is_empty(), "nothing ran");
+    let f = confirm(&a, &root, Action::Quit, pid(1210), id, None).unwrap_err();
+    assert_eq!(f.message, strings::PLAN_UNKNOWN, "the plan was spent");
+    // The plan listed them, and now they cannot be told.
+    dependents(&s, unit, "wireplumber.service active\n");
+    let data = plan(&a, &root, Action::Quit, pid(1210));
+    let d = s.0.join("run/mirqab-test/dependents").join(unit);
+    std::fs::remove_file(&d).unwrap();
+    std::fs::create_dir(&d).unwrap();
+    let f = confirm(
+        &a,
+        &root,
+        Action::Quit,
+        pid(1210),
+        data["plan"].as_str().unwrap(),
+        None,
+    )
+    .unwrap_err();
+    assert_eq!(f.message, strings::plan_dependents_unknown(unit));
+    assert!(rec.lines().is_empty());
+    // A shown dependent that went away is fine: the stop runs.
+    dependents(&s, unit, "wireplumber.service active\n");
+    let data = plan(&a, &root, Action::Quit, pid(1210));
+    dependents(&s, unit, "wireplumber.service inactive\n");
+    confirm(
+        &a,
+        &root,
+        Action::Quit,
+        pid(1210),
+        data["plan"].as_str().unwrap(),
+        None,
+    )
+    .unwrap();
+    assert_eq!(
+        rec.lines(),
+        ["RUN systemctl --user stop --no-block -- pipewire.service"]
+    );
 }

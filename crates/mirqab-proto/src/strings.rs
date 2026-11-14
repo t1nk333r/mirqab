@@ -1478,6 +1478,26 @@ pub const PLAN_UNKNOWN: &str = "no such plan: already used, expired or never mad
 pub const PLAN_EXPIRED: &str = "the plan expired (after 2 minutes); ask again";
 pub const PLAN_OTHER: &str = "the plan was made for another action or target";
 
+/// A confirmation whose unit would now take with it a unit the plan did
+/// not show (review of PR #18).
+pub fn plan_dependents_changed(unit: &str, new: &[String]) -> String {
+    let new: Vec<String> = new.iter().map(|n| plain(n).into_owned()).collect();
+    format!(
+        "nothing was done: stopping {} would now also stop {}, which the confirmation did not show; ask again",
+        plain(unit),
+        new.join(", ")
+    )
+}
+
+/// A confirmation whose unit's dependents were listed in the plan and
+/// cannot be told now.
+pub fn plan_dependents_unknown(unit: &str) -> String {
+    format!(
+        "nothing was done: which services stop with {} cannot be told now, and the confirmation listed them; ask again",
+        plain(unit)
+    )
+}
+
 /// `mirqab quit`: the line above the list, for Quit and Force quit.
 pub const QUIT_WILL: &str = "This will quit:";
 pub const FORCE_QUIT_WILL: &str = "This will force quit:";
