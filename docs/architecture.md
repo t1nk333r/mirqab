@@ -316,7 +316,11 @@ DankMaterialShell (MIT); `NOTICE.md` carries both notices.
 ← {"type":"event","stream":"system","data":{…}}
 → {"id":2,"method":"action","params":{"name":"ports.stop","args":{"port":3000},"dryRun":true}}
 ← {"type":"reply","id":2,"result":{"wouldDo":[{"signal":"TERM","pid":4242,"name":"vite"}]}}
-← {"type":"reply","id":3,"error":{"code":"refused","message":"pid 1 belongs to another user"}}
+← {"type":"reply","id":3,"error":{"code":"refused","message":"pid 1 is never signalled"}}
+→ {"id":4,"method":"action","params":{"name":"apps.quit","args":{"pid":2001}}}
+← {"type":"reply","id":4,"error":{"code":"needs-confirm","message":"…","data":{"plan":"plan-…","wouldDo":[{"signal":"TERM","pid":2001,"start":5010,"name":"browser"}],"skipped":[]}}}
+→ {"id":5,"method":"action","params":{"name":"apps.quit","args":{"pid":2001},"confirm":true,"plan":"plan-…"}}
+← {"type":"reply","id":5,"result":{"done":[…],"gone":[],"failed":[],"skipped":[]}}
 ```
 
 | Method | Params | Result |
@@ -327,7 +331,7 @@ DankMaterialShell (MIT); `NOTICE.md` carries both notices.
 | `history.query` | `series[]`, `range` (`1h`, `24h`, `7d`, `30d`) or `from`/`to` (unix seconds) | Per series its `unit` and `points`, each `[unixSeconds, avg, max]` unscaled; empty buckets omitted |
 | `history.events` | `kind`, `from`, `to` | Event rows |
 | `history.list` | — | The series history keeps: key, unit, scale |
-| `action` | `name`, `args`, `dryRun` | What was done, or `wouldDo` |
+| `action` | `name`, `args`, `dryRun`; for a destructive action `confirm` (a boolean) and `plan` | What was done, or `wouldDo`. A destructive action without `confirm: true` and a plan is the error `needs-confirm`, whose `data` holds `plan`, `wouldDo` and `skipped` (§5.4) |
 | `config.get` / `config.set` | key paths | The config; the daemon is the only writer |
 | `capabilities` | — | The list from `hello`: the streams this machine serves, plus `history` when the history file is open (a capability, not a stream) |
 | `status` | — | Version, uptime, subscribers, self-cost |
@@ -344,7 +348,8 @@ Rules:
   pinned by a golden file in `tests/golden/<stream>.json`.
 - Error codes are a closed list: `bad-request`, `unknown-method`,
   `unknown-stream`, `unavailable`, `refused`, `needs-confirm`,
-  `needs-helper`, `failed`.
+  `needs-helper`, `failed`. An error may carry `data` beside its
+  `message` (a `needs-confirm` reply's plan); it is omitted when empty.
 
 ### 5.3 Streams and samplers
 
@@ -409,14 +414,34 @@ to a daemon:
 - The strings `sudo` and `pkexec` appear in exactly one file,
   `crates/mirqab/src/elevate.rs`, which only ever runs the fixed commands
   listed in §8. Check: `grep -rn 'sudo\|pkexec' crates tools dist | grep -v elevate.rs`.
-- Destructive actions (`*.stop`, `*.kill`, `*.cleanup`, `disk.clean`,
-  `disk.eject`) need `confirm: true`. Without it the reply is
-  `needs-confirm` plus the same `wouldDo`. The interface shows the list in
-  a dialog; the CLI asks `[y/N]` unless `-y`; the MCP server returns the
-  list and acts only when the tool call sets `confirm`.
-- Refused always, whatever the caller says: signalling a process of another
-  uid, pid 1, the daemon itself, the session's compositor, and anything
-  outside the user's own cgroup subtree.
+- Destructive actions (`apps.quit`, `*.stop`, `*.kill`, `*.cleanup`,
+  `disk.clean`, `disk.eject`) need `confirm: true`. Always two calls: the
+  first (no `confirm`, or `confirm: true` without a plan) never acts and
+  replies `needs-confirm` with `data: {plan, wouldDo, skipped}`; the
+  second sends `confirm: true` and the plan. The daemon then resolves the
+  targets again and acts only on those in the plan and still there, each
+  a pid with its start time; a process that started since is skipped. A
+  plan is bound to its action and subject, used once, expires after
+  120 s on the boot-time clock, and at most 64 are alive. `confirm` that
+  is not a boolean, or `false` with a plan, is `bad-request`. The
+  interface shows the list in a dialog; the CLI asks `[y/N]` unless `-y`;
+  the MCP server returns the list and acts only when the tool call sets
+  `confirm`. Every redeemed plan is one `event` row of kind `action`
+  (the action, the target, the caller's pid and name, each process's
+  result; never a command line).
+- Refused always, whatever the caller says: signalling pid 1, the daemon
+  itself, a process where any of the four `Uid:` numbers is another
+  user's (so a setuid program too), a kernel thread, anything outside the
+  user's own cgroup subtree (`/user.slice/user-<uid>.slice/`), the user
+  manager (`user@<uid>.service/init.scope`), the session's compositor and
+  its parents, and the caller and its parents (the socket peer's pid,
+  walked strictly: an unreadable `stat`, a loop or depth 64 refuses the
+  action). A user service is stopped with `systemctl --user stop
+  --no-block`, never one that holds a refused process. Signals go through
+  a pidfd opened before the last check, so the check and the signal are
+  about the same process; the daemon signals for real only when its root
+  is `/`, and records what it would have done on any other root (plan
+  006).
 
 ### 5.5 Configuration and state
 
@@ -889,7 +914,7 @@ acting unless `-y`.
 ```
 mirqab open [tab] [--window] | toggle [tab] | close
 mirqab status | load | sensors | battery
-mirqab apps [--sort cpu|mem|name] [--all] | what <pid>
+mirqab apps [--sort cpu|mem|name] [--all] | what <pid> | quit <pid|name> [-y] [--force]
 mirqab ports [--system] | port <n> | kill <n> [-y] [--force]
 mirqab agents | cleanup <session> | orphans [--kill]
 mirqab awake <duration>|off [--display] | blockers

@@ -7,8 +7,9 @@
 //!
 //! One sample serves every subscriber; `view` gives each its own order,
 //! length and expanded groups from its `params` (`sort`, `limit`,
-//! `expand`).
+//! `expand`). `actions.rs` answers `apps.quit` and `apps.kill`.
 
+pub mod actions;
 pub mod desktop;
 pub mod group;
 pub mod inspect;

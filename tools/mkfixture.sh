@@ -61,6 +61,7 @@ write_proc() {
     local exe=${17} cmdline=${18} extras=${19}
     local d="$tree/proc/$pid" tty=0 flags=4194560 nnp=0 seccomp=0
     local capeff=0000000000000000 cwd=$HOME_DIR ns="" io="" smaps="" flatpak="" kthread=0
+    local uids="$uid:$uid:$uid:$uid"
     local fds=() drms=() e
     [[ $tpgid == - ]] && tpgid=-1 || tty=34816
     IFS=';' read -ra parts <<<"${extras/#-/}"
@@ -77,6 +78,7 @@ write_proc() {
         flatpak=*) flatpak=${e#*=} ;;
         fd=*) fds+=("${e#*=}") ;;
         drm=*) drms+=("${e#*=}") ;;
+        uids=*) uids=${e#*=} ;;
         *) echo "mkfixture: pid $pid: unknown extra: $e" >&2; return 1 ;;
         esac
     done
@@ -95,7 +97,10 @@ write_proc() {
     {
         printf 'Name:\t%s\nUmask:\t0022\nState:\t%s (%s)\n' "$comm" "$state" "$(state_word "$state")"
         printf 'Tgid:\t%s\nNgid:\t0\nPid:\t%s\nPPid:\t%s\nTracerPid:\t0\n' "$pid" "$pid" "$ppid"
-        printf 'Uid:\t%s\t%s\t%s\t%s\nGid:\t%s\t%s\t%s\t%s\n' "$uid" "$uid" "$uid" "$uid" "$uid" "$uid" "$uid" "$uid"
+        local ru eu su fu
+        IFS=: read -r ru eu su fu <<<"$uids"
+        printf 'Uid:\t%s\t%s\t%s\t%s\n' "$ru" "$eu" "$su" "$fu"
+        printf 'Gid:\t%s\t%s\t%s\t%s\n' "$uid" "$uid" "$uid" "$uid"
         printf 'FDSize:\t64\nVmRSS:\t%s kB\nThreads:\t%s\n' "$((rss * 4))" "$thr"
         printf 'NoNewPrivs:\t%s\nSeccomp:\t%s\n' "$nnp" "$seccomp"
         printf 'CapInh:\t0000000000000000\nCapPrm:\t%s\nCapEff:\t%s\nCapBnd:\t000001ffffffffff\n' "$capeff" "$capeff"

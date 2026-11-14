@@ -84,6 +84,14 @@ mirqab what PID [--json]
 
 Explains one process: a verdict in plain words (which package and repository provide it, Flatpak, container, not owned by any package, replaced since it started), then its parents, user, executable, unit, sandbox, memory and open files. Another user's process shows its name, CPU and memory only.
 
+## quit
+
+```
+mirqab quit PID|NAME [-y] [--force] [--dry-run] [--json]
+```
+
+Asks a process to quit (SIGTERM), or with --force ends it (SIGKILL). A number is a pid; anything else is an app's name as mirqab apps shows it, matched whole and ignoring case, and quits every process of that app, its main process first. A user service is stopped with systemctl --user, so it does not restart. It prints what it will do and asks; -y goes ahead without asking; without a terminal and without -y it does nothing and exits 3; --dry-run prints the list and stops. Never signalled: pid 1, another user's processes, the daemon, the session's compositor, your user manager, and the program asking and its parents.
+
 ## bar
 
 ```

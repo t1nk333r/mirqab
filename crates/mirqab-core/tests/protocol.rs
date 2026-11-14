@@ -649,6 +649,44 @@ fn a_dry_run_flag_that_is_not_a_boolean_is_refused() {
 }
 
 #[test]
+fn quit_takes_strict_arguments_and_fails_closed_without_its_caller() {
+    let d = start("quit");
+    let mut c = Client::connect(&d);
+    c.hello();
+    for bad in [
+        json!({"name": "apps.quit"}),
+        json!({"name": "apps.quit", "args": {"pid": "2001"}}),
+        json!({"name": "apps.quit", "args": {"pid": 2001, "group": "system"}}),
+        json!({"name": "apps.kill", "args": {"pid": 2001}, "confirm": "true"}),
+        json!({"name": "apps.quit", "args": {"pid": 2001}, "confirm": false, "plan": "plan-x"}),
+        json!({"name": "apps.quit", "args": {"pid": 2001}, "dryRun": 1}),
+    ] {
+        assert_eq!(
+            c.call("action", None, bad.clone()),
+            Err("bad-request".into()),
+            "{bad}"
+        );
+    }
+    // The test's own pid has no proc entry in the fixture, so the caller's
+    // ancestry cannot be walked and the action is refused, dry run or not
+    // (plan 006, decision 7). A pid that happens to be a fixture's is
+    // skipped: its walk would succeed.
+    let own = fixture("root-desktop").join(format!("proc/{}", std::process::id()));
+    if !own.exists() {
+        for dry in [false, true] {
+            assert_eq!(
+                c.call(
+                    "action",
+                    None,
+                    json!({"name": "apps.quit", "args": {"pid": 2001}, "dryRun": dry})
+                ),
+                Err("refused".into())
+            );
+        }
+    }
+}
+
+#[test]
 fn the_subscribe_reply_comes_before_the_first_event() {
     let d = start("order");
     for i in 0..100 {

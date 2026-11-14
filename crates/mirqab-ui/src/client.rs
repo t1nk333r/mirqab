@@ -257,6 +257,7 @@ impl Client {
                 on_reply(Err(ErrorBody {
                     code: mirqab_proto::Code::Unavailable,
                     message: strings::DISCONNECTED.to_string(),
+                    data: None,
                 }));
                 return;
             }
@@ -455,6 +456,7 @@ impl Client {
             cb(Err(ErrorBody {
                 code: mirqab_proto::Code::Unavailable,
                 message: strings::DISCONNECTED.to_string(),
+                data: None,
             }));
         }
         self.notify();

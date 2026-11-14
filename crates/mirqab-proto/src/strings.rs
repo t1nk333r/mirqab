@@ -95,6 +95,14 @@ pub const CLI_COMMANDS: &[CliCommand] = &[
         help: "Explains one process: a verdict in plain words (which package and repository provide it, Flatpak, container, not owned by any package, replaced since it started), then its parents, user, executable, unit, sandbox, memory and open files. Another user's process shows its name, CPU and memory only.",
     },
     CliCommand {
+        name: "quit",
+        usage: &[(
+            "quit PID|NAME [-y] [--force] [--dry-run] [--json]",
+            "quit an app or a process, after asking",
+        )],
+        help: "Asks a process to quit (SIGTERM), or with --force ends it (SIGKILL). A number is a pid; anything else is an app's name as mirqab apps shows it, matched whole and ignoring case, and quits every process of that app, its main process first. A user service is stopped with systemctl --user, so it does not restart. It prints what it will do and asks; -y goes ahead without asking; without a terminal and without -y it does nothing and exits 3; --dry-run prints the list and stops. Never signalled: pid 1, another user's processes, the daemon, the session's compositor, your user manager, and the program asking and its parents.",
+    },
+    CliCommand {
         name: "bar",
         usage: &[
             (
@@ -250,7 +258,10 @@ pub fn cli_positionals(c: &CliCommand) -> Vec<&'static str> {
         match bare {
             "COMMAND" => out.extend(CLI_COMMANDS.iter().map(|c| c.name)),
             "ITEM" => out.extend(BAR_ITEMS.iter().map(|(name, _)| *name)),
-            b if b.contains('|') && !b.starts_with('-') => out.extend(b.split('|')),
+            // A list of words, not of placeholders (`PID|NAME`).
+            b if b.contains('|') && !b.starts_with('-') && !b.contains(char::is_uppercase) => {
+                out.extend(b.split('|'))
+            }
             _ => {}
         }
     }
@@ -1284,6 +1295,182 @@ pub const APPS_PID_REQUIRED: &str = "pid is required: a process id";
 
 pub fn apps_no_process(pid: u32) -> String {
     format!("no process {pid}")
+}
+
+// --- Quit and Force quit (plan 006, part 2) ---------------------------------
+
+pub fn refuse_init(pid: u32) -> String {
+    format!("pid {pid} is never signalled")
+}
+
+pub fn refuse_daemon(pid: u32) -> String {
+    format!("pid {pid} is the mirqab daemon, which does not signal itself")
+}
+
+pub fn refuse_kernel(pid: u32) -> String {
+    format!("pid {pid} is a kernel thread, part of Linux itself")
+}
+
+pub fn refuse_other_user(pid: u32) -> String {
+    format!("pid {pid} belongs to another user, or runs with another user's rights")
+}
+
+pub fn refuse_outside(pid: u32) -> String {
+    format!("pid {pid} is outside your own processes (not under your user slice)")
+}
+
+pub fn refuse_user_manager(pid: u32) -> String {
+    format!("pid {pid} is your user manager (systemd --user); ending it ends your session")
+}
+
+pub fn refuse_compositor(pid: u32) -> String {
+    format!("pid {pid} is the session's compositor; ending it ends your session")
+}
+
+pub fn refuse_compositor_parent(pid: u32) -> String {
+    format!("pid {pid} started the session's compositor")
+}
+
+pub fn refuse_caller(pid: u32) -> String {
+    format!("pid {pid} is the program asking, or one of its parents")
+}
+
+pub fn refuse_unreadable(pid: u32) -> String {
+    format!("pid {pid} cannot be read, so it is left alone")
+}
+
+/// Why the walk up a process's parents stopped short.
+pub fn walk_unreadable(pid: u32) -> String {
+    format!("proc/{pid}/stat cannot be read")
+}
+
+pub fn walk_loop(pid: u32) -> String {
+    format!("the parent links loop at pid {pid}")
+}
+
+pub fn walk_too_deep(depth: usize) -> String {
+    format!("more than {depth} parents")
+}
+
+pub const ACT_DRY_RUN_BOOL: &str = "dryRun must be true or false";
+pub const QUIT_NO_CONFIRM_ASKED: &str = "it answered without asking for confirmation";
+pub const QUIT_NO_PLAN: &str = "its needs-confirm reply holds no plan";
+
+pub fn refuse_tree(why: &str) -> String {
+    format!("the process tree could not be read ({why}), so nothing is signalled")
+}
+
+pub const REFUSE_NO_CALLER: &str =
+    "the program asking cannot be identified, so nothing is signalled";
+
+pub fn refuse_unit_name(unit: &str) -> String {
+    format!(
+        "the unit name {} is not one mirqab passes to systemctl",
+        plain(unit)
+    )
+}
+
+pub fn refuse_unit_holds(unit: &str, why: &str) -> String {
+    format!("{} is not stopped: {why}", plain(unit))
+}
+
+pub fn refuse_container(id: &str, runtime: Option<&str>) -> String {
+    match runtime {
+        Some(r) => format!(
+            "container {id} runs processes on another uid, which you cannot signal; stop it with: {r} stop {id}"
+        ),
+        None => format!(
+            "container {id} runs processes on another uid, which you cannot signal; stop it with its container runtime"
+        ),
+    }
+}
+
+pub fn refuse_nothing_left(first: &str) -> String {
+    format!("nothing is left to quit: {first}")
+}
+
+pub fn act_gone(pid: u32) -> String {
+    format!("pid {pid} has exited")
+}
+
+pub const SKIP_LATE: &str = "started after the confirmation";
+pub const ACT_NO_PIDFD: &str =
+    "this kernel cannot signal through a pidfd (Linux 5.3 or later is needed)";
+
+pub fn act_not_leader(pid: u32) -> String {
+    format!("pid {pid} is a thread, not a process")
+}
+
+pub fn apps_no_group(id: &str) -> String {
+    format!("no app group {}", plain(id))
+}
+
+pub const ACT_ARGS: &str = "args is {\"pid\": N} or {\"group\": \"ID\"}, exactly one";
+pub const ACT_CONFIRM_BOOL: &str = "confirm must be true or false";
+pub const ACT_CONFIRM_FALSE: &str = "a plan is redeemed only with confirm: true";
+pub const ACT_PLAN_STRING: &str = "plan must be a plan id";
+pub const ACT_NEEDS_CONFIRM: &str =
+    "nothing was done; to go ahead, ask again with confirm: true and this plan";
+pub const PLAN_UNKNOWN: &str = "no such plan: already used, expired or never made";
+pub const PLAN_EXPIRED: &str = "the plan expired (after 2 minutes); ask again";
+pub const PLAN_OTHER: &str = "the plan was made for another action or target";
+
+/// `mirqab quit`: the line above the list, for Quit and Force quit.
+pub const QUIT_WILL: &str = "This will quit:";
+pub const FORCE_QUIT_WILL: &str = "This will force quit:";
+
+/// One process `mirqab quit` signals; `via` is the thread id asked for.
+pub fn quit_signal_line(signal: &str, pid: u32, name: &str, via: Option<u32>) -> String {
+    let name = plain(name);
+    match via {
+        Some(t) => format!("{signal:<4} {pid:>7}  {name} (asked for its thread {t})"),
+        None => format!("{signal:<4} {pid:>7}  {name}"),
+    }
+}
+
+/// A command `mirqab quit` runs for a service, and how many processes it ends.
+pub fn quit_run_line(argv: &str, procs: usize) -> String {
+    let what = if procs == 1 { "process" } else { "processes" };
+    format!("{} ({procs} {what})", plain(argv))
+}
+
+pub fn quit_skipped_line(pid: u32, name: &str, reason: &str) -> String {
+    format!("left alone {pid:>7}  {}: {reason}", plain(name))
+}
+
+pub fn quit_done_line(signal: &str, pid: u32, name: &str) -> String {
+    format!("sent {signal} to {pid} {}", plain(name))
+}
+
+pub fn quit_unit_done_line(argv: &str) -> String {
+    format!("ran {}", plain(argv))
+}
+
+pub fn quit_gone_line(pid: u32) -> String {
+    format!("{pid} had already exited")
+}
+
+pub fn quit_failed_line(what: &str, why: &str) -> String {
+    format!("failed {}: {}", plain(what), plain(why))
+}
+
+pub fn quit_no_app(name: &str) -> String {
+    format!(
+        "mirqab: no app is named {} (mirqab apps lists them)",
+        plain(name)
+    )
+}
+
+pub fn quit_ambiguous(name: &str, n: usize) -> String {
+    format!(
+        "mirqab: {n} apps are named {}; quit one by a pid of it:",
+        plain(name)
+    )
+}
+
+pub fn quit_candidate(id: &str, pids: &[u32]) -> String {
+    let pids: Vec<String> = pids.iter().map(u32::to_string).collect();
+    format!("  {}  pids {}", plain(id), pids.join(" "))
 }
 
 pub const VERDICT_KERNEL: &str = "A kernel thread: part of Linux itself";

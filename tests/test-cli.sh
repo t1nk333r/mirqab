@@ -2,7 +2,7 @@
 # generated docs and completions, output into a closed pipe, and
 # `status --json` against a daemon on a fixture root. The window commands
 # reaching an interface are tested in crates/mirqab/tests/cli.rs.
-# mirqab:covers crates/mirqab/src/{main,cli,daemon,out,apps}.rs crates/mirqab-proto/src/strings.rs docs/cli.md
+# mirqab:covers crates/mirqab/src/{main,cli,daemon,out,apps,quit}.rs crates/mirqab-proto/src/strings.rs docs/cli.md
 # mirqab:covers tests/fixtures/root-desktop/** tests/fixtures/bin/pacman
 
 sandbox
@@ -42,6 +42,12 @@ capture env -u XDG_RUNTIME_DIR "$BIN/mirqab" daemon
 status_is "the daemon needs XDG_RUNTIME_DIR" 1 "$STATUS"
 like "and says so" "$OUTPUT" "XDG_RUNTIME_DIR is not set"
 
+# Quit and Force quit (plan 006, part 2): a daemon on a fixture root gets
+# the recording sender, which writes each signal and command to
+# MIRQAB_ACT_LOG and sends or runs nothing. The caller is the fixture's
+# python3 in a terminal: the CLI's real pid has no proc entry in the tree.
+export MIRQAB_ACT_LOG="$SANDBOX/act.log" MIRQAB_CALLER_PID=3060
+: >"$MIRQAB_ACT_LOG"
 start_daemon root-desktop
 capture "$BIN/mirqab" status --json
 status_is "status --json exits 0" 0 "$STATUS"
@@ -123,6 +129,68 @@ status_is "what needs a pid" 64 "$STATUS"
 capture "$BIN/mirqab" what abc
 status_is "what needs a number" 64 "$STATUS"
 like "and says so" "$OUTPUT" "not a process id: abc"
+
+# mirqab quit (plan 006, part 2), against the recording sender.
+act_log() { cat "$MIRQAB_ACT_LOG"; }
+capture "$BIN/mirqab" quit 2001 --dry-run
+status_is "quit --dry-run exits 0" 0 "$STATUS"
+like "quit --dry-run lists the process" "$OUTPUT" "2001  browser"
+is "a dry run sends nothing" "" "$(act_log)"
+capture "$BIN/mirqab" quit 2001 --dry-run --json
+is "quit --dry-run --json is the wouldDo" '[{"name":"browser","pid":2001,"signal":"TERM","start":5010}]' \
+    "$(jq -c .wouldDo <<<"$OUTPUT")"
+capture "$BIN/mirqab" quit 2001 </dev/null
+status_is "quit with no terminal and no -y exits 3" 3 "$STATUS"
+like "and says why" "$OUTPUT" "no terminal"
+is "and sends nothing" "" "$(act_log)"
+capture "$BIN/mirqab" quit 2001 -y
+status_is "quit -y exits 0" 0 "$STATUS"
+like "and says what it sent" "$OUTPUT" "sent TERM to 2001 browser"
+is "the recording has the signal and the start time" "TERM 2001 5010" "$(act_log)"
+: >"$MIRQAB_ACT_LOG"
+capture "$BIN/mirqab" quit 7100 -y --force
+status_is "quit --force exits 0" 0 "$STATUS"
+is "--force sends KILL" "KILL 7100 34000" "$(act_log)"
+: >"$MIRQAB_ACT_LOG"
+capture "$BIN/mirqab" quit 410 -y
+status_is "a root process is refused" 1 "$STATUS"
+like "with the reason" "$OUTPUT" "belongs to another user"
+capture "$BIN/mirqab" quit 1 -y
+status_is "pid 1 is refused" 1 "$STATUS"
+like "with the reason" "$OUTPUT" "never signalled"
+capture "$BIN/mirqab" quit 3000 -y
+status_is "the caller's own terminal is refused" 1 "$STATUS"
+like "with the reason" "$OUTPUT" "the program asking"
+is "nothing refused was sent" "" "$(act_log)"
+capture "$BIN/mirqab" quit "example BROWSER" -y
+status_is "quit by name exits 0" 0 "$STATUS"
+is "a name quits the app, its main process first" "TERM 2001 5010
+TERM 2000 5000
+TERM 2010 5100
+TERM 2011 5200
+TERM 2012 5300" "$(act_log)"
+: >"$MIRQAB_ACT_LOG"
+capture "$BIN/mirqab" quit "No Such App" -y
+status_is "an unknown name exits 1" 1 "$STATUS"
+like "and says so" "$OUTPUT" "no app is named No Such App"
+capture "$BIN/mirqab" quit python3 -y
+status_is "a name two apps share exits 1" 1 "$STATUS"
+like "and lists both" "$OUTPUT" "session:3050"
+like "with their pids" "$OUTPUT" "scope:app-Hyprland-script-1a2b3c4d  pids 7500"
+capture "$BIN/mirqab" quit Hyprland --dry-run
+status_is "a group with a refused member exits 0" 0 "$STATUS"
+like "and lists that member as left alone" "$OUTPUT" "left alone    1050  Hyprland: pid 1050 is the session's compositor"
+capture "$BIN/mirqab" quit 1300 -y
+status_is "quitting a user service exits 0" 0 "$STATUS"
+is "a user service is stopped with systemctl" \
+    "RUN systemctl --user stop --no-block -- app-org.example.Sync@autostart.service" "$(act_log)"
+: >"$MIRQAB_ACT_LOG"
+capture "$BIN/mirqab" quit 0
+status_is "pid 0 is a usage error" 64 "$STATUS"
+capture "$BIN/mirqab" quit
+status_is "quit needs a target" 64 "$STATUS"
+capture "$BIN/mirqab" quit --help
+like "quit --help is its table entry" "$OUTPUT" "usage: mirqab quit PID|NAME"
 capture "$BIN/mirqab" history cpu.total --range 24h --json
 status_is "history --json exits 0" 0 "$STATUS"
 is "a fresh history has no points" "0" "$(jq '.series["cpu.total"].points | length' <<<"$OUTPUT")"

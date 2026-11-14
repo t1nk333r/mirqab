@@ -15,7 +15,9 @@ use std::time::Duration;
 
 pub(crate) enum CallError {
     NoDaemon(String),
-    Daemon(String, String),
+    /// The daemon's error: its code, message and `data` (a `needs-confirm`
+    /// reply's plan and `wouldDo`, plan 006).
+    Daemon(String, String, Option<Value>),
 }
 
 /// Sends one request and returns its result.
@@ -45,7 +47,7 @@ pub(crate) fn call(socket: &Path, req: Request) -> Result<Value, CallError> {
                 continue;
             }
             return match error {
-                Some(e) => Err(CallError::Daemon(e.code.as_str().into(), e.message)),
+                Some(e) => Err(CallError::Daemon(e.code.as_str().into(), e.message, e.data)),
                 None => Ok(result.unwrap_or(Value::Null)),
             };
         }
@@ -256,7 +258,7 @@ pub(crate) fn exit_for(socket: &Path, e: CallError) -> ExitCode {
             no_daemon(socket, &why);
             ExitCode::from(EXIT_NO_DAEMON)
         }
-        CallError::Daemon(code, message) => {
+        CallError::Daemon(code, message, _) => {
             crate::out::err(&strings::daemon_error(&code, &message));
             ExitCode::from(EXIT_FAILED)
         }

@@ -197,7 +197,7 @@ fn watch(o: &Opts, combo: &[String], socket: &std::path::Path) -> ExitCode {
                 if let Some(e) = r.error {
                     return crate::cli::exit_for(
                         socket,
-                        CallError::Daemon(e.code.as_str().into(), e.message),
+                        CallError::Daemon(e.code.as_str().into(), e.message, e.data),
                     );
                 }
             }

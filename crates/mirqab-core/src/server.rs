@@ -22,6 +22,7 @@ use crate::proto::{Code, Event, Hello, PROTOCOL, Reply, Request, ServerFrame, fr
 use crate::root::Root;
 use crate::sampler::{Sampler, View};
 use crate::samplers::apps::Apps;
+use crate::samplers::apps::actions::{self, Action, Actions};
 use crate::samplers::system::System;
 use crate::selfcost::{self, Meter};
 use crate::sys;
@@ -84,6 +85,9 @@ struct Client {
     subs: BTreeMap<String, Sub>,
     /// The pid this client gave when it subscribed to `ui` as the interface.
     ui_pid: Option<u32>,
+    /// The peer's pid at connect time (SO_PEERCRED): the caller whose
+    /// ancestry an action refuses (plan 006, decision 7).
+    caller: Option<u32>,
 }
 
 impl Client {
@@ -181,6 +185,9 @@ struct Inner {
     history: Option<Mutex<History>>,
     /// Why history is off, when a file was given but could not be opened.
     history_error: Option<String>,
+    /// Quit and Force quit: the plans, and a sender that signals for real
+    /// only when the root is `/` (plan 006, decision 2).
+    actions: Actions,
 }
 
 pub struct Server {
@@ -401,6 +408,7 @@ pub fn listen(opts: Options) -> Result<Server, ListenError> {
             }
         },
     };
+    let actions = Actions::new(crate::act::sender_for(&opts.root));
     let config = Config::load(&opts.config_path);
     if let Some(why) = config.broken() {
         log(&strings::config_broken(why));
@@ -428,6 +436,7 @@ pub fn listen(opts: Options) -> Result<Server, ListenError> {
         shared,
         history,
         history_error,
+        actions,
     });
     if inner.history.is_some() {
         let inner = Arc::clone(&inner);
@@ -649,11 +658,12 @@ impl Server {
                             continue;
                         }
                     }
+                    let caller = sys::peer_pid(&stream).ok();
                     let inner = Arc::clone(&self.inner);
                     let spawned = std::thread::Builder::new()
                         .name("client".into())
                         .stack_size(STACK)
-                        .spawn(move || inner.handle(stream));
+                        .spawn(move || inner.handle(stream, caller));
                     if let Err(e) = spawned {
                         log(&format!("cannot serve a client: {e}"));
                     }
@@ -694,7 +704,7 @@ impl Inner {
         caps
     }
 
-    fn handle(self: Arc<Self>, stream: UnixStream) {
+    fn handle(self: Arc<Self>, stream: UnixStream, caller: Option<u32>) {
         let conn = Arc::new(stream);
         let (tx, rx) = sync_channel::<Vec<u8>>(QUEUE);
         let writer_conn = Arc::clone(&conn);
@@ -730,6 +740,7 @@ impl Inner {
                 conn: Arc::clone(&conn),
                 subs: BTreeMap::new(),
                 ui_pid: None,
+                caller,
             };
             client.send(&hello);
             state.clients.insert(id, client);
@@ -809,7 +820,7 @@ impl Inner {
             "history.events" => self.history_events(&req),
             "history.list" => self.with_history(&req, |h| Ok(h.list())),
             "config.set" => self.config_set(&req),
-            "action" => self.action(&req),
+            "action" => self.action(id, &req),
             "shutdown" => {
                 self.reply(id, Reply::ok(rid, Value::Null));
                 // Let the writer flush the reply before the process goes.
@@ -1213,13 +1224,17 @@ impl Inner {
         }
     }
 
-    /// `action` (§5.4). Phase B has the window's three: `ui.show`,
-    /// `ui.toggle`, `ui.hide`. `show` and `toggle` start the interface when
-    /// none is attached (plan 001 step 30).
-    fn action(&self, req: &Request) -> Reply {
+    /// `action` (§5.4): the window's three, `ui.show`, `ui.toggle` and
+    /// `ui.hide` (`show` and `toggle` start the interface when none is
+    /// attached, plan 001 step 30), and Quit and Force quit, `apps.quit`
+    /// and `apps.kill` (plan 006), which need `confirm`.
+    fn action(&self, client: u64, req: &Request) -> Reply {
         let Some(name) = req.param("name").and_then(Value::as_str) else {
             return Reply::err(req.id, Code::BadRequest, "name is required");
         };
+        if let Some(action) = Action::from_name(name) {
+            return self.apps_action(client, action, req);
+        }
         let args = req.param("args").cloned().unwrap_or(Value::Null);
         let dry_run = match dry_run_param(req) {
             Ok(d) => d,
@@ -1244,6 +1259,24 @@ impl Inner {
         match self.deliver_ui(event) {
             Ok(()) => Reply::ok(req.id, json!({"done": [entry]})),
             Err((code, why)) => Reply::err(req.id, code, why),
+        }
+    }
+
+    /// `apps.quit` and `apps.kill`: parsed strictly, resolved and acted on by
+    /// `actions.rs` with no lock of the daemon's held.
+    fn apps_action(&self, client: u64, action: Action, req: &Request) -> Reply {
+        let peer = lock(&self.state)
+            .clients
+            .get(&client)
+            .and_then(|c| c.caller);
+        let caller = test_caller().or(peer);
+        let ask = match actions::parse(action, &req.params, caller) {
+            Ok(a) => a,
+            Err(f) => return Reply::err_data(req.id, f.code, f.message, f.data),
+        };
+        match self.actions.handle(&self.root, &ask, self.history.as_ref()) {
+            Ok(v) => Reply::ok(req.id, v),
+            Err(f) => Reply::err_data(req.id, f.code, f.message, f.data),
         }
     }
 
@@ -1344,6 +1377,17 @@ fn ui_start_timeout() -> Duration {
         return Duration::from_millis(ms);
     }
     UI_START
+}
+
+/// `MIRQAB_CALLER_PID` when `MIRQAB_TEST=1`: under a fixture root the real
+/// caller has no `proc/<pid>/stat`, and the strict walk of its ancestry
+/// would refuse every action, so a test names a fixture pid instead (plan
+/// 006, decision 7).
+fn test_caller() -> Option<u32> {
+    if std::env::var("MIRQAB_TEST").as_deref() != Ok("1") {
+        return None;
+    }
+    std::env::var("MIRQAB_CALLER_PID").ok()?.parse().ok()
 }
 
 /// A handler already queued its reply.
