@@ -262,7 +262,7 @@ install -Dm644 dist/icons/mirqab-symbolic.svg ~/.local/share/icons/hicolor/symbo
 ```
 
 The tray icon has two tones, a light watchtower with a dark outline, so it
-reads on dark and light bars alike. A bar that was already running when
+is drawn to read on dark and light bars alike. A bar that was already running when
 you installed the icon may keep showing a placeholder until you restart it
 (seen with Quickshell).
 
