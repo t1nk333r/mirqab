@@ -1,7 +1,10 @@
 //! An app's row (plan 006, decision 7): the expander (hidden for a single
 //! process), the icon, the name, a CPU meter full at 100 % of one core
 //! with the number beside it (which may pass 100), memory and the process
-//! count. One widget, rebound to whichever group its list position holds.
+//! count, then "busy while not in use" in a dim caption when the group is
+//! tagged "idle but heavy" (plan 006, part 4, decision 16: a word, no
+//! colour and no icon). One widget, rebound to whichever group its list
+//! position holds.
 
 use crate::tabs::apps::{icon_slot, set_app_icon};
 use crate::widgets::icon::icon_button;
@@ -23,6 +26,8 @@ pub struct GroupRow {
     cpu: gtk::Label,
     memory: gtk::Label,
     procs: gtk::Label,
+    /// "busy while not in use", shown only on a tagged group.
+    pub idle: gtk::Label,
     key: Rc<Cell<u64>>,
 }
 
@@ -56,6 +61,11 @@ impl GroupRow {
         procs.add_css_class("caption");
         procs.add_css_class("mirqab-apps-procs");
         procs.set_xalign(1.0);
+        let idle = gtk::Label::new(Some(strings::APPS_IDLE_HEAVY));
+        idle.add_css_class("dim-label");
+        idle.add_css_class("caption");
+        idle.set_widget_name("apps-idle-heavy");
+        idle.set_visible(false);
         for w in [
             expander.upcast_ref::<gtk::Widget>(),
             image.upcast_ref(),
@@ -65,6 +75,7 @@ impl GroupRow {
             cpu.upcast_ref(),
             memory.upcast_ref(),
             procs.upcast_ref(),
+            idle.upcast_ref(),
         ] {
             root.append(w);
         }
@@ -78,6 +89,7 @@ impl GroupRow {
             cpu,
             memory,
             procs,
+            idle,
             key,
         }
     }
@@ -108,6 +120,7 @@ impl GroupRow {
         self.cpu.set_text(&g.cpu);
         self.memory.set_text(&g.memory);
         self.procs.set_text(&g.procs);
+        self.idle.set_visible(g.idle_heavy);
         self.root
             .update_property(&[gtk::accessible::Property::Label(&g.label)]);
     }

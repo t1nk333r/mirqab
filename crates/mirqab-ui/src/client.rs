@@ -70,6 +70,33 @@ impl StreamSubs {
         }
         Some(p)
     }
+
+    /// What to send the daemon now, if anything: `Some(Some(p))` subscribes
+    /// with `p`, `Some(None)` unsubscribes, `None` sends nothing (it holds
+    /// what the handles want already). Marks it sent.
+    fn next(&mut self, merge: Option<Merge>) -> Option<Option<Params>> {
+        let wanted = self.wanted(merge);
+        if wanted == self.sent {
+            return None;
+        }
+        self.sent = wanted.clone();
+        Some(wanted)
+    }
+}
+
+/// A subscribe request's params: the interval, `live` when set, and the
+/// stream's own params merged in.
+fn subscribe_params(p: Params) -> Value {
+    let mut params = json!({"interval": p.interval});
+    if p.live {
+        params["live"] = json!(true);
+    }
+    if let Value::Object(extra) = p.extra {
+        for (k, v) in extra {
+            params[k] = v;
+        }
+    }
+    params
 }
 
 #[derive(Default)]
@@ -331,31 +358,18 @@ impl Client {
             let Some(subs) = st.subs.get_mut(stream) else {
                 return;
             };
-            let wanted = subs.wanted(merge);
-            if wanted == subs.sent {
+            let Some(wanted) = subs.next(merge) else {
                 return;
-            }
-            subs.sent = wanted.clone();
+            };
             if subs.handles.is_empty() {
                 st.subs.remove(stream);
             }
             st.next_id += 1;
             let id = st.next_id;
             let req = match wanted {
-                Some(p) => {
-                    let mut params = json!({"interval": p.interval});
-                    if p.live {
-                        params["live"] = json!(true);
-                    }
-                    if let Value::Object(extra) = p.extra {
-                        for (k, v) in extra {
-                            params[k] = v;
-                        }
-                    }
-                    Request::new(id, "subscribe")
-                        .with_stream(stream)
-                        .with_params(params)
-                }
+                Some(p) => Request::new(id, "subscribe")
+                    .with_stream(stream)
+                    .with_params(subscribe_params(p)),
                 None => Request::new(id, "unsubscribe").with_stream(stream),
             };
             frame::encode(&req)
@@ -525,5 +539,59 @@ impl Client {
         for f in fns {
             f(self);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn handle(extra: Value) -> Handle {
+        Handle {
+            params: Params {
+                interval: 2000,
+                live: false,
+                extra,
+            },
+            on_event: Rc::new(|_| {}),
+        }
+    }
+
+    /// Gap 5 of the review of PR #19: when one of two merged handles
+    /// drops, the one left is sent with its own params, and the last one
+    /// leaving unsubscribes.
+    #[test]
+    fn a_dropped_handle_leaves_the_others_params() {
+        let merge: Option<Merge> = Some(mirqab_view::tabs::apps::merge_params);
+        let mut subs = StreamSubs::default();
+        subs.handles
+            .insert(1, handle(mirqab_view::tabs::apps::page_params()));
+        subs.handles.insert(2, handle(Value::Null));
+        let both = subs.next(merge).flatten().map(subscribe_params);
+        assert_eq!(
+            both,
+            Some(json!({"interval": 2000, "limit": 1000, "expand": true}))
+        );
+        assert_eq!(subs.next(merge), None, "nothing new: nothing sent");
+
+        // The page goes: the card's view, the daemon's default limit.
+        subs.handles.remove(&1);
+        let card = subs.next(merge).flatten().map(subscribe_params);
+        assert_eq!(card, Some(json!({"interval": 2000, "limit": 50})));
+
+        // The page again, then the card goes: the daemon already holds the
+        // page's view, the merge of the two, so nothing is sent.
+        subs.handles
+            .insert(3, handle(mirqab_view::tabs::apps::page_params()));
+        let page = subs.next(merge).flatten().map(subscribe_params);
+        assert_eq!(
+            page,
+            Some(json!({"interval": 2000, "limit": 1000, "expand": true}))
+        );
+        subs.handles.remove(&2);
+        assert_eq!(subs.next(merge), None, "the page's view is held");
+
+        subs.handles.remove(&3);
+        assert_eq!(subs.next(merge), Some(None), "the last one unsubscribes");
     }
 }

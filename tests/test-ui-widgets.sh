@@ -10,7 +10,10 @@ if ! start_broadway; then
 else
     # #[gtk::test] runs the tests on GLib's thread pool, where a failed
     # assertion aborts; without a backtrace its message stays in the tail.
-    capture env RUST_BACKTRACE=0 cargo test --locked --quiet --manifest-path "$REPO/Cargo.toml" -p mirqab-ui --test widgets -- --ignored --test-threads=1
+    # GTK's test accessibility backend, not none: the Apps list's selected
+    # state is read back from the list item (plan 006, part 4b, N8). It
+    # talks to no bus.
+    capture env RUST_BACKTRACE=0 GTK_A11Y=test cargo test --locked --quiet --manifest-path "$REPO/Cargo.toml" -p mirqab-ui --test widgets -- --ignored --test-threads=1
     status_is "widget tests pass under Broadway" 0 "$STATUS"
     ((STATUS == 0)) || printf '%s\n' "$OUTPUT" | tail -60 >&2
     stop_broadway

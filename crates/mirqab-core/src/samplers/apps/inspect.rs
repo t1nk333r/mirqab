@@ -277,37 +277,40 @@ fn fdinfo_bytes(v: &str) -> Option<u64> {
     })
 }
 
-/// File descriptors listed at most for GPU memory: a process with more is
-/// left without the row (plan 006, part 4, decision 13).
-pub const MAX_GPU_FDS: usize = 1024;
+/// DRM fds whose `fdinfo` is read at most for GPU memory: a process with
+/// more is left without the row (review of PR #20, nit 3: the cap was on
+/// the `fd/` listing, 1024 entries, which left the row out for browsers and
+/// Electron apps, the processes that hold the most fds and the most VRAM).
+pub const MAX_DRM_FDINFO: usize = 64;
 
 /// GPU memory from the `fdinfo` of the fds that are DRM device nodes
 /// (https://docs.kernel.org/gpu/drm-usage-stats.html). `fd/` is listed
-/// once, at most `MAX_GPU_FDS` entries (more leaves the row out), and
-/// only an fd whose link names a path under `/dev/dri/` has its `fdinfo`
-/// read (D2 of PR #16: every `fdinfo` was read). A process holds several
-/// fds of one DRM client, and each reports the client's memory, so a
-/// client is counted once by `drm-client-id`.
+/// once and each link read, as for the open files, and only an fd whose
+/// link names a path under `/dev/dri/` has its `fdinfo` read (D2 of
+/// PR #16: every `fdinfo` was read), at most `MAX_DRM_FDINFO` of them
+/// (more leaves the row out rather than count some clients). A process
+/// holds several fds of one DRM client, and each reports the client's
+/// memory, so a client is counted once by `drm-client-id`.
 fn gpu(root: &Root, pid: u32) -> Option<GpuMemory> {
-    let dir = root.path(&format!("proc/{pid}/fd")).ok()?;
-    let mut fds: Vec<u32> = Vec::new();
-    for e in std::fs::read_dir(dir).ok()?.take(MAX_GPU_FDS + 1) {
-        if let Some(n) = e.ok().and_then(|e| e.file_name().to_str()?.parse().ok()) {
-            fds.push(n);
-        }
-    }
-    if fds.len() > MAX_GPU_FDS {
+    let mut fds: Vec<u32> = root
+        .read_dir(&format!("proc/{pid}/fd"))
+        .ok()?
+        .iter()
+        .filter_map(|n| n.parse().ok())
+        .collect();
+    fds.sort_unstable();
+    let drm: Vec<u32> = fds
+        .into_iter()
+        .filter(|n| {
+            root.readlink(&format!("proc/{pid}/fd/{n}"))
+                .is_ok_and(|t| t.to_string_lossy().starts_with(crate::root::DRM_DIR))
+        })
+        .collect();
+    if drm.len() > MAX_DRM_FDINFO {
         return None;
     }
-    fds.sort_unstable();
     let mut clients: HashMap<String, [Option<u64>; 3]> = HashMap::new();
-    for n in fds {
-        let is_drm = root
-            .readlink(&format!("proc/{pid}/fd/{n}"))
-            .is_ok_and(|t| t.to_string_lossy().starts_with(crate::root::DRM_DIR));
-        if !is_drm {
-            continue;
-        }
+    for n in drm {
         let Ok(text) = root.read(&format!("proc/{pid}/fdinfo/{n}")) else {
             continue;
         };

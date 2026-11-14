@@ -1839,6 +1839,12 @@ pub const APPS_ROW_GONE: &str = "That row is gone: its processes exited or were 
 pub const APPS_NOT_YOURS: &str = "Another user's processes: mirqab does not quit them";
 pub const APPS_QUIT_SELF: &str = "Quit closes this window. The daemon keeps running.";
 pub const APPS_STILL_RUNNING: &str = "Still running. Force quit ends it at once.";
+/// "Idle but heavy" (plan 006, part 4, decision 6): the dim caption after a
+/// tagged row's process count. A word, no colour and no icon.
+pub const APPS_IDLE_HEAVY: &str = "busy while not in use";
+/// The inspector's line under the stats for a tagged group.
+pub const APPS_IDLE_HEAVY_LINE: &str =
+    "Over 20 % of a core for five minutes with none of its windows in focus";
 /// `QUIT_NOT_RECORDED` without the CLI's `mirqab:` prefix.
 pub const APPS_NOT_RECORDED: &str =
     "Done, but not recorded: the daemon could not write this action to its history";
@@ -1896,13 +1902,24 @@ pub fn apps_in_group(group: &str) -> String {
     format!("in {}", plain(group))
 }
 
-/// The accessible label of a group row.
-pub fn apps_group_label(name: &str, cpu: &str, memory: &str, procs: u32) -> String {
-    format!(
+/// The accessible label of a group row; a tagged group says so last.
+pub fn apps_group_label(
+    name: &str,
+    cpu: &str,
+    memory: &str,
+    procs: u32,
+    idle_heavy: bool,
+) -> String {
+    let mut out = format!(
         "{}, CPU {cpu}, memory {memory}, {}",
         plain(name),
         apps_procs(procs)
-    )
+    );
+    if idle_heavy {
+        out.push_str(", ");
+        out.push_str(APPS_IDLE_HEAVY);
+    }
+    out
 }
 
 /// The accessible label of a process row.

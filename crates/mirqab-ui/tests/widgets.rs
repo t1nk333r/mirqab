@@ -214,6 +214,8 @@ struct Fake {
     /// While set, a request's reply is held in `held` instead of answered.
     defer: Cell<bool>,
     held: RefCell<Option<Reply>>,
+    /// Answers to `get`, in order; an inspection of `browser` when empty.
+    get_answers: RefCell<std::collections::VecDeque<Result<Value, ErrorBody>>>,
 }
 
 impl Fake {
@@ -261,6 +263,10 @@ impl Source for Fake {
         self.requests
             .borrow_mut()
             .push((format!("get {stream}"), params.clone()));
+        if let Some(answer) = self.get_answers.borrow_mut().pop_front() {
+            on_reply(answer);
+            return;
+        }
         on_reply(Ok(json!({
             "pid": params["pid"],
             "name": "browser",
@@ -453,9 +459,14 @@ fn the_inspector_asks_before_it_quits_and_says_a_refusal_in_words() {
         fake.live_params.borrow().last(),
         Some(&json!({"pid": 2001, "start": 5010}))
     );
+    // The inspection names the row's start, so a reused pid is not
+    // explained in its name (plan 006, part 4, decision 9).
     assert_eq!(
         fake.requests.borrow().last(),
-        Some(&("get apps.inspect".to_string(), json!({"pid": 2001})))
+        Some(&(
+            "get apps.inspect".to_string(),
+            json!({"pid": 2001, "start": 5010})
+        ))
     );
     i.show(model::selection(&frame, p, 1), &frame, true);
     assert_eq!(fake.requests.borrow().len(), 1, "never on a timer");
@@ -475,7 +486,7 @@ fn the_inspector_asks_before_it_quits_and_says_a_refusal_in_words() {
     assert_eq!(fake.live.get(), 0, "a group drops the live graph");
     assert_eq!(
         fake.requests.borrow().last().unwrap().1,
-        json!({"pid": 2000})
+        json!({"pid": 2000, "start": 5000})
     );
     assert!(i.graph.ring_len() > 0, "fed from the frames instead");
 
@@ -730,7 +741,7 @@ fn one_act_one_dialog_and_go_ahead_sends_what_it_showed() {
     fake.defer.set(false);
     assert_eq!(
         fake.requests.borrow().last().unwrap().1,
-        json!({"name": "apps.quit", "args": {"pid": 2001}, "confirm": true, "plan": "p4"})
+        json!({"name": "apps.quit", "args": {"pid": 2001, "start": 5010}, "confirm": true, "plan": "p4"})
     );
     i.show(model::selection(&frame, other, 1), &frame, true);
     let held = fake.held.borrow_mut().take().expect("a held reply");
@@ -791,5 +802,273 @@ fn hiding_the_sheet_clears_the_selection() {
     ctx.apps.borrow_mut().selected = Some(Key::Group(1));
     split.set_show_sidebar(false);
     assert_eq!(ctx.apps.borrow().selected, None, "hidden: nothing selected");
+    ctx.client.close();
+}
+
+#[gtk::test]
+#[ignore = "needs a display: run tests/test-ui-widgets.sh"]
+fn a_reused_pid_is_not_explained_and_a_tagged_group_says_why() {
+    use mirqab_ui::tabs::apps::inspector::Inspector;
+    use mirqab_view::tabs::apps::{self as model, Key};
+    let fake = Rc::new(Fake::new());
+    let i = Inspector::new(
+        fake.clone(),
+        Rc::new(|| true),
+        Rc::new(|| {}),
+        Rc::new(|_| {}),
+    );
+    let _win = shown(&i.root, 400, 600);
+    let frame = golden_frame();
+    let p = Key::Process {
+        pid: 2001,
+        start: 5010,
+    };
+
+    // The pid holds another process by the time it is asked: the sheet
+    // says the row is gone and forms no verdict (decision 9).
+    fake.get_answers.borrow_mut().push_back(Err(ErrorBody {
+        code: Code::Failed,
+        message: mirqab_proto::strings::apps_process_gone(2001),
+        data: None,
+    }));
+    i.show(model::selection(&frame, p, 1), &frame, true);
+    assert_eq!(
+        fake.requests.borrow().last(),
+        Some(&(
+            "get apps.inspect".to_string(),
+            json!({"pid": 2001, "start": 5010})
+        ))
+    );
+    assert_eq!(i.result.text(), mirqab_proto::strings::APPS_ROW_GONE);
+    let verdict = named(i.root.upcast_ref(), "apps-verdict")
+        .and_downcast::<gtk::Label>()
+        .unwrap();
+    assert_eq!(verdict.text(), "", "no verdict");
+    // Another failure is not the row gone.
+    fake.get_answers.borrow_mut().push_back(Err(ErrorBody {
+        code: Code::Failed,
+        message: "no such stream".into(),
+        data: None,
+    }));
+    let other = Key::Process {
+        pid: 2010,
+        start: 5100,
+    };
+    i.show(model::selection(&frame, other, 1), &frame, true);
+    assert_eq!(i.result.text(), "");
+    assert!(!i.idle.is_visible(), "a process row has no tag line");
+
+    // A tagged group: the sheet's line under the stats; untagged, none.
+    let mut st = model::AppsState::default();
+    let v: Value = serde_json::from_str(include_str!("../../../tests/golden/apps.json")).unwrap();
+    let mut d: mirqab_proto::stream::AppsData = serde_json::from_value(v).unwrap();
+    for g in &mut d.groups {
+        g.idle_heavy = g.id == "session:3030";
+    }
+    let tagged = st.take(d).0;
+    let key = |id: &str| tagged.groups.iter().find(|(_, g)| g.id == id).unwrap().0;
+    i.show(
+        model::selection(&tagged, Key::Group(key("session:3030")), 1),
+        &tagged,
+        true,
+    );
+    assert!(i.idle.is_visible());
+    assert_eq!(i.idle.text(), mirqab_proto::strings::APPS_IDLE_HEAVY_LINE);
+    i.show(
+        model::selection(
+            &tagged,
+            Key::Group(key("scope:app-Hyprland-browser.sh-5650fedc")),
+            1,
+        ),
+        &tagged,
+        true,
+    );
+    assert!(!i.idle.is_visible());
+}
+
+#[gtk::test]
+#[ignore = "needs a display: run tests/test-ui-widgets.sh"]
+fn the_caption_shows_only_on_a_tagged_row() {
+    use mirqab_ui::tabs::apps::group_row::GroupRow;
+    use mirqab_view::tabs::apps::{self as model, AppsState, Row};
+    let frame = golden_frame();
+    let rows = model::rows(&frame, &AppsState::default(), "");
+    let Row::Group(g) = &rows[0] else { panic!() };
+    let row = GroupRow::new(Rc::new(|_| {}));
+    let _win = shown(&row.root, 600, 40);
+    row.show(g);
+    assert!(!row.idle.is_visible(), "untagged: no caption");
+    let mut t = g.clone();
+    t.idle_heavy = true;
+    row.show(&t);
+    assert!(row.idle.is_visible());
+    assert_eq!(row.idle.text(), mirqab_proto::strings::APPS_IDLE_HEAVY);
+    assert!(row.idle.has_css_class("dim-label") && row.idle.has_css_class("caption"));
+    row.show(g);
+    assert!(!row.idle.is_visible(), "rebound to an untagged group");
+}
+
+/// The Apps page on a `Ctx` with a dead socket, shown in a window, fed the
+/// golden frame by hand.
+fn apps_page() -> (
+    Rc<mirqab_ui::app::Ctx>,
+    gtk::Widget,
+    mirqab_ui::tabs::apps::page::Handle,
+    Shown,
+) {
+    adw::init().unwrap();
+    let app = adw::Application::builder()
+        .application_id("io.github.t1nk333r.mirqab.test")
+        .flags(gtk::gio::ApplicationFlags::NON_UNIQUE)
+        .build();
+    let dir = std::env::temp_dir().join(format!("mirqab-widgets-{}", std::process::id()));
+    let ctx = mirqab_ui::app::Ctx::new(&app, dir.join("none.sock"));
+    let (page, handle) = mirqab_ui::tabs::apps::page::build_page(&ctx);
+    let win = shown(&page, 1400, 700);
+    let v: Value = serde_json::from_str(include_str!("../../../tests/golden/apps.json")).unwrap();
+    handle.frame(&v);
+    settle("the rows are drawn", || {
+        named(win.0.upcast_ref(), "apps-group:system").is_some_and(|w| w.is_mapped())
+    });
+    (ctx, page, handle, win)
+}
+
+fn group_ids(rows: &[mirqab_view::tabs::apps::Row]) -> Vec<String> {
+    use mirqab_view::tabs::apps::Row;
+    rows.iter()
+        .filter_map(|r| match r {
+            Row::Group(g) => Some(g.id.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+#[gtk::test]
+#[ignore = "needs a display: run tests/test-ui-widgets.sh"]
+fn escape_clears_the_selection_and_otherwise_goes_on() {
+    let (ctx, page, handle, _win) = apps_page();
+    // The page's own Escape: a local shortcut, asked before the window's.
+    let keys = page
+        .observe_controllers()
+        .into_iter()
+        .filter_map(|c| c.ok()?.downcast::<gtk::ShortcutController>().ok())
+        .find(|c| c.scope() == gtk::ShortcutScope::Local)
+        .expect("a local shortcut controller on the page");
+    let escape = (0..keys.n_items())
+        .filter_map(|i| keys.item(i).and_downcast::<gtk::Shortcut>())
+        .find(|s| s.trigger().is_some_and(|t| t.to_str() == "Escape"))
+        .expect("Escape is bound");
+    let press = || {
+        escape
+            .action()
+            .unwrap()
+            .activate(gtk::ShortcutActionFlags::empty(), &page, None)
+    };
+    handle.activate(0);
+    assert!(ctx.apps.borrow().selected.is_some(), "a row selected");
+    assert!(press(), "spent: it cleared the selection");
+    assert_eq!(ctx.apps.borrow().selected, None);
+    assert!(
+        !press(),
+        "nothing selected: it goes on (a popover hides; a window does nothing)"
+    );
+    ctx.client.close();
+}
+
+#[gtk::test]
+#[ignore = "needs a display: run tests/test-ui-widgets.sh"]
+fn a_frame_during_a_press_waits_for_the_release() {
+    let (ctx, _page, handle, _win) = apps_page();
+    let before = handle.rows();
+    assert_eq!(group_ids(&before)[0], "session:3030", "cargo first by CPU");
+    // A frame that reorders the list arrives while a pointer is down: the
+    // rows under the pointer stay until the release (S8).
+    let mut v: Value =
+        serde_json::from_str(include_str!("../../../tests/golden/apps.json")).unwrap();
+    for g in v["groups"].as_array_mut().unwrap() {
+        if g["id"] == "session:3030" {
+            g["cpu"] = json!(0.0);
+        }
+    }
+    handle.press(true);
+    handle.frame(&v);
+    assert_eq!(handle.rows(), before, "held while pressed");
+    // The release activates the row that was under the press.
+    handle.activate(0);
+    assert_eq!(
+        ctx.apps
+            .borrow()
+            .selected
+            .map(|k| matches!(k, mirqab_view::tabs::apps::Key::Group(_))),
+        Some(true)
+    );
+    let picked = match ctx.apps.borrow().selected {
+        Some(mirqab_view::tabs::apps::Key::Group(k)) => k,
+        _ => unreachable!(),
+    };
+    handle.press(false);
+    let after = handle.rows();
+    assert_ne!(
+        group_ids(&after)[0],
+        "session:3030",
+        "the release wrote the frame"
+    );
+    let cargo = after
+        .iter()
+        .find_map(|r| match r {
+            mirqab_view::tabs::apps::Row::Group(g) if g.id == "session:3030" => Some(g.key),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(picked, cargo, "the press's row, cargo, was selected");
+    // A release with no frame waiting writes nothing.
+    handle.press(true);
+    handle.press(false);
+    assert_eq!(handle.rows(), after);
+    ctx.client.close();
+}
+
+#[gtk::test]
+#[ignore = "needs a display: run tests/test-ui-widgets.sh"]
+fn the_list_item_carries_the_selected_state() {
+    let (ctx, _page, handle, win) = apps_page();
+    handle.activate(0);
+    settle("the selected row is drawn", || {
+        named(win.0.upcast_ref(), "apps-group:session:3030")
+            .and_then(|w| w.parent())
+            .is_some_and(|b| b.has_css_class("selected"))
+    });
+    let row = named(win.0.upcast_ref(), "apps-group:session:3030").unwrap();
+    let item_box = row.parent().unwrap();
+    let list_item = item_box.parent().unwrap();
+    assert_eq!(list_item.accessible_role(), gtk::AccessibleRole::ListItem);
+    assert!(
+        gtk::test_accessible_has_state(&list_item, gtk::AccessibleState::Selected),
+        "on the list item (N8)"
+    );
+    assert!(
+        !gtk::test_accessible_has_state(&item_box, gtk::AccessibleState::Selected),
+        "not on the row's box"
+    );
+    ctx.client.close();
+}
+
+#[gtk::test]
+#[ignore = "needs a display: run tests/test-ui-widgets.sh"]
+fn a_remapped_page_shows_nothing_before_its_first_frame() {
+    let (ctx, page, handle, win) = apps_page();
+    assert!(!handle.rows().is_empty());
+    win.0.set_visible(false);
+    settle("the page is unmapped", || !page.is_mapped());
+    assert!(
+        handle.rows().is_empty(),
+        "the rows went with the frame (N3)"
+    );
+    win.0.present();
+    settle("the page is mapped again", || page.is_mapped());
+    assert!(handle.rows().is_empty(), "nothing stale before a frame");
+    let v: Value = serde_json::from_str(include_str!("../../../tests/golden/apps.json")).unwrap();
+    handle.frame(&v);
+    assert!(!handle.rows().is_empty(), "the next frame fills it");
     ctx.client.close();
 }

@@ -10,6 +10,16 @@
 # screen; an act's outcome outlives the row it ended (review of PR #19,
 # B1); and without MIRQAB_TEST=1 a running interface takes no `--do` and
 # no `--selftest` over the session bus (review of PR #19, S1).
+#
+# Part 4b: the interface asks for a process by pid and start time, in the
+# `process` subscription and in `get apps.inspect` (seen on a logging
+# proxy in front of the daemon; gap 6 of the review of PR #19); without a
+# focus source no row is tagged and `status.focus` is null; with a fake
+# Hyprland in a copy of the root focusing the browser, and two busy
+# groups, the unfocused one (cargo) shows "busy while not in use" and the
+# focused browser does not, `status.focus` says hyprland while the page
+# is open, and once it closes `focus` is null and no `focus-hyprland`
+# thread is left in the daemon.
 # mirqab:covers crates/mirqab-ui/src/tabs/apps/** crates/mirqab-view/src/tabs/apps.rs
 # mirqab:covers crates/mirqab-ui/src/selftest.rs crates/mirqab-ui/src/client.rs
 # mirqab:covers crates/mirqab-ui/src/widgets/confirm_dialog.rs
@@ -54,6 +64,7 @@ act_log() { cat "$MIRQAB_ACT_LOG"; }
 
 apps
 is "only the Apps page was built" '["apps"]' "$(q '.pages | tojson')"
+is "no focus source: no row is tagged" 0 "$(q '[.. | objects | select(.visible and .text? == "busy while not in use")] | length')"
 is "the golden frame's 24 groups" 24 "$(wc -w <<<"$(groups)")"
 like "System is listed" "$(groups)" "apps-group:system"
 is "System last" "apps-group:system" "$(awk '{ print $NF }' <<<"$(groups)")"
@@ -117,14 +128,67 @@ until_subs() {
     done
     printf '%s' "$n"
 }
+# A logging proxy in front of the daemon: what the interface asks, line by
+# line (gap 6 of the review of PR #19).
+cat >"$SANDBOX/proxy.py" <<'PY'
+# Forwards a Unix socket to another, appending what clients send to a log.
+import socket
+import sys
+import threading
+listen, upstream, log = sys.argv[1:4]
+lock = threading.Lock()
+srv = socket.socket(socket.AF_UNIX)
+srv.bind(listen)
+srv.listen(8)
+def pump(a, b, record):
+    try:
+        while True:
+            d = a.recv(65536)
+            if not d:
+                break
+            b.sendall(d)
+            if record:
+                with lock, open(log, "ab") as f:
+                    f.write(d)
+    except OSError:
+        pass
+    finally:
+        for x in (a, b):
+            try:
+                x.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+while True:
+    c, _ = srv.accept()
+    u = socket.socket(socket.AF_UNIX)
+    u.connect(upstream)
+    threading.Thread(target=pump, args=(c, u, True), daemon=True).start()
+    threading.Thread(target=pump, args=(u, c, False), daemon=True).start()
+PY
+PROXY="$MIRQAB_RUN_DIR/proxy.sock"
+: >"$SANDBOX/proxy.log"
+python3 -I "$SANDBOX/proxy.py" "$PROXY" "$MIRQAB_SOCKET" "$SANDBOX/proxy.log" &
+proxy=$!
+for _ in $(seq 100); do
+    [[ -S $PROXY ]] && break
+    sleep 0.02
+done
 # A process's graph holds one `process` subscriber while it is on screen.
-"$BIN/mirqab-ui" --socket "$MIRQAB_SOCKET" --selftest apps \
+"$BIN/mirqab-ui" --socket "$PROXY" --selftest apps \
     --do "activate apps-flatten; type apps-search 2001; activate apps-process:2001; wait apps-verdict; pause 6000" \
     >"$SANDBOX/ui1.out" 2>&1 &
 ui=$!
 is "a selected process: one process subscriber" 1 "$(until_subs process 1)"
 is "and one apps subscriber" 1 "$(subs apps)"
+is "no focus source: status.focus is null" null "$("$BIN/mirqab" status --json | jq -c .focus)"
 wait "$ui" 2>/dev/null || true
+kill "$proxy" 2>/dev/null || true
+wait "$proxy" 2>/dev/null || true
+asked() { jq -c "select($1) | .params" "$SANDBOX/proxy.log" 2>/dev/null | head -n1; }
+is "the graph subscribes by pid and start" '{"interval":1000,"live":true,"pid":2001,"start":5010}' \
+    "$(asked '.method == "subscribe" and .stream == "process"')"
+is "the inspector asks by pid and start" '{"pid":2001,"start":5010}' \
+    "$(asked '.method == "get" and .stream == "apps.inspect"')"
 is "gone with the window: no process subscriber" 0 "$(until_subs process 0)"
 is "and no apps subscriber" 0 "$(until_subs apps 0)"
 # A group's graph is fed from the frames: no process subscriber.
@@ -246,7 +310,109 @@ is "the outcome is shown above the list" true "$(named apps-notice | jq -r .visi
 like "naming the app" "$(named apps-notice | jq -r .text)" "Example Browser: "
 like "and what came of it" "$(named apps-notice | jq -r .text)" "Done."
 
-for f in ui.out ui1.out ui2.out ui3.out; do
+# "Idle but heavy" with a fake Hyprland (plan 006, part 4b). A second
+# daemon on a copy of the root under the short runtime dir, so the fake's
+# socket paths stay under 108 bytes; on a fixture root the daemon finds
+# Hyprland only in the tree's run/user/1000/hypr/, never the session's.
+stop_daemon
+HROOT="$MIRQAB_RUN_DIR/r"
+cp -a "$FIXTURES/root-desktop" "$HROOT"
+HDIR="$HROOT/run/user/1000/hypr/fake"
+mkdir -p "$HDIR"
+# The lock names the fixture's Hyprland, pid 1050, which has a proc entry.
+printf '1050\nwayland-1\n' >"$HDIR/hyprland.lock"
+cat >"$SANDBOX/hypr.py" <<'PY'
+# A fake Hyprland: the event socket says the browser's window has focus,
+# and the request socket answers j/activewindow with its pid. No title or
+# class is needed by the reader; the fake sends synthetic ones.
+import json
+import socket
+import sys
+import threading
+d, pid = sys.argv[1], int(sys.argv[2])
+def listener(name):
+    s = socket.socket(socket.AF_UNIX)
+    s.bind(d + "/" + name)
+    s.listen(4)
+    return s
+events, requests = listener(".socket2.sock"), listener(".socket.sock")
+def answer():
+    while True:
+        c, _ = requests.accept()
+        try:
+            c.settimeout(2)
+            if c.recv(4096).startswith(b"j/activewindow"):
+                c.sendall(json.dumps({"address": "0x5633a0b1c2d3", "pid": pid,
+                                      "class": "example", "title": "example",
+                                      "focusHistoryID": 0}).encode())
+        except OSError:
+            pass
+        finally:
+            c.close()
+def serve(c):
+    try:
+        c.sendall(b"activewindowv2>>5633a0b1c2d3\n")
+        while c.recv(4096):
+            pass
+    except OSError:
+        pass
+    finally:
+        c.close()
+threading.Thread(target=answer, daemon=True).start()
+while True:
+    c, _ = events.accept()
+    threading.Thread(target=serve, args=(c,), daemon=True).start()
+PY
+python3 -I "$SANDBOX/hypr.py" "$HDIR" 2001 &
+hypr=$!
+for _ in $(seq 100); do
+    [[ -S $HDIR/.socket.sock ]] && break
+    sleep 0.02
+done
+# Two busy groups: the browser (focused) and cargo's rustc (not), each a
+# core's worth of ticks a second. Each stat is replaced whole, so the
+# daemon never reads half a file.
+bump() {
+    local t=0 pid
+    while :; do
+        t=$((t + 50))
+        for pid in 2001 3041; do
+            awk -v add="$t" '{ $14 += add; print }' "$FIXTURES/root-desktop/proc/$pid/stat" >"$HROOT/proc/$pid/stat.new"
+            mv -f "$HROOT/proc/$pid/stat.new" "$HROOT/proc/$pid/stat"
+        done
+        sleep 0.5
+    done
+}
+bump &
+bumper=$!
+rm -f "$SANDBOX/daemon.out"
+MIRQAB_HEAVY_WINDOW_MS=4000 start_daemon "$HROOT"
+"$BIN/mirqab-ui" --socket "$MIRQAB_SOCKET" --selftest apps --do "pause 11000" >"$SANDBOX/ui4.out" 2>&1 &
+ui=$!
+focus=""
+for _ in $(seq 200); do
+    focus="$("$BIN/mirqab" status --json 2>/dev/null | jq -r '.focus.source // empty')"
+    [[ -n $focus ]] && break
+    sleep 0.05
+done
+is "the page open: status.focus is hyprland" hyprland "$focus"
+is "and the reader thread runs" 1 "$(cat /proc/"$DAEMON_PID"/task/*/comm 2>/dev/null | grep -cx focus-hyprland || true)"
+wait "$ui" 2>/dev/null || true
+tree="$(grep -m1 '^{' "$SANDBOX/ui4.out" || true)"
+tag() { q "[.. | objects | select(.name? == \"apps-group:$1\")][0] | [.. | objects | select(.visible and .text? == \"busy while not in use\")] | length"; }
+is "cargo, busy and not in focus, is tagged" 1 "$(tag session:3030)"
+is "the focused browser is not" 0 "$(tag "$BROWSER")"
+is "closed: status.focus is null" null "$(for _ in $(seq 200); do
+    f="$("$BIN/mirqab" status --json 2>/dev/null | jq -c .focus)"
+    [[ $f == null ]] && break
+    sleep 0.05
+done
+printf '%s' "$f")"
+is "and no focus-hyprland thread is left" 0 "$(cat /proc/"$DAEMON_PID"/task/*/comm 2>/dev/null | grep -cx focus-hyprland || true)"
+kill "$bumper" "$hypr" 2>/dev/null || true
+wait "$bumper" "$hypr" 2>/dev/null || true
+
+for f in ui.out ui1.out ui2.out ui3.out ui4.out; do
     unlike "no GTK criticals in $f" "$(<"$SANDBOX/$f")" "CRITICAL"
 done
 
