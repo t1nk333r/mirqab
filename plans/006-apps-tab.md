@@ -2687,6 +2687,9 @@ Two, in this order:
    least 10 % of a core and the six names differ from the last row's;
    `config.trends.topApps` defaults on and flips off only if the idle
    benchmark breaks its 0.3 % budget (it does not: "As built (part 4a)").
+5. **`top-apps` rows are kept 3 days** (owner, 2026-11-14, asked after
+   the 30-day fill measured 49.2 MB against the 40 MiB budget). Every other
+   series keeps 30 days; the history budget does not grow.
 
 ## As built (part 4a)
 
@@ -2886,8 +2889,8 @@ Deviations from the brief, each with its reason:
   row a minute for 30 days measured 10.6 MB with its index (49.2 MB in
   all), and the leader and repeat rules do not bound the worst case (a
   busy machine with changing leaders). Three days of the worst case fit
-  (39.5 MiB). Plan 018's spike rewind reads recent rows; whether it
-  needs longer is an owner question below.
+  (39.5 MiB). Plan 018's spike rewind reads recent rows. The owner kept
+  3 days (owner decision 5).
 - **D1's "late frame" was not reproducible at 2 s** for `get apps`: the
   half-second wait came only when the subscriber's baseline was under a
   second old, so it ended within 1.5 s of the last tick and could never
@@ -2933,9 +2936,9 @@ Left for the owner (acceptance part 4, 1–5): the tag on a real
 `focus: hyprland` and the `focus-hyprland` thread with the page open,
 none closed; Hyprland restarted while the daemon runs; `top-apps` rows
 after a busy ten minutes and none for a quiet stretch; the idle bench on
-the development machine (above: 0.000 %). New owner question: is three
-days of `top-apps` rows enough for plan 018's rewind, or should the 40
-MiB budget grow (a row a minute for 30 days is 10.6 MB)?
+the development machine (above: 0.000 %). The owner answered the
+retention question on 2026-11-14: three days of `top-apps` rows, and the
+40 MiB budget stays (owner decision 5).
 
 What 4b does: decision 16 whole (the caption and the sheet line,
 Escape, S8, N3, N8, N4, `start` in `args` and the inspect params,
