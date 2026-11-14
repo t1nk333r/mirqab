@@ -287,7 +287,12 @@ fn copy_tree(from: &Path, to: &Path) {
     for e in std::fs::read_dir(from).unwrap() {
         let e = e.unwrap();
         let dest = to.join(e.file_name());
-        if e.file_type().unwrap().is_dir() {
+        let kind = e.file_type().unwrap();
+        if kind.is_symlink() {
+            // The process fixtures' links (exe, cwd, fd) name paths of a
+            // live machine: copied as links, never followed (plan 006).
+            std::os::unix::fs::symlink(std::fs::read_link(e.path()).unwrap(), dest).unwrap();
+        } else if kind.is_dir() {
             copy_tree(&e.path(), &dest);
         } else {
             std::fs::copy(e.path(), dest).unwrap();

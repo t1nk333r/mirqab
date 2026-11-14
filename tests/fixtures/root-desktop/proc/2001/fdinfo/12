@@ -1,0 +1,10 @@
+pos:	0
+flags:	02100002
+mnt_id:	26
+ino:	1050
+drm-driver:	amdgpu
+drm-client-id:	8
+drm-pdev:	0000:03:00.0
+drm-memory-vram:	131072 KiB
+drm-memory-gtt:	16384 KiB
+drm-memory-cpu:	4 KiB

@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Example Browser
+Name[de]=Beispielbrowser
+GenericName=Web Browser
+Exec=browser %u
+Icon=example-browser
+StartupWMClass=example-browser
+
+[Desktop Action new-window]
+Name=New Window
+Exec=browser --new-window

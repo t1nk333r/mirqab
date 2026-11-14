@@ -9,8 +9,12 @@ pub const SELF: &str = "self";
 pub const UI: &str = "ui";
 
 /// Every stream the protocol defines so far.
-pub const STREAMS: &[&str] = &["self", "system", "ui"];
+pub const STREAMS: &[&str] = &["apps", "self", "system", "ui"];
 pub const SYSTEM: &str = "system";
+pub const APPS: &str = "apps";
+/// `get apps.inspect {pid}`: one process explained (plan 006). A request
+/// under the `apps` stream, not a stream of its own.
+pub const APPS_INSPECT: &str = "apps.inspect";
 
 /// The `self` stream: what mirqab costs (plan 001).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -227,6 +231,237 @@ pub struct Power {
 pub struct Advice {
     pub code: String,
     pub reason: String,
+}
+
+/// The `apps` stream (plan 006): one row per app, every process when asked.
+/// The daemon measures once for every subscriber; each gets the groups
+/// sorted, limited and expanded as its own `params` say.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct AppsData {
+    pub groups: Vec<AppGroup>,
+    pub totals: AppsTotals,
+    /// The order in force: `cpu`, `mem` or `name`.
+    pub sort: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct AppGroup {
+    /// Stable while the group lives: `scope:<unit>`, `service:<unit>`,
+    /// `flatpak:<app id>`, `container:<id>`, `session:<sid>`,
+    /// `tree:<pid>` or `system`.
+    pub id: String,
+    pub name: String,
+    /// The desktop entry's `Icon=`, when the group maps to one.
+    pub icon: Option<String>,
+    /// `app`, `service`, `flatpak`, `container`, `terminal`, `process` or
+    /// `system`.
+    pub kind: String,
+    /// The systemd user unit, for an `app` or `service` group.
+    pub unit: Option<String>,
+    /// Percent of one core since the previous sample (may pass 100); None
+    /// on the first.
+    pub cpu: Option<f64>,
+    /// An estimate: every member's resident memory minus its shared pages,
+    /// plus the largest shared part once. The inspector's PSS is exact.
+    pub rss_bytes: u64,
+    pub procs: u32,
+    pub threads: u32,
+    /// Bytes a second read from and written to storage by the members the
+    /// daemon may read (the user's own); None on the first sample.
+    pub io_read_per_sec: Option<f64>,
+    pub io_write_per_sec: Option<f64>,
+    pub pids: Vec<u32>,
+    /// The member using the most CPU.
+    pub top: Option<AppTop>,
+    /// Every member, only in the groups a subscriber expanded.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub processes: Option<Vec<AppProcess>>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct AppTop {
+    pub pid: u32,
+    pub name: String,
+    pub cpu: Option<f64>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct AppProcess {
+    pub pid: u32,
+    pub ppid: u32,
+    pub name: String,
+    pub cpu: Option<f64>,
+    pub rss_bytes: u64,
+    pub threads: u32,
+    /// The kernel's state letter: `R`, `S`, `D`, `Z`, `T`, `I`.
+    pub state: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct AppsTotals {
+    pub procs: u32,
+    pub threads: u32,
+    pub cpu: Option<f64>,
+    /// Logical CPUs, so a client can show percent of the machine.
+    pub cores: Option<u32>,
+}
+
+/// `get apps.inspect {pid}` (plan 006, "Inspector"). A field the daemon
+/// could not read is left out, never an error: another user's process
+/// gives name, CPU and memory only (`limited`).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct Inspect {
+    pub pid: u32,
+    pub name: String,
+    /// Plain words from fixed rules, first in the inspector.
+    pub verdict: Verdict,
+    /// Another user's process: only name, CPU and memory are shown.
+    pub limited: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ppid: Option<u32>,
+    /// The parents up to the user manager (or pid 1), nearest first.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub parents: Vec<ProcRef>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub uid: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub user: Option<String>,
+    /// Unix seconds.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub started_at: Option<i64>,
+    /// Seconds since it started, from the machine's uptime.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub age_sec: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cpu_time_sec: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub threads: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub state: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub cmdline: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
+    /// The executable, without the kernel's ` (deleted)` suffix.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub exe: Option<String>,
+    /// The file was replaced or removed since the process started; left
+    /// out when it was not, or when the link cannot be read.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub exe_deleted: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub package: Option<Package>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub arch: Option<Arch>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub unit: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cgroup: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub flatpak: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub container: Option<String>,
+    /// The group of the `apps` stream it is counted in.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub group: Option<GroupRef>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sandbox: Option<Sandbox>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub memory: Option<ProcMemory>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub files: Option<OpenFiles>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gpu: Option<GpuMemory>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct Verdict {
+    /// `kernel`, `other-user`, `replaced`, `flatpak`, `container`,
+    /// `packaged`, `home`, `unowned` or `unknown`.
+    pub code: String,
+    pub text: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct ProcRef {
+    pub pid: u32,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct GroupRef {
+    pub id: String,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct Package {
+    pub name: String,
+    /// The sync repository that provides it; None for a package built
+    /// locally or from the AUR.
+    pub repo: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct Arch {
+    /// `x86-64`, `aarch64`, `i386`, … from the ELF header.
+    pub machine: String,
+    pub bits: u32,
+    /// Not the daemon's own machine type: emulated (qemu-user).
+    pub foreign: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct Sandbox {
+    /// `none`, `strict` or `filter`.
+    pub seccomp: Option<String>,
+    pub no_new_privs: bool,
+    /// Effective capabilities by name, lower case without `cap_`.
+    pub capabilities: Vec<String>,
+    /// The namespaces that differ from the daemon's own.
+    pub namespaces: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct ProcMemory {
+    pub rss_bytes: u64,
+    /// From `smaps_rollup`, which only the owner may read.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pss_bytes: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub swap_bytes: Option<u64>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct OpenFiles {
+    pub count: u32,
+    pub sockets: u32,
+    /// The first 50 open files that are paths.
+    pub paths: Vec<String>,
+}
+
+/// GPU memory from the DRM fdinfo keys (amdgpu: `drm-memory-*`), counted
+/// once per DRM client.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct GpuMemory {
+    pub vram_bytes: Option<u64>,
+    pub gtt_bytes: Option<u64>,
+    pub cpu_bytes: Option<u64>,
 }
 
 #[cfg(test)]

@@ -1,0 +1,19 @@
+Name:	node
+Umask:	0022
+State:	S (sleeping)
+Tgid:	3020
+Ngid:	0
+Pid:	3020
+PPid:	3010
+TracerPid:	0
+Uid:	1000	1000	1000	1000
+Gid:	1000	1000	1000	1000
+FDSize:	64
+VmRSS:	240000 kB
+Threads:	11
+NoNewPrivs:	0
+Seccomp:	0
+CapInh:	0000000000000000
+CapPrm:	0000000000000000
+CapEff:	0000000000000000
+CapBnd:	000001ffffffffff

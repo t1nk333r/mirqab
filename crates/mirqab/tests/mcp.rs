@@ -2,7 +2,9 @@
 //! handshake and the 2026-07-28 per-request `_meta`; `tools/list` matches
 //! the tools of the plans merged so far; an unknown tool and malformed JSON
 //! are JSON-RPC errors and the server stays up; a missing daemon gives tool
-//! errors, not a crash; `system_load` reads the fixture daemon.
+//! errors, not a crash; `system_load` reads the fixture daemon; `top_apps`
+//! and `what_is_process` (plan 006) read it too, and send no command line
+//! or path to the agent.
 
 use serde_json::{Value, json};
 use std::io::{BufRead, BufReader, Write};
@@ -33,11 +35,23 @@ fn daemon(name: &str) -> Daemon {
     let run = dir.join("run");
     std::fs::create_dir_all(&run).unwrap();
     std::fs::set_permissions(&run, std::fs::Permissions::from_mode(0o700)).unwrap();
-    let fixture =
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/root-desktop");
+    let fixtures = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures");
+    let fixture = fixtures.join("root-desktop");
+    // The process inspector asks pacman (plan 006): the fixture's stub
+    // answers, never the machine's package database.
+    let bin = dir.join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    std::fs::copy(fixtures.join("bin/pacman"), bin.join("pacman")).unwrap();
+    std::fs::set_permissions(bin.join("pacman"), std::fs::Permissions::from_mode(0o755)).unwrap();
+    let path = format!(
+        "{}:{}",
+        bin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
     let mut child = Command::new(BIN)
         .args(["daemon", "--root"])
         .arg(&fixture)
+        .env("PATH", path)
         .env("XDG_RUNTIME_DIR", &run)
         .env("XDG_CONFIG_HOME", dir.join("config"))
         .env("XDG_STATE_HOME", dir.join("state"))
@@ -151,7 +165,18 @@ fn a_legacy_client_initializes_lists_and_reads_the_load() {
         .iter()
         .filter_map(|t| t["name"].as_str())
         .collect();
-    assert_eq!(names, ["system_load", "explain_slowness"]);
+    assert_eq!(
+        names,
+        [
+            "system_load",
+            "explain_slowness",
+            "top_apps",
+            "what_is_process"
+        ]
+    );
+    let what = &list["result"]["tools"][3]["inputSchema"];
+    assert_eq!(what["required"], json!(["pid"]), "{what}");
+    assert_eq!(what["additionalProperties"], false);
     for t in list["result"]["tools"].as_array().unwrap() {
         assert_eq!(t["annotations"]["readOnlyHint"], true, "{t}");
         assert!(
@@ -179,6 +204,69 @@ fn a_legacy_client_initializes_lists_and_reads_the_load() {
     let slow = s.ask(json!({"jsonrpc": "2.0", "id": 4, "method": "tools/call",
         "params": {"name": "explain_slowness"}}));
     assert_eq!(slow["result"]["structuredContent"]["causes"], json!([]));
+}
+
+#[test]
+fn top_apps_and_what_is_process_read_the_fixture() {
+    let d = daemon("apps");
+    let mut s = Server::start(&d.socket);
+    let mut call = |id: u32, name: &str, args: Value| {
+        s.ask(json!({"jsonrpc": "2.0", "id": id, "method": "tools/call",
+            "params": {"name": name, "arguments": args}}))["result"]
+            .clone()
+    };
+    let top = call(1, "top_apps", json!({"sort": "mem", "limit": 3}));
+    assert_eq!(top["isError"], false, "{top}");
+    let groups = top["structuredContent"]["groups"].as_array().unwrap();
+    assert_eq!(groups.len(), 4, "three, and System last");
+    assert_eq!(groups[0]["name"], "cargo");
+    assert_eq!(groups[3]["id"], "system");
+    assert!(groups[0].get("pids").is_none(), "no pid lists for an agent");
+    assert_eq!(top["structuredContent"]["sort"], "mem");
+    let text = top["content"][0]["text"].as_str().unwrap();
+    assert!(text.contains("Example Browser"), "{text}");
+
+    let what = call(2, "what_is_process", json!({"pid": 2001}));
+    assert_eq!(what["isError"], false, "{what}");
+    let data = &what["structuredContent"];
+    assert_eq!(data["verdict"]["code"], "packaged");
+    assert_eq!(
+        data["package"],
+        json!({"name": "example-browser", "repo": "extra"})
+    );
+    assert_eq!(data["files"]["count"], 9);
+    // Command lines and paths can hold secrets: never sent to an agent.
+    for absent in ["cmdline", "cwd"] {
+        assert!(data.get(absent).is_none(), "{absent}: {data}");
+    }
+    assert!(data["files"].get("paths").is_none(), "{data}");
+    let text = what["content"][0]["text"].as_str().unwrap();
+    assert!(
+        text.starts_with("Packaged by extra/example-browser"),
+        "{text}"
+    );
+    assert!(
+        !text.contains("--new-window") && !text.contains(".cache"),
+        "{text}"
+    );
+
+    for (id, name, args) in [
+        (3, "what_is_process", json!({})),
+        (4, "what_is_process", json!({"pid": "2001"})),
+        (5, "top_apps", json!({"limit": 0})),
+        (6, "top_apps", json!({"sort": "size"})),
+    ] {
+        let r = call(id, name, args.clone());
+        assert_eq!(r["isError"], true, "{name} {args}: {r}");
+    }
+    let gone = call(7, "what_is_process", json!({"pid": 99999}));
+    assert_eq!(gone["isError"], true);
+    assert!(
+        gone["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("no process 99999")
+    );
 }
 
 #[test]

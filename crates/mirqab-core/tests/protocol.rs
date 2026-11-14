@@ -159,10 +159,66 @@ fn hello_comes_first_with_the_capabilities() {
     let d = start("hello");
     let mut c = Client::connect(&d);
     let caps = c.hello();
-    assert_eq!(caps, ["fake", "self", "system", "ui"]);
+    assert_eq!(caps, ["apps", "fake", "self", "system", "ui"]);
     assert_eq!(
         c.call("capabilities", None, Value::Null).unwrap(),
-        json!(["fake", "self", "system", "ui"])
+        json!(["apps", "fake", "self", "system", "ui"])
+    );
+}
+
+#[test]
+fn each_subscriber_gets_its_own_view_of_one_sample() {
+    // Plan 006: `apps` is measured once and shaped per subscriber by its
+    // params; `get` takes params too, and `apps.inspect` is a query.
+    let d = start("views");
+    let mut a = Client::connect(&d);
+    let mut b = Client::connect(&d);
+    a.hello();
+    b.hello();
+    a.call("subscribe", Some("apps"), json!({"limit": 1}))
+        .unwrap();
+    b.call(
+        "subscribe",
+        Some("apps"),
+        json!({"limit": 2, "sort": "name", "expand": ["system"]}),
+    )
+    .unwrap();
+    let one = a.event("apps").unwrap();
+    let two = b.event("apps").unwrap();
+    // The System group comes last, outside the limit.
+    assert_eq!(one["groups"].as_array().unwrap().len(), 2);
+    assert_eq!(one["groups"][1]["id"], "system");
+    assert!(one["groups"][1].get("processes").is_none());
+    assert_eq!(two["sort"], "name");
+    assert_eq!(two["groups"].as_array().unwrap().len(), 3);
+    assert_eq!(two["groups"][0]["name"], "Calculator");
+    assert_eq!(two["groups"][2]["processes"].as_array().unwrap().len(), 6);
+
+    let got = a
+        .call("get", Some("apps"), json!({"sort": "mem", "limit": 3}))
+        .unwrap();
+    assert_eq!(got["sort"], "mem");
+    assert_eq!(got["groups"].as_array().unwrap().len(), 4);
+    let other = a
+        .call("get", Some("apps.inspect"), json!({"pid": 410}))
+        .unwrap();
+    assert_eq!(other["verdict"]["code"], "other-user");
+    assert_eq!(other["limited"], true);
+    assert_eq!(
+        a.call("get", Some("apps.inspect"), json!({})),
+        Err("bad-request".into())
+    );
+    assert_eq!(
+        a.call("get", Some("apps.inspect"), json!({"pid": 99999})),
+        Err("failed".into())
+    );
+    assert_eq!(
+        a.call("get", Some("apps.nope"), Value::Null),
+        Err("unknown-stream".into())
+    );
+    assert_eq!(
+        a.call("get", Some("system.inspect"), Value::Null),
+        Err("unknown-stream".into())
     );
 }
 

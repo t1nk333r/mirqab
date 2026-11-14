@@ -2,6 +2,7 @@
 //! A hand-written argument parser keeps it small (plan 001, "Rejected":
 //! clap).
 
+mod apps;
 mod bar;
 mod cli;
 mod confirm;
@@ -106,6 +107,7 @@ fn main() -> ExitCode {
             cli::run(&command, args)
         }
         "bar" => bar::run(args),
+        "apps" | "what" => apps::run(&command, args),
         // With no socket to name, the server still starts: each tool then
         // says there is no daemon, which the agent can tell the user.
         "mcp" | "--mcp" if !args.rest.is_empty() => {

@@ -1,0 +1,408 @@
+{
+  "groups": [
+    {
+      "cpu": 91.0,
+      "icon": null,
+      "id": "session:3030",
+      "ioReadPerSec": 0.0,
+      "ioWritePerSec": 26214400.0,
+      "kind": "terminal",
+      "name": "cargo",
+      "pids": [
+        3030,
+        3040,
+        3041
+      ],
+      "procs": 3,
+      "rssBytes": 1710080000,
+      "threads": 21,
+      "top": {
+        "cpu": 90.0,
+        "name": "rustc",
+        "pid": 3041
+      },
+      "unit": null
+    },
+    {
+      "cpu": 66.0,
+      "icon": "example-browser",
+      "id": "scope:app-Hyprland-browser.sh-5650fedc",
+      "ioReadPerSec": 1048576.0,
+      "ioWritePerSec": 524288.0,
+      "kind": "app",
+      "name": "Example Browser",
+      "pids": [
+        2000,
+        2001,
+        2010,
+        2011,
+        2012
+      ],
+      "procs": 5,
+      "rssBytes": 1258291200,
+      "threads": 181,
+      "top": {
+        "cpu": 40.0,
+        "name": "browser",
+        "pid": 2001
+      },
+      "unit": "app-Hyprland-browser.sh-5650fedc.scope"
+    },
+    {
+      "cpu": 12.0,
+      "icon": null,
+      "id": "session:3010",
+      "ioReadPerSec": 0.0,
+      "ioWritePerSec": 0.0,
+      "kind": "terminal",
+      "name": "vite",
+      "pids": [
+        3010,
+        3020,
+        3021
+      ],
+      "procs": 3,
+      "rssBytes": 272384000,
+      "threads": 20,
+      "top": {
+        "cpu": 10.0,
+        "name": "node",
+        "pid": 3020
+      },
+      "unit": null
+    },
+    {
+      "cpu": 8.0,
+      "icon": null,
+      "id": "tree:6201",
+      "ioReadPerSec": 0.0,
+      "ioWritePerSec": 0.0,
+      "kind": "process",
+      "name": "devserver",
+      "pids": [
+        6201,
+        6202
+      ],
+      "procs": 2,
+      "rssBytes": 126976000,
+      "threads": 8,
+      "top": {
+        "cpu": 5.0,
+        "name": "devserver",
+        "pid": 6201
+      },
+      "unit": null
+    },
+    {
+      "cpu": 7.0,
+      "icon": null,
+      "id": "tree:1050",
+      "ioReadPerSec": 0.0,
+      "ioWritePerSec": 0.0,
+      "kind": "process",
+      "name": "Hyprland",
+      "pids": [
+        1050,
+        6200
+      ],
+      "procs": 2,
+      "rssBytes": 369459200,
+      "threads": 19,
+      "top": {
+        "cpu": 7.0,
+        "name": "Hyprland",
+        "pid": 1050
+      },
+      "unit": null
+    },
+    {
+      "cpu": 3.0,
+      "icon": "org.example.Notes",
+      "id": "flatpak:org.example.Notes",
+      "ioReadPerSec": 0.0,
+      "ioWritePerSec": 0.0,
+      "kind": "flatpak",
+      "name": "Example Notes",
+      "pids": [
+        4000,
+        4001,
+        4100
+      ],
+      "procs": 3,
+      "rssBytes": 291225600,
+      "threads": 17,
+      "top": {
+        "cpu": 3.0,
+        "name": "notes",
+        "pid": 4001
+      },
+      "unit": null
+    },
+    {
+      "cpu": 2.5,
+      "icon": null,
+      "id": "container:c0ffee00c0ff",
+      "ioReadPerSec": 0.0,
+      "ioWritePerSec": 0.0,
+      "kind": "container",
+      "name": "postgres (container c0ffee00c0ff)",
+      "pids": [
+        5000,
+        5001
+      ],
+      "procs": 2,
+      "rssBytes": 126976000,
+      "threads": 2,
+      "top": {
+        "cpu": 2.0,
+        "name": "postgres",
+        "pid": 5000
+      },
+      "unit": null
+    },
+    {
+      "cpu": 2.0,
+      "icon": null,
+      "id": "service:pipewire",
+      "ioReadPerSec": 0.0,
+      "ioWritePerSec": 0.0,
+      "kind": "service",
+      "name": "pipewire",
+      "pids": [
+        1210
+      ],
+      "procs": 1,
+      "rssBytes": 20480000,
+      "threads": 3,
+      "top": {
+        "cpu": 2.0,
+        "name": "pipewire",
+        "pid": 1210
+      },
+      "unit": "pipewire.service"
+    },
+    {
+      "cpu": 1.0,
+      "icon": null,
+      "id": "scope:app-Hyprland-editor-0a1b2c3d",
+      "ioReadPerSec": 0.0,
+      "ioWritePerSec": 0.0,
+      "kind": "app",
+      "name": "editor",
+      "pids": [
+        7100
+      ],
+      "procs": 1,
+      "rssBytes": 184320000,
+      "threads": 6,
+      "top": {
+        "cpu": 1.0,
+        "name": "editor",
+        "pid": 7100
+      },
+      "unit": "app-Hyprland-editor-0a1b2c3d.scope"
+    },
+    {
+      "cpu": 1.0,
+      "icon": "org.example.Sync",
+      "id": "service:app-org.example.Sync@autostart",
+      "ioReadPerSec": 50000.0,
+      "ioWritePerSec": 100000.0,
+      "kind": "service",
+      "name": "Example Sync",
+      "pids": [
+        1300
+      ],
+      "procs": 1,
+      "rssBytes": 122880000,
+      "threads": 8,
+      "top": {
+        "cpu": 1.0,
+        "name": "example-sync",
+        "pid": 1300
+      },
+      "unit": "app-org.example.Sync@autostart.service"
+    },
+    {
+      "cpu": 1.0,
+      "icon": "foot",
+      "id": "scope:app-Hyprland-foot-3e4f5a6b",
+      "ioReadPerSec": 0.0,
+      "ioWritePerSec": 0.0,
+      "kind": "app",
+      "name": "Foot",
+      "pids": [
+        3000
+      ],
+      "procs": 1,
+      "rssBytes": 163840000,
+      "threads": 1,
+      "top": {
+        "cpu": 1.0,
+        "name": "foot",
+        "pid": 3000
+      },
+      "unit": "app-Hyprland-foot-3e4f5a6b.scope"
+    },
+    {
+      "cpu": 0.5,
+      "icon": null,
+      "id": "service:mirqab",
+      "ioReadPerSec": 0.0,
+      "ioWritePerSec": 0.0,
+      "kind": "service",
+      "name": "mirqab",
+      "pids": [
+        4321
+      ],
+      "procs": 1,
+      "rssBytes": 3145728,
+      "threads": 4,
+      "top": {
+        "cpu": 0.5,
+        "name": "mirqab",
+        "pid": 4321
+      },
+      "unit": "mirqab.service"
+    },
+    {
+      "cpu": 0.0,
+      "icon": "org.example.Calculator",
+      "id": "scope:app-org.example.Calculator-24680",
+      "ioReadPerSec": 0.0,
+      "ioWritePerSec": 0.0,
+      "kind": "app",
+      "name": "Calculator",
+      "pids": [
+        8000
+      ],
+      "procs": 1,
+      "rssBytes": 61440000,
+      "threads": 4,
+      "top": {
+        "cpu": 0.0,
+        "name": "calculator",
+        "pid": 8000
+      },
+      "unit": "app-org.example.Calculator-24680.scope"
+    },
+    {
+      "cpu": 0.0,
+      "icon": null,
+      "id": "scope:app-Hyprland-newjob-22222222",
+      "ioReadPerSec": 0.0,
+      "ioWritePerSec": 0.0,
+      "kind": "app",
+      "name": "newjob",
+      "pids": [
+        7000
+      ],
+      "procs": 1,
+      "rssBytes": 12288000,
+      "threads": 1,
+      "top": {
+        "cpu": 0.0,
+        "name": "newjob",
+        "pid": 7000
+      },
+      "unit": "app-Hyprland-newjob-22222222.scope"
+    },
+    {
+      "cpu": 0.0,
+      "icon": null,
+      "id": "service:init",
+      "ioReadPerSec": 0.0,
+      "ioWritePerSec": 0.0,
+      "kind": "service",
+      "name": "systemd",
+      "pids": [
+        1100,
+        1101
+      ],
+      "procs": 2,
+      "rssBytes": 12697600,
+      "threads": 2,
+      "top": {
+        "cpu": 0.0,
+        "name": "systemd",
+        "pid": 1100
+      },
+      "unit": "init.scope"
+    },
+    {
+      "cpu": 0.0,
+      "icon": null,
+      "id": "scope:app-Hyprland-tool-9a8b7c6d",
+      "ioReadPerSec": 0.0,
+      "ioWritePerSec": 0.0,
+      "kind": "app",
+      "name": "tool",
+      "pids": [
+        6000
+      ],
+      "procs": 1,
+      "rssBytes": 20480000,
+      "threads": 2,
+      "top": {
+        "cpu": 0.0,
+        "name": "tool",
+        "pid": 6000
+      },
+      "unit": "app-Hyprland-tool-9a8b7c6d.scope"
+    },
+    {
+      "cpu": 0.0,
+      "icon": null,
+      "id": "service:wireplumber",
+      "ioReadPerSec": 0.0,
+      "ioWritePerSec": 0.0,
+      "kind": "service",
+      "name": "wireplumber",
+      "pids": [
+        1211
+      ],
+      "procs": 1,
+      "rssBytes": 36864000,
+      "threads": 5,
+      "top": {
+        "cpu": 0.0,
+        "name": "wireplumber",
+        "pid": 1211
+      },
+      "unit": "wireplumber.service"
+    },
+    {
+      "cpu": 3.0,
+      "icon": null,
+      "id": "system",
+      "ioReadPerSec": null,
+      "ioWritePerSec": null,
+      "kind": "system",
+      "name": "System",
+      "pids": [
+        1,
+        410,
+        430,
+        600,
+        900,
+        5100
+      ],
+      "procs": 6,
+      "rssBytes": 64716800,
+      "threads": 10,
+      "top": {
+        "cpu": 1.0,
+        "name": "systemd-journald",
+        "pid": 410
+      },
+      "unit": null
+    }
+  ],
+  "sort": "cpu",
+  "totals": {
+    "cores": 16,
+    "cpu": 198.0,
+    "procs": 37,
+    "threads": 314
+  }
+}

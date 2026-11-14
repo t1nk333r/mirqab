@@ -1,0 +1,6 @@
+[Desktop Entry]
+Type=Application
+Name=Old Editor
+Exec=editor %F
+Icon=editor
+Hidden=true

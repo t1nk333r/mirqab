@@ -1,0 +1,38 @@
+#!/bin/sh
+# tests/fixtures/bin/pacman — a stub of pacman for the process inspector
+# (plan 006): `-Qqo PATH` names the package that owns a fixture's
+# executable, `-Sddp --print-format %r PKG` its sync repository. Tests copy
+# it into a scratch directory; when a file pacman.log sits beside the copy,
+# every call is appended to it, so a test can count the calls.
+log="$(dirname "$0")/pacman.log"
+[ -f "$log" ] && printf '%s\n' "$*" >>"$log"
+case "$1" in
+-Qqo)
+    case "$2" in
+    /usr/lib/example-browser/browser) echo example-browser ;;
+    /usr/bin/cargo | /usr/bin/rustc) echo rust ;;
+    /usr/bin/foot) echo foot ;;
+    /usr/bin/zsh) echo zsh ;;
+    /usr/bin/Hyprland) echo hyprland ;;
+    /usr/bin/editor) echo editor-git ;;
+    /opt/example-tool/bin/tool) echo example-tool ;;
+    *)
+        echo "error: No package owns $2" >&2
+        exit 1
+        ;;
+    esac
+    ;;
+-Sddp)
+    case "$4" in
+    example-browser | rust | foot | zsh | hyprland) echo extra ;;
+    *)
+        echo "error: target not found: $4" >&2
+        exit 1
+        ;;
+    esac
+    ;;
+*)
+    echo "pacman stub: unexpected arguments: $*" >&2
+    exit 2
+    ;;
+esac

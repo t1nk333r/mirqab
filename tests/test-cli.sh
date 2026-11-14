@@ -2,11 +2,14 @@
 # generated docs and completions, output into a closed pipe, and
 # `status --json` against a daemon on a fixture root. The window commands
 # reaching an interface are tested in crates/mirqab/tests/cli.rs.
-# mirqab:covers crates/mirqab/src/{main,cli,daemon,out}.rs crates/mirqab-proto/src/strings.rs docs/cli.md
-# mirqab:covers tests/fixtures/root-desktop/**
+# mirqab:covers crates/mirqab/src/{main,cli,daemon,out,apps}.rs crates/mirqab-proto/src/strings.rs docs/cli.md
+# mirqab:covers tests/fixtures/root-desktop/** tests/fixtures/bin/pacman
 
 sandbox
 build_bins
+# The process inspector asks pacman who owns an executable (plan 006): the
+# fixture's stub answers for the fixture's paths.
+cp "$FIXTURES/bin/pacman" "$SANDBOX/stubs/pacman"
 
 # No daemon: exit 2 and a hint.
 export MIRQAB_SOCKET="$XDG_RUNTIME_DIR/mirqab/daemon.sock"
@@ -85,6 +88,41 @@ like "sensors names the CPU sensor" "$OUTPUT" "Tctl"
 like "and the GPUs" "$OUTPUT" "AMD GPU (card1)"
 capture "$BIN/mirqab" load --dry-run
 status_is "load takes no --dry-run" 64 "$STATUS"
+
+# The Apps tab's commands (plan 006).
+capture "$BIN/mirqab" apps --json
+status_is "apps --json exits 0" 0 "$STATUS"
+is "apps --json sorts by cpu" '"cpu"' "$(jq -c .sort <<<"$OUTPUT")"
+is "the System group comes last" '"system"' "$(jq -c '.groups[-1].id' <<<"$OUTPUT")"
+is "processes only with --all" 0 "$(jq '[.groups[] | select(.processes)] | length' <<<"$OUTPUT")"
+groups="$(jq '.groups | length' <<<"$OUTPUT")"
+capture "$BIN/mirqab" apps --all --json
+is "--all expands every group" "$groups" "$(jq '[.groups[] | select(.processes)] | length' <<<"$OUTPUT")"
+capture "$BIN/mirqab" apps --sort name
+status_is "apps exits 0" 0 "$STATUS"
+like "apps names the browser from its desktop entry" "$OUTPUT" "Example Browser"
+like "and a terminal's job by itself" "$OUTPUT" "vite"
+like "a long name is cut to its column" "$OUTPUT" "postgres (container c0ffee0…"
+capture "$BIN/mirqab" apps --sort size
+status_is "an unknown --sort is a usage error" 64 "$STATUS"
+capture "$BIN/mirqab" what 2001
+status_is "what exits 0" 0 "$STATUS"
+is "what heads with the verdict" "Packaged by extra/example-browser" "$(head -n1 <<<"$OUTPUT")"
+like "and names the parents" "$OUTPUT" "bash (2000), Hyprland (1050)"
+like "and the GPU memory" "$OUTPUT" "671 MB VRAM"
+capture "$BIN/mirqab" what 6201 --json
+is "what --json gives the verdict's code" '"home"' "$(jq -c .verdict.code <<<"$OUTPUT")"
+capture "$BIN/mirqab" what 410
+like "another user's process is limited" "$OUTPUT" "only its name, CPU and memory"
+unlike "and shows no executable" "$OUTPUT" "executable"
+capture "$BIN/mirqab" what 99999
+status_is "a missing process exits 1" 1 "$STATUS"
+like "and says so" "$OUTPUT" "no process 99999"
+capture "$BIN/mirqab" what
+status_is "what needs a pid" 64 "$STATUS"
+capture "$BIN/mirqab" what abc
+status_is "what needs a number" 64 "$STATUS"
+like "and says so" "$OUTPUT" "not a process id: abc"
 capture "$BIN/mirqab" history cpu.total --range 24h --json
 status_is "history --json exits 0" 0 "$STATUS"
 is "a fresh history has no points" "0" "$(jq '.series["cpu.total"].points | length' <<<"$OUTPUT")"
@@ -123,6 +161,7 @@ like "help offers the commands" "$(complete_bash mirqab help "")" "--markdown"
 like "help offers sensors" "$(complete_bash mirqab help "")" "sensors"
 is "bar --format offers the formats" "$(complete_bash mirqab bar --format "")" "json plain waybar "
 is "history --range offers the ranges" "$(complete_bash mirqab history --range "")" "1h 24h 30d 7d "
+is "apps --sort offers the orders" "$(complete_bash mirqab apps --sort "")" "cpu mem name "
 like "bar offers the items" "$(complete_bash mirqab bar "")" "combo"
 mkdir -p "$SANDBOX/sockdir"
 is "--socket completes a path" "$(complete_bash mirqab --socket "$SANDBOX/sockd")" "$SANDBOX/sockdir "
