@@ -2,6 +2,9 @@
 //! "Tests"): hello first; subscribe, events, unsubscribe; merged intervals;
 //! the 2 s floor and the live floor; unknown and unavailable streams; the
 //! interface's `ui` stream; config.set; and a flooding client is dropped.
+//! Plan 006 (D6): a re-subscribe replaces a view and leaves no old one
+//! behind, an unsubscribe removes it, two subscribers that differ only in
+//! interval share one line; and the `process` stream.
 
 use mirqab_core::proto::{Request, ServerFrame, frame};
 use mirqab_core::root::Root;
@@ -30,6 +33,25 @@ impl Sampler for Fake {
     }
     fn sample(&mut self, _root: &Root, _now: Instant) -> Value {
         json!({"n": 1})
+    }
+}
+
+/// A stream with a view that shows which sample and which params made
+/// each line: `{"n": <sample number>, "params": <the view's params>}`.
+struct Counted(u64);
+impl Sampler for Counted {
+    fn stream(&self) -> &'static str {
+        "counted"
+    }
+    fn probe(&mut self, _root: &Root) -> Result<(), String> {
+        Ok(())
+    }
+    fn sample(&mut self, _root: &Root, _now: Instant) -> Value {
+        self.0 += 1;
+        json!({"n": self.0})
+    }
+    fn view(&self) -> Option<mirqab_core::sampler::View> {
+        Some(|data, params| json!({"n": data["n"], "params": params}))
     }
 }
 
@@ -68,7 +90,7 @@ fn start(name: &str) -> Daemon {
         socket: socket.clone(),
         root: Root::new(fixture("root-desktop")),
         config_path: dir.join("config/mirqab/config.json"),
-        samplers: vec![Box::new(Fake), Box::new(Missing)],
+        samplers: vec![Box::new(Fake), Box::new(Counted(0)), Box::new(Missing)],
         history: None,
     })
     .expect("listens");
@@ -159,10 +181,11 @@ fn hello_comes_first_with_the_capabilities() {
     let d = start("hello");
     let mut c = Client::connect(&d);
     let caps = c.hello();
-    assert_eq!(caps, ["apps", "fake", "self", "system", "ui"]);
+    let all = ["apps", "counted", "fake", "process", "self", "system", "ui"];
+    assert_eq!(caps, all);
     assert_eq!(
         c.call("capabilities", None, Value::Null).unwrap(),
-        json!(["apps", "fake", "self", "system", "ui"])
+        json!(all)
     );
 }
 
@@ -857,4 +880,142 @@ fn a_sample_is_stamped_after_it_got_the_sampler() {
             }
         }
     }
+}
+
+/// Subscribers of `stream` in `status`.
+fn subscribers(c: &mut Client, stream: &str) -> Value {
+    c.call("status", None, Value::Null).unwrap()["streams"][stream]["subscribers"].clone()
+}
+
+#[test]
+fn a_re_subscribe_replaces_the_view_and_leaves_no_old_one() {
+    // D6 of the review of PR #16.
+    let d = start("resub");
+    let mut c = Client::connect(&d);
+    c.hello();
+    c.call("subscribe", Some("counted"), json!({"x": 1}))
+        .unwrap();
+    assert_eq!(c.event("counted").unwrap()["params"], json!({"x": 1}));
+    c.call("subscribe", Some("counted"), json!({"x": 2}))
+        .unwrap();
+    // `call` skipped what came before its reply; everything after it is
+    // the new view, at once (a changed subscription samples now) and on.
+    let t = Instant::now();
+    for _ in 0..2 {
+        assert_eq!(c.event("counted").unwrap()["params"], json!({"x": 2}));
+    }
+    assert!(t.elapsed() < Duration::from_secs(4));
+    assert_eq!(subscribers(&mut c, "counted"), 1, "replaced, not added");
+    c.call("unsubscribe", Some("counted"), Value::Null).unwrap();
+    assert_eq!(subscribers(&mut c, "counted"), 0);
+    c.stream
+        .set_read_timeout(Some(Duration::from_millis(2600)))
+        .unwrap();
+    assert!(c.event("counted").is_none(), "no view after unsubscribe");
+}
+
+#[test]
+fn subscribers_that_differ_only_in_interval_share_one_line() {
+    let d = start("sharedline");
+    let mut a = Client::connect(&d);
+    let mut b = Client::connect(&d);
+    a.hello();
+    b.hello();
+    a.call(
+        "subscribe",
+        Some("counted"),
+        json!({"interval": 2000, "x": 1}),
+    )
+    .unwrap();
+    let first = a.event("counted").unwrap();
+    b.call(
+        "subscribe",
+        Some("counted"),
+        json!({"interval": 3000, "live": true, "x": 1}),
+    )
+    .unwrap();
+    // b's subscription samples at once; a hears that sample too (a slow
+    // runner may give a one of its own scheduled samples first).
+    let from_b = b.event("counted").unwrap();
+    let mut from_a = a.event("counted").unwrap();
+    while from_a["n"].as_u64() < from_b["n"].as_u64() {
+        from_a = a.event("counted").unwrap();
+    }
+    assert_eq!(from_a, from_b, "one sample, one line");
+    assert_eq!(
+        from_b["params"],
+        json!({"x": 1}),
+        "interval and live are the server's"
+    );
+    assert!(from_b["n"].as_u64() > first["n"].as_u64());
+}
+
+#[test]
+fn the_process_stream_serves_one_pid_live_and_checks_its_params() {
+    let d = start("process");
+    let mut a = Client::connect(&d);
+    let mut b = Client::connect(&d);
+    a.hello();
+    b.hello();
+    for bad in [
+        json!({}),
+        json!({"pid": "2001"}),
+        json!({"pid": 2001, "sort": "cpu"}),
+    ] {
+        assert_eq!(
+            a.call("subscribe", Some("process"), bad.clone()),
+            Err("bad-request".into()),
+            "{bad}"
+        );
+        assert_eq!(
+            a.call("get", Some("process"), bad.clone()),
+            Err("bad-request".into())
+        );
+    }
+    assert_eq!(
+        subscribers(&mut a, "process"),
+        0,
+        "a refused subscribe adds none"
+    );
+    // 1000 ms only with live.
+    assert_eq!(
+        a.call(
+            "subscribe",
+            Some("process"),
+            json!({"pid": 2001, "interval": 1000})
+        )
+        .unwrap()["interval"],
+        2000
+    );
+    assert_eq!(
+        a.call(
+            "subscribe",
+            Some("process"),
+            json!({"pid": 2001, "interval": 1000, "live": true})
+        )
+        .unwrap()["interval"],
+        1000
+    );
+    b.call("subscribe", Some("process"), json!({"pid": 99999}))
+        .unwrap();
+    let mine = a.event("process").unwrap();
+    assert_eq!(mine["pid"], 2001);
+    assert_eq!(mine["name"], "browser");
+    assert_eq!(mine["start"], 5010);
+    assert_eq!(
+        b.event("process").unwrap(),
+        json!({"pid": 99999, "gone": true})
+    );
+    let status = a.call("status", None, Value::Null).unwrap();
+    assert_eq!(status["streams"]["process"]["subscribers"], 2);
+    assert_eq!(status["streams"]["process"]["intervalMs"], 1000);
+    assert_eq!(status["streams"]["process"]["live"], true);
+    // A get reads its own pid, whoever subscribes.
+    let got = b
+        .call("get", Some("process"), json!({"pid": 410, "start": 300}))
+        .unwrap();
+    assert_eq!(got["name"], "systemd-journal");
+    assert_eq!(got["cpu"], 0.0, "a second reading of its own");
+    // The subscribers still get their own pids after it.
+    assert_eq!(a.event("process").unwrap()["pid"], 2001);
 }

@@ -9,7 +9,7 @@ pub const SELF: &str = "self";
 pub const UI: &str = "ui";
 
 /// Every stream the protocol defines so far.
-pub const STREAMS: &[&str] = &["apps", "self", "system", "ui"];
+pub const STREAMS: &[&str] = &["apps", "process", "self", "system", "ui"];
 pub const SYSTEM: &str = "system";
 pub const APPS: &str = "apps";
 /// `get apps.inspect {pid}`: one process explained (plan 006). A request
@@ -19,6 +19,12 @@ pub const APPS_INSPECT: &str = "apps.inspect";
 /// and SIGKILL for Force quit. Both need `confirm`.
 pub const APPS_QUIT: &str = "apps.quit";
 pub const APPS_KILL: &str = "apps.kill";
+/// The Apps inspector's live graph of one process (plan 006, part 3):
+/// `stat` and `statm` of the pid its `params` name, every second while
+/// `live`. It reads nothing else and takes no action.
+pub const PROCESS: &str = "process";
+/// The most distinct pids the `process` stream reads in one tick.
+pub const PROCESS_MAX_PIDS: usize = 8;
 
 /// The `self` stream: what mirqab costs (plan 001).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -303,6 +309,10 @@ pub struct AppProcess {
     pub threads: u32,
     /// The kernel's state letter: `R`, `S`, `D`, `Z`, `T`, `I`.
     pub state: String,
+    /// Clock ticks after boot (field 22 of `stat`): with the pid, the
+    /// process's identity, so a reused pid is another row (plan 006, D5).
+    /// The value a `wouldDo` entry carries.
+    pub start: u64,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -316,6 +326,39 @@ pub struct AppsTotals {
     pub cpu: Option<f64>,
     /// Logical CPUs, so a client can show percent of the machine.
     pub cores: Option<u32>,
+}
+
+/// The `process` stream (plan 006, part 3): one process, from its `stat`
+/// and `statm` only. `params` are `{"pid": N}`, and optionally `"start"`
+/// (the start time the subscriber knows the process by). A reading holds
+/// every field, `cpu` null on the first; once the pid is gone, or holds a
+/// process with another start time than the one asked for (or, without
+/// `start`, the one first seen), the data is `{"pid": N, "gone": true}`.
+/// `capped` means more than `PROCESS_MAX_PIDS` pids are watched and this
+/// one is not read.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct ProcessData {
+    pub pid: u32,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub gone: bool,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub capped: bool,
+    /// Clock ticks after boot, as `AppProcess.start`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub start: Option<u64>,
+    /// The kernel's command name (`comm`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// Percent of one core since the previous reading (may pass 100);
+    /// null on the first.
+    pub cpu: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rss_bytes: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub threads: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub state: Option<String>,
 }
 
 /// `get apps.inspect {pid}` (plan 006, "Inspector"). A field the daemon

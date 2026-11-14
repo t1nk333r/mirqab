@@ -100,7 +100,7 @@ pub const CLI_COMMANDS: &[CliCommand] = &[
             "quit PID|NAME [-y] [--force] [--dry-run] [--json]",
             "quit an app or a process, after asking",
         )],
-        help: "Asks a process to quit (SIGTERM), or with --force ends it (SIGKILL). A number is a pid; anything else is an app's name as mirqab apps shows it, matched whole and ignoring case, and quits every process of that app, its main process first. A user service is stopped with systemctl --user, so it does not restart. It prints what it will do and asks; -y goes ahead without asking; without a terminal and without -y it does nothing and exits 3; --dry-run prints the list and stops. With --json the list goes to stderr and stdout holds the daemon's answer. It exits 1 when anything failed, or when nothing was done because everything was left alone; a process that had already exited counts as done. Never signalled: pid 1, another user's processes, kernel threads, anything outside your user's session, the daemon, the session's compositor, your user manager, and the program asking and its parents. A rootless container is not quit; stop it with its runtime. When the action could not be written to mirqab's history, it is still done and a warning says so.",
+        help: "Asks a process to quit (SIGTERM), or with --force ends it (SIGKILL). A number is a pid; anything else is an app's name as mirqab apps shows it, matched whole and ignoring case, and quits every process of that app, its main process first. A user service is stopped with systemctl --user, so it does not restart; the list names the other services the stop takes with it, and warns before the sound server or a desktop portal is stopped. It prints what it will do and asks; -y goes ahead without asking; without a terminal and without -y it does nothing and exits 3; --dry-run prints the list and stops. With --json the list goes to stderr and stdout holds the daemon's answer. It exits 1 when anything failed, or when nothing was done because everything was left alone; a process that had already exited counts as done. Never signalled: pid 1, another user's processes, kernel threads, anything outside your user's session, the daemon, the session's compositor, your user manager, the session bus, and the program asking and its parents. A rootless container is not quit; stop it with its runtime. When the action could not be written to mirqab's history, it is still done and a warning says so.",
     },
     CliCommand {
         name: "bar",
@@ -1292,6 +1292,10 @@ pub fn plain(s: &str) -> std::borrow::Cow<'_, str> {
 }
 
 pub const APPS_PID_REQUIRED: &str = "pid is required: a process id";
+/// A `process` subscription or `get` whose params are not
+/// `{"pid": N}` with an optional `"start"` (plan 006, part 3).
+pub const PROCESS_PARAMS: &str =
+    "params are {\"pid\": N} and optionally \"start\": a process id and its start time";
 
 pub fn apps_no_process(pid: u32) -> String {
     format!("no process {pid}")
@@ -1393,6 +1397,48 @@ pub fn refuse_container(id: &str, runtime: Option<&str>) -> String {
     }
 }
 
+/// A process of the session bus (owner, 2026-11-14, plan 006 Q2).
+pub fn refuse_session_bus(pid: u32, unit: &str) -> String {
+    format!(
+        "pid {pid} is the session bus ({}); ending it ends your session",
+        plain(unit)
+    )
+}
+
+/// The session bus's unit, asked to stop.
+pub fn refuse_session_bus_unit(unit: &str) -> String {
+    format!(
+        "{} is the session bus, which is never stopped: ending it ends your session",
+        plain(unit)
+    )
+}
+
+/// A unit whose stop would take down a unit holding a refused process
+/// (plan 006, part 3, decision 9).
+pub fn refuse_unit_dependent(unit: &str, dependent: &str, why: &str) -> String {
+    format!(
+        "{} is not stopped: stopping it also stops {}, and {why}",
+        plain(unit),
+        plain(dependent)
+    )
+}
+
+/// The warning a stop of the sound server carries (owner, 2026-11-14).
+pub fn warn_sound(unit: &str) -> String {
+    format!(
+        "{} is part of your sound: apps lose sound until something starts it again",
+        plain(unit)
+    )
+}
+
+/// The warning a stop of a desktop portal carries (owner, 2026-11-14).
+pub fn warn_portal(unit: &str) -> String {
+    format!(
+        "{} is a desktop portal: file pickers and screen sharing in apps fail until something starts it again",
+        plain(unit)
+    )
+}
+
 pub fn refuse_nothing_left(first: &str) -> String {
     format!("nothing is left to quit: {first}")
 }
@@ -1402,6 +1448,15 @@ pub fn act_gone(pid: u32) -> String {
 }
 
 pub const SKIP_LATE: &str = "started after the confirmation";
+
+/// A name the service manager gave as a dependent that mirqab will not pass
+/// back to it.
+pub fn act_odd_dependent(name: &str) -> String {
+    format!(
+        "the unit name {} is not one mirqab passes to systemctl",
+        plain(name)
+    )
+}
 pub const ACT_NO_PIDFD: &str =
     "this kernel cannot signal through a pidfd (Linux 5.3 or later is needed)";
 
@@ -1440,6 +1495,21 @@ pub fn quit_signal_line(signal: &str, pid: u32, name: &str, via: Option<u32>) ->
 pub fn quit_run_line(argv: &str, procs: usize) -> String {
     let what = if procs == 1 { "process" } else { "processes" };
     format!("{} ({procs} {what})", plain(argv))
+}
+
+/// A unit a service's stop takes down with it, and how many processes it
+/// ends (plan 006, part 3).
+pub fn quit_also_stops_line(unit: &str, procs: usize) -> String {
+    let what = if procs == 1 { "process" } else { "processes" };
+    format!("  also stops {} ({procs} {what})", plain(unit))
+}
+
+/// When the daemon could not ask which units depend on a service.
+pub const QUIT_ALSO_STOPS_UNKNOWN: &str = "  other services that depend on it may stop too";
+
+/// A warning the daemon gave with the plan (the sound server, a portal).
+pub fn quit_warning_line(text: &str) -> String {
+    format!("warning: {}", plain(text))
 }
 
 pub fn quit_skipped_line(pid: u32, name: &str, reason: &str) -> String {

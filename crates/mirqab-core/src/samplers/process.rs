@@ -1,0 +1,332 @@
+//! The `process` stream (plan 006, part 3): the Apps inspector's live graph
+//! of one process. Each tick reads `proc/<pid>/stat` and `proc/<pid>/statm`
+//! for each distinct pid its subscribers name, `PROCESS_MAX_PIDS` at most,
+//! and nothing else: both files are world-readable, so another user's
+//! process can be graphed as the System group already shows its figures.
+//! It takes no action.
+//!
+//! `live()` is true, so a graph on screen may ask for 1 s (architecture
+//! §5.3): two small reads a second, where the `apps` walk reads every
+//! process. The stream is its own sampler, so its lock is its own and a
+//! reading never waits behind the `apps` walk, `get apps`' second reading
+//! or the inspector's `pacman`.
+//!
+//! A process is its pid and start time, as in the `apps` sampler: the CPU
+//! baseline is keyed by both, and a subscriber that names `start` (or,
+//! without it, the process first seen at that pid) gets `gone` once the pid
+//! holds another process or none.
+
+use crate::proto::stream::{PROCESS, PROCESS_MAX_PIDS, ProcessData};
+use crate::proto::strings;
+use crate::root::Root;
+use crate::sampler::{Accepts, Sampler, View};
+use crate::samplers::apps::procfs;
+use crate::selfcost;
+use serde_json::{Value, json};
+use std::collections::HashMap;
+use std::time::{Duration, Instant};
+
+/// A baseline older than this is dropped, as in `apps` and `system`.
+const LIVE_STALE: Duration = Duration::from_secs(10);
+/// A baseline younger than this gives no useful rate.
+const BASELINE_MIN: Duration = Duration::from_secs(1);
+/// How long `get` waits for its own second reading when no subscriber's
+/// baseline fits.
+const SNAPSHOT_GAP: Duration = Duration::from_millis(500);
+
+/// What a subscriber asks for: the pid, and the start time it knows the
+/// process by, when it says.
+fn asked(params: &Value) -> Option<(u32, Option<u64>)> {
+    let pid = params
+        .get("pid")?
+        .as_u64()
+        .and_then(|p| u32::try_from(p).ok())
+        .filter(|p| *p > 0)?;
+    let start = match params.get("start") {
+        None | Some(Value::Null) => None,
+        Some(v) => Some(v.as_u64()?),
+    };
+    Some((pid, start))
+}
+
+/// The params the stream takes: `pid` (a process id) and an optional
+/// `start`, nothing else. A subscribe or `get` without them is
+/// `bad-request`.
+pub fn accepts(params: &Value) -> Result<(), String> {
+    let only_known = params
+        .as_object()
+        .is_some_and(|o| o.keys().all(|k| k == "pid" || k == "start"));
+    if only_known && asked(params).is_some() {
+        Ok(())
+    } else {
+        Err(strings::PROCESS_PARAMS.to_string())
+    }
+}
+
+/// The process first seen at a watched pid.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Pin {
+    Start(u64),
+    /// There was none: whatever takes the pid later is not the one asked
+    /// for.
+    Missing,
+}
+
+/// One process now: `stat` and `statm`.
+struct Reading {
+    stat: procfs::Stat,
+    resident: Option<u64>,
+}
+
+fn read(root: &Root, pid: u32) -> Option<Reading> {
+    let stat = procfs::read_text(root, &format!("proc/{pid}/stat"))
+        .as_deref()
+        .and_then(procfs::stat)
+        .filter(|s| s.pid == pid)?;
+    let resident = root
+        .read(&format!("proc/{pid}/statm"))
+        .ok()
+        .as_deref()
+        .and_then(procfs::statm)
+        .map(|m| m.resident);
+    Some(Reading { stat, resident })
+}
+
+/// CPU ticks at one moment, by pid and start time.
+struct Base {
+    at: Instant,
+    ticks: HashMap<(u32, u64), u64>,
+}
+
+impl Base {
+    fn of(readings: &[(u32, Reading)], at: Instant) -> Base {
+        Base {
+            at,
+            ticks: readings
+                .iter()
+                .map(|(pid, r)| ((*pid, r.stat.start), r.stat.ticks))
+                .collect(),
+        }
+    }
+}
+
+fn round1(v: f64) -> f64 {
+    (v * 10.0).round() / 10.0
+}
+
+pub struct Process {
+    tck: u64,
+    page: u64,
+    /// The pids read each tick, in the order subscribers asked.
+    want: Vec<u32>,
+    /// Asked for beyond `PROCESS_MAX_PIDS`: not read.
+    over: Vec<u32>,
+    pins: HashMap<u32, Pin>,
+    base: Option<Base>,
+}
+
+impl Default for Process {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Process {
+    pub fn new() -> Self {
+        Process {
+            tck: 100,
+            page: 4096,
+            want: Vec::new(),
+            over: Vec::new(),
+            pins: HashMap::new(),
+            base: None,
+        }
+    }
+
+    fn read_all(&self, root: &Root) -> Vec<(u32, Reading)> {
+        self.want
+            .iter()
+            .filter_map(|&pid| read(root, pid).map(|r| (pid, r)))
+            .collect()
+    }
+
+    /// The sample every view is cut from: one entry per pid read, with the
+    /// start time first seen there (`first`, absent when the pid was empty
+    /// then), and the pids asked for beyond the cap.
+    fn data(&self, readings: &[(u32, Reading)], base: Option<&Base>, at: Instant) -> Value {
+        let secs = base
+            .map(|b| at.saturating_duration_since(b.at).as_secs_f64())
+            .filter(|s| *s > 0.0);
+        let mut out = serde_json::Map::new();
+        for (pid, r) in readings {
+            let cpu = match (base, secs) {
+                (Some(b), Some(secs)) => b.ticks.get(&(*pid, r.stat.start)).map(|t0| {
+                    round1(r.stat.ticks.saturating_sub(*t0) as f64 / self.tck as f64 / secs * 100.0)
+                }),
+                _ => None,
+            };
+            let first = match self.pins.get(pid) {
+                Some(Pin::Start(s)) => Some(*s),
+                Some(Pin::Missing) => None,
+                // A `get` for a pid no subscriber watches: the process now.
+                None => Some(r.stat.start),
+            };
+            let reading = ProcessData {
+                pid: *pid,
+                gone: false,
+                capped: false,
+                start: Some(r.stat.start),
+                name: Some(r.stat.comm.clone()),
+                cpu,
+                rss_bytes: r.resident.map(|p| p * self.page),
+                threads: Some(r.stat.threads),
+                state: Some(r.stat.state.to_string()),
+            };
+            out.insert(pid.to_string(), json!({"reading": reading, "first": first}));
+        }
+        json!({"pids": out, "capped": self.over})
+    }
+}
+
+/// One subscriber's view: its pid's reading, `gone` when the pid holds no
+/// process or another one than asked for, `capped` when it was not read.
+pub fn view(data: &Value, params: &Value) -> Value {
+    let Some((pid, start)) = asked(params) else {
+        return Value::Null;
+    };
+    let gone = json!({"pid": pid, "gone": true});
+    if data["capped"]
+        .as_array()
+        .is_some_and(|c| c.iter().any(|p| p.as_u64() == Some(u64::from(pid))))
+    {
+        return json!({"pid": pid, "capped": true});
+    }
+    let Some(entry) = data["pids"].get(pid.to_string()) else {
+        return gone;
+    };
+    let expected = start.or_else(|| entry["first"].as_u64());
+    if expected.is_some() && entry["reading"]["start"].as_u64() == expected {
+        entry["reading"].clone()
+    } else {
+        gone
+    }
+}
+
+impl Sampler for Process {
+    fn stream(&self) -> &'static str {
+        PROCESS
+    }
+
+    fn live(&self) -> bool {
+        true
+    }
+
+    fn probe(&mut self, root: &Root) -> Result<(), String> {
+        root.read_dir("proc")
+            .map_err(|e| format!("proc cannot be listed: {e}"))?;
+        self.tck = selfcost::clk_tck(root);
+        self.page = selfcost::page_size(root);
+        Ok(())
+    }
+
+    fn wants(&mut self, params: &[Value]) {
+        let mut pids: Vec<u32> = Vec::new();
+        for (pid, _) in params.iter().filter_map(asked) {
+            if !pids.contains(&pid) {
+                pids.push(pid);
+            }
+        }
+        self.over = pids.split_off(pids.len().min(PROCESS_MAX_PIDS));
+        self.want = pids;
+    }
+
+    fn sample(&mut self, root: &Root, now: Instant) -> Value {
+        let readings = self.read_all(root);
+        for &pid in &self.want {
+            let found = readings.iter().find(|(p, _)| *p == pid);
+            self.pins.entry(pid).or_insert(match found {
+                Some((_, r)) => Pin::Start(r.stat.start),
+                None => Pin::Missing,
+            });
+        }
+        let want = &self.want;
+        self.pins.retain(|pid, _| want.contains(pid));
+        let base = self
+            .base
+            .take()
+            .filter(|b| now.saturating_duration_since(b.at) <= LIVE_STALE);
+        let data = self.data(&readings, base.as_ref(), now);
+        self.base = Some(Base::of(&readings, now));
+        data
+    }
+
+    /// `get`: against a subscriber's baseline when it is 1–10 s old and
+    /// holds the process, without moving it or the pins; otherwise against
+    /// a second reading of its own half a second later.
+    fn snapshot(&mut self, root: &Root, now: Instant) -> Value {
+        let first = self.read_all(root);
+        let usable = self.base.as_ref().filter(|b| {
+            (BASELINE_MIN..=LIVE_STALE).contains(&now.saturating_duration_since(b.at))
+                && first
+                    .iter()
+                    .all(|(pid, r)| b.ticks.contains_key(&(*pid, r.stat.start)))
+        });
+        if usable.is_some() {
+            return self.data(&first, usable, now);
+        }
+        let base = Base::of(&first, Instant::now());
+        std::thread::sleep(SNAPSHOT_GAP);
+        let readings = self.read_all(root);
+        self.data(&readings, Some(&base), Instant::now())
+    }
+
+    fn view(&self) -> Option<View> {
+        Some(view)
+    }
+
+    fn accepts(&self) -> Option<Accepts> {
+        Some(accepts)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn params_are_a_pid_and_an_optional_start() {
+        assert!(accepts(&json!({"pid": 2001})).is_ok());
+        assert!(accepts(&json!({"pid": 2001, "start": 5010})).is_ok());
+        assert!(accepts(&json!({"pid": 2001, "start": null})).is_ok());
+        for bad in [
+            Value::Null,
+            json!({}),
+            json!({"pid": 0}),
+            json!({"pid": "2001"}),
+            json!({"pid": -1}),
+            json!({"pid": 4_294_967_296_u64}),
+            json!({"pid": 2001, "start": "x"}),
+            json!({"pid": 2001, "sort": "cpu"}),
+        ] {
+            assert!(accepts(&bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn at_most_eight_pids_are_read() {
+        let mut p = Process::new();
+        let params: Vec<Value> = (1..=10).map(|n| json!({"pid": n})).collect();
+        p.wants(&params);
+        assert_eq!(p.want, [1, 2, 3, 4, 5, 6, 7, 8]);
+        assert_eq!(p.over, [9, 10]);
+        let data = json!({"pids": {}, "capped": p.over});
+        assert_eq!(
+            view(&data, &json!({"pid": 9})),
+            json!({"pid": 9, "capped": true})
+        );
+        assert_eq!(
+            view(&data, &json!({"pid": 3})),
+            json!({"pid": 3, "gone": true})
+        );
+    }
+}

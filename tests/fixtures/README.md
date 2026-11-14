@@ -23,5 +23,12 @@ refuses a link that leaves the tree.
 The user is uid 1000 with the home `/users/user`, so the privacy scan's
 home-path pattern (`tools/secrets.sh`) still catches real paths.
 
+`root-desktop/run/mirqab-test/dependents/<unit>` is what the recording
+sender answers when an action asks which units a stop of `<unit>` takes
+with it (plan 006, part 3): one `<unit> <ActiveState>` a line, standing for
+`systemctl --user show`, which a fixture root never runs. `pipewire.service`
+takes `wireplumber.service` (active) and names `pipewire-pulse.service`
+(inactive, so left out).
+
 `bin/pacman` is a stub of pacman for the process inspector: tests copy it
 into a scratch directory on `PATH` or hand its path to the sampler.

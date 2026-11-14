@@ -27,8 +27,17 @@
 //! `systemctl --user stop --no-block`, so it does not restart; for a unit
 //! the refusals are checked at each resolution, and `systemctl` then acts
 //! on the unit by name, with no pidfd behind it. A unit that holds a
-//! refused process is not stopped. Units tied to it (`Requires=`,
-//! `BindsTo=`, `PartOf=`) stop with it and are seen by no refusal.
+//! refused process is not stopped.
+//!
+//! Part 3 (decision 9): before a unit is stopped the sender is asked which
+//! active units name it in `Requires=`, `BindsTo=` or `PartOf=`, one level
+//! deep. They are listed under the `run` entry's `alsoStops` with their
+//! processes, which pass the same refusals: one refused process refuses
+//! the stop whole. When the question fails the entry says
+//! `alsoStopsUnknown` and the stop is still planned. The session bus
+//! (`guard::SESSION_BUS`) is never stopped or signalled; the sound server
+//! and the portals may be, and the plan carries a warning (owner,
+//! 2026-11-14, Q2). Quit on a service stays `systemctl stop` (Q1).
 
 use super::desktop::Desktop;
 use super::group::{self, Kind};
@@ -211,7 +220,17 @@ enum Step {
     Unit {
         unit: String,
         procs: Vec<(Target, String)>,
+        /// The active units the stop takes with it, with their processes;
+        /// None when the service manager could not say.
+        also: Option<Vec<Dependent>>,
     },
+}
+
+/// A unit a stop takes down with the one asked for (decision 9).
+#[derive(Debug, Clone, PartialEq)]
+struct Dependent {
+    unit: String,
+    procs: Vec<(Target, String)>,
 }
 
 /// A process left alone, and why.
@@ -263,10 +282,46 @@ impl Resolution {
                     }
                     out.push(e);
                 }
-                Step::Unit { unit, procs } => {
+                Step::Unit { unit, procs, also } => {
                     let pids: Vec<u32> = procs.iter().map(|(t, _)| t.pid).collect();
-                    for argv in unit_commands(unit, action) {
-                        out.push(json!({"run": argv, "unit": unit, "pids": pids}));
+                    for (i, argv) in unit_commands(unit, action).into_iter().enumerate() {
+                        let mut e = json!({"run": argv, "unit": unit, "pids": pids});
+                        // On the `stop`: it is what takes the others down.
+                        match also {
+                            _ if i > 0 => {}
+                            None => e["alsoStopsUnknown"] = json!(true),
+                            Some(deps) if deps.is_empty() => {}
+                            Some(deps) => {
+                                e["alsoStops"] = deps
+                                    .iter()
+                                    .map(|d| {
+                                        let pids: Vec<u32> =
+                                            d.procs.iter().map(|(t, _)| t.pid).collect();
+                                        json!({"unit": d.unit, "pids": pids})
+                                    })
+                                    .collect();
+                            }
+                        }
+                        out.push(e);
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// One line for each stopped unit that is part of the session's sound
+    /// or a desktop portal (owner, 2026-11-14, Q2).
+    fn warnings(&self) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        for s in &self.steps {
+            if let Step::Unit { unit, also, .. } = s {
+                let deps = also.iter().flatten().map(|d| d.unit.as_str());
+                for u in std::iter::once(unit.as_str()).chain(deps) {
+                    if let Some(w) = guard::session_warning(u)
+                        && !out.contains(&w)
+                    {
+                        out.push(w);
                     }
                 }
             }
@@ -467,39 +522,88 @@ fn ordered(procs: &[Proc], members: &[usize]) -> Vec<usize> {
     out
 }
 
-/// A user service as one step: refused whole when its name is odd or any
-/// of its processes is refused.
-fn unit_step(root: &Root, guard: &Guard, procs: &[Proc], unit: &str) -> Result<Step, Failure> {
-    if !unit_name_ok(unit) {
-        return Err(Failure::new(Code::Refused, strings::refuse_unit_name(unit)));
-    }
-    let mut members: Vec<usize> = procs
+/// The processes of a host service, in signal order, each with the reason
+/// it is refused, if it is.
+fn unit_members(
+    root: &Root,
+    guard: &Guard,
+    procs: &[Proc],
+    unit: &str,
+) -> Vec<(Target, String, Option<String>)> {
+    let members: Vec<usize> = procs
         .iter()
         .enumerate()
         .filter(|(_, p)| service_of(p) == Some(unit))
         .map(|(i, _)| i)
         .collect();
-    members = ordered(procs, &members);
-    let mut out = Vec::new();
-    for i in members {
-        let p = &procs[i];
-        if let Some(why) = act::refusal(root, guard, p.pid(), &facts_of(p)) {
-            return Err(Failure::new(
-                Code::Refused,
-                strings::refuse_unit_holds(unit, &why),
-            ));
-        }
-        out.push((
-            Target {
+    ordered(procs, &members)
+        .into_iter()
+        .map(|i| {
+            let p = &procs[i];
+            let target = Target {
                 pid: p.pid(),
                 start: p.stat.start,
-            },
-            p.stat.comm.clone(),
-        ));
+            };
+            let why = act::refusal(root, guard, p.pid(), &facts_of(p));
+            (target, p.stat.comm.clone(), why)
+        })
+        .collect()
+}
+
+/// A user service as one step: refused whole when its name is odd, when it
+/// is the session bus, when any of its processes is refused, or when a unit
+/// its stop takes down is the bus or holds a refused process (decision 9).
+fn unit_step(
+    root: &Root,
+    guard: &Guard,
+    procs: &[Proc],
+    unit: &str,
+    sender: &dyn Sender,
+) -> Result<Step, Failure> {
+    let refused = |m: String| Failure::new(Code::Refused, m);
+    if !unit_name_ok(unit) {
+        return Err(refused(strings::refuse_unit_name(unit)));
     }
+    if guard::is_session_bus(unit) {
+        return Err(refused(strings::refuse_session_bus_unit(unit)));
+    }
+    let mut out = Vec::new();
+    for (target, name, why) in unit_members(root, guard, procs, unit) {
+        if let Some(why) = why {
+            return Err(refused(strings::refuse_unit_holds(unit, &why)));
+        }
+        out.push((target, name));
+    }
+    // One level deep: a dependent's own dependents are not asked about
+    // ("Known limits (part 3a)"). A question that fails still plans.
+    let also = match sender.unit_dependents(root, unit) {
+        Err(_) => None,
+        Ok(names) => {
+            let mut deps = Vec::new();
+            for dep in names.into_iter().filter(|d| d != unit) {
+                if guard::is_session_bus(&dep) {
+                    let why = strings::refuse_session_bus_unit(&dep);
+                    return Err(refused(strings::refuse_unit_dependent(unit, &dep, &why)));
+                }
+                let mut dep_procs = Vec::new();
+                for (target, name, why) in unit_members(root, guard, procs, &dep) {
+                    if let Some(why) = why {
+                        return Err(refused(strings::refuse_unit_dependent(unit, &dep, &why)));
+                    }
+                    dep_procs.push((target, name));
+                }
+                deps.push(Dependent {
+                    unit: dep,
+                    procs: dep_procs,
+                });
+            }
+            Some(deps)
+        }
+    };
     Ok(Step::Unit {
         unit: unit.to_string(),
         procs: out,
+        also,
     })
 }
 
@@ -509,7 +613,12 @@ fn service_of(p: &Proc) -> Option<&str> {
 }
 
 /// What `subject` resolves to now, from a fresh walk.
-fn resolve(root: &Root, subject: &Subject, caller: Option<u32>) -> Result<Resolution, Failure> {
+fn resolve(
+    root: &Root,
+    subject: &Subject,
+    caller: Option<u32>,
+    sender: &dyn Sender,
+) -> Result<Resolution, Failure> {
     if let Subject::Pid(p) = subject
         && *p <= 1
     {
@@ -535,7 +644,7 @@ fn resolve(root: &Root, subject: &Subject, caller: Option<u32>) -> Result<Resolu
                 .find(|p| p.pid() == pid)
                 .ok_or_else(no_process)?;
             match service_of(p) {
-                Some(unit) => steps.push(unit_step(root, &guard, &procs, unit)?),
+                Some(unit) => steps.push(unit_step(root, &guard, &procs, unit, sender)?),
                 None => {
                     if let Some(why) = act::refusal(root, &guard, pid, &facts_of(p)) {
                         return Err(Failure::new(Code::Refused, why));
@@ -582,7 +691,7 @@ fn resolve(root: &Root, subject: &Subject, caller: Option<u32>) -> Result<Resolu
                 .as_deref()
                 .filter(|u| g.members.iter().all(|&i| service_of(&procs[i]) == Some(*u)));
             if let (Kind::Service, Some(unit)) = (g.kind, unit) {
-                steps.push(unit_step(root, &guard, &procs, unit)?);
+                steps.push(unit_step(root, &guard, &procs, unit, sender)?);
             } else {
                 for i in ordered(&procs, &g.members) {
                     let p = &procs[i];
@@ -670,7 +779,7 @@ impl Actions {
         history: Option<&Mutex<History>>,
     ) -> Result<Value, Failure> {
         let now = (self.clock)().map_err(|_| Failure::new(Code::Failed, strings::ACT_NO_CLOCK))?;
-        let res = match resolve(root, &ask.subject, ask.caller) {
+        let res = match resolve(root, &ask.subject, ask.caller, self.sender.as_ref()) {
             Ok(r) => r,
             Err(f) => {
                 // A plan offered with a request that is refused now is
@@ -688,7 +797,11 @@ impl Actions {
             }
         };
         if ask.dry_run {
-            return Ok(json!({"wouldDo": res.would_do(ask.action), "skipped": res.skipped()}));
+            return Ok(json!({
+                "wouldDo": res.would_do(ask.action),
+                "skipped": res.skipped(),
+                "warnings": res.warnings(),
+            }));
         }
         let Some(id) = &ask.redeem else {
             let plan = lock(&self.plans).make(
@@ -704,6 +817,7 @@ impl Actions {
                     "plan": plan,
                     "wouldDo": res.would_do(ask.action),
                     "skipped": res.skipped(),
+                    "warnings": res.warnings(),
                 })),
             });
         };
@@ -744,6 +858,7 @@ impl Actions {
         let mut skipped = res.skipped.clone();
         let mut results: Vec<Value> = Vec::new();
         let mut unit_name: Option<String> = None;
+        let mut also_names: Vec<String> = Vec::new();
         for t in &redeemed.gone {
             results.push(json!({"pid": t.pid, "signal": sig.name(), "result": "gone"}));
         }
@@ -795,7 +910,7 @@ impl Actions {
                     };
                     results.push(json!({"pid": target.pid, "name": name, "signal": sig.name(), "result": word}));
                 }
-                Step::Unit { unit, procs } => {
+                Step::Unit { unit, procs, also } => {
                     // A unit is stopped whole once any process planned in it
                     // is still there; systemd ends what joined it since too.
                     if !procs.iter().any(|(t, _)| redeemed.kept.contains(t)) {
@@ -809,6 +924,7 @@ impl Actions {
                         continue;
                     }
                     unit_name = Some(unit.clone());
+                    also_names.extend(also.iter().flatten().map(|d| d.unit.clone()));
                     let mut ok = true;
                     for argv in unit_commands(unit, ask.action) {
                         let words: Vec<&str> = argv.iter().map(String::as_str).collect();
@@ -849,6 +965,9 @@ impl Actions {
             });
             if let Some(u) = unit_name {
                 data["unit"] = json!(u);
+            }
+            if !also_names.is_empty() {
+                data["alsoStops"] = json!(also_names);
             }
             let ts = SystemTime::now()
                 .duration_since(UNIX_EPOCH)

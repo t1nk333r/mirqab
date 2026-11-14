@@ -29,14 +29,25 @@ fn fail(msg: &str) -> ExitCode {
     ExitCode::from(EXIT_FAILED)
 }
 
-/// The lines of a `wouldDo` list and its `skipped` list.
-pub(crate) fn plan_lines(would_do: &Value, skipped: &Value) -> Vec<String> {
+/// The lines of a plan: its `wouldDo` list, each service's `alsoStops`
+/// under its stop (plan 006, part 3), the `skipped` list, then the
+/// `warnings` the daemon gave (the sound server, a portal).
+pub(crate) fn plan_lines(data: &Value) -> Vec<String> {
     let mut out = Vec::new();
-    for w in would_do.as_array().into_iter().flatten() {
+    for w in data["wouldDo"].as_array().into_iter().flatten() {
         if let Some(argv) = w["run"].as_array() {
             let argv: Vec<&str> = argv.iter().filter_map(Value::as_str).collect();
             let procs = w["pids"].as_array().map_or(0, Vec::len);
             out.push(strings::quit_run_line(&argv.join(" "), procs));
+            for d in w["alsoStops"].as_array().into_iter().flatten() {
+                out.push(strings::quit_also_stops_line(
+                    d["unit"].as_str().unwrap_or(""),
+                    d["pids"].as_array().map_or(0, Vec::len),
+                ));
+            }
+            if w["alsoStopsUnknown"] == Value::Bool(true) {
+                out.push(strings::QUIT_ALSO_STOPS_UNKNOWN.to_string());
+            }
         } else {
             out.push(strings::quit_signal_line(
                 w["signal"].as_str().unwrap_or("?"),
@@ -46,7 +57,10 @@ pub(crate) fn plan_lines(would_do: &Value, skipped: &Value) -> Vec<String> {
             ));
         }
     }
-    out.extend(skipped_lines(skipped));
+    out.extend(skipped_lines(&data["skipped"]));
+    for w in data["warnings"].as_array().into_iter().flatten() {
+        out.push(strings::quit_warning_line(w.as_str().unwrap_or("")));
+    }
     out
 }
 
@@ -188,13 +202,7 @@ pub fn run(args: Args) -> ExitCode {
                 ExitCode::SUCCESS
             }
             Ok(v) => {
-                confirm::ask_with(
-                    header,
-                    &plan_lines(&v["wouldDo"], &v["skipped"]),
-                    yes,
-                    true,
-                    false,
-                );
+                confirm::ask_with(header, &plan_lines(&v), yes, true, false);
                 ExitCode::SUCCESS
             }
             Err(e) => exit_for(&socket, e),
@@ -209,13 +217,7 @@ pub fn run(args: Args) -> ExitCode {
     let Some(plan) = data["plan"].as_str() else {
         return fail(&strings::bad_daemon_answer(strings::QUIT_NO_PLAN));
     };
-    match confirm::ask_with(
-        header,
-        &plan_lines(&data["wouldDo"], &data["skipped"]),
-        yes,
-        false,
-        json_out,
-    ) {
+    match confirm::ask_with(header, &plan_lines(&data), yes, false, json_out) {
         Answer::Go => {}
         Answer::DryRun | Answer::No => return ExitCode::from(EXIT_CONFIRM),
     }
@@ -265,7 +267,7 @@ mod tests {
              "unit": "a.service", "pids": [1, 2]},
         ]);
         let skipped = json!([{"pid": 1050, "name": "Hyprland", "reason": "the compositor"}]);
-        let lines = plan_lines(&would, &skipped);
+        let lines = plan_lines(&json!({"wouldDo": would, "skipped": skipped}));
         assert_eq!(lines.len(), 4);
         assert!(lines[0].contains("2001") && lines[0].contains("browser"));
         assert!(
@@ -288,6 +290,31 @@ mod tests {
         assert!(!failed);
         let (_, failed) = result_lines(&json!({"failed": [{"pid": 1, "name": "x", "error": "e"}]}));
         assert!(failed);
+    }
+
+    #[test]
+    fn a_stop_lists_what_it_takes_with_it_and_the_warnings() {
+        let data = json!({
+            "wouldDo": [
+                {"run": ["systemctl", "--user", "stop", "--no-block", "--", "pipewire.service"],
+                 "unit": "pipewire.service", "pids": [1210],
+                 "alsoStops": [{"unit": "wireplumber.service", "pids": [1211]},
+                               {"unit": "x\u{1b}.target", "pids": []}]},
+                {"run": ["systemctl", "--user", "stop", "--no-block", "--", "a.service"],
+                 "unit": "a.service", "pids": [1, 2], "alsoStopsUnknown": true},
+            ],
+            "skipped": [],
+            "warnings": ["pipewire.service is part of your sound\n"],
+        });
+        let lines = plan_lines(&data);
+        assert_eq!(lines.len(), 6, "{lines:?}");
+        assert_eq!(lines[1], "  also stops wireplumber.service (1 process)");
+        assert!(lines[2].contains("(0 processes)"));
+        assert_eq!(lines[4], strings::QUIT_ALSO_STOPS_UNKNOWN);
+        assert!(lines[5].starts_with("warning: pipewire.service"));
+        for l in &lines {
+            assert!(!l.chars().any(char::is_control), "{l:?}");
+        }
     }
 
     #[test]

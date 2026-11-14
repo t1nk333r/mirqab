@@ -4,7 +4,10 @@
 //! first with start times; the two-step flow; targets re-computed at the
 //! second call; a group with a refused member; a rootless container; a
 //! thread id; a user service; the `action` event; and a fixture root never
-//! gets the real sender.
+//! gets the real sender. Part 3: the units a stop takes with it
+//! (`alsoStops`, from the fixture's answer), a dependent that holds a
+//! refused process, a question that fails, the session bus refused and
+//! the sound server's warning.
 
 use mirqab_core::Root;
 use mirqab_core::act::{self, Recording, Sender, Signal, Target};
@@ -651,6 +654,9 @@ impl Sender for Failing {
             stderr: "boom".into(),
         })
     }
+    fn unit_dependents(&self, _root: &Root, _unit: &str) -> Result<Vec<String>, String> {
+        Err("boom".into())
+    }
 }
 
 #[test]
@@ -681,4 +687,156 @@ fn a_failed_stop_skips_the_kill() {
         1,
         "no kill after a failed stop"
     );
+}
+
+#[test]
+fn a_stop_names_the_active_units_it_takes_with_it() {
+    // The fixture's answer for pipewire.service: wireplumber.service active
+    // (pid 1211), pipewire-pulse.service inactive.
+    use mirqab_core::proto::strings;
+    let root = fixture("root-desktop");
+    let (a, rec) = recorded();
+    let v = dry(&a, &root, pid(1210)).unwrap();
+    assert_eq!(
+        v["wouldDo"],
+        json!([{
+            "run": ["systemctl", "--user", "stop", "--no-block", "--", "pipewire.service"],
+            "unit": "pipewire.service",
+            "pids": [1210],
+            "alsoStops": [{"unit": "wireplumber.service", "pids": [1211]}],
+        }])
+    );
+    // Quit is allowed, with one warning line for each sound unit
+    // (owner, 2026-11-14, Q2).
+    assert_eq!(
+        v["warnings"],
+        json!([
+            strings::warn_sound("pipewire.service"),
+            strings::warn_sound("wireplumber.service")
+        ])
+    );
+    // Force quit: the dependents ride on the stop, not on the kill.
+    let data = plan(&a, &root, Action::Kill, pid(1210));
+    assert!(data["wouldDo"][0].get("alsoStops").is_some());
+    assert!(data["wouldDo"][1].get("alsoStops").is_none());
+    assert_eq!(data["warnings"].as_array().unwrap().len(), 2);
+    let hist = scratch("dephistory");
+    let history = Mutex::new(History::open(&hist.0.join("history.db"), 0).unwrap());
+    let done = confirm(
+        &a,
+        &root,
+        Action::Kill,
+        pid(1210),
+        data["plan"].as_str().unwrap(),
+        Some(&history),
+    )
+    .unwrap();
+    assert_eq!(done["done"].as_array().unwrap().len(), 2);
+    assert_eq!(
+        rec.lines(),
+        [
+            "RUN systemctl --user stop --no-block -- pipewire.service",
+            "RUN systemctl --user kill --signal=KILL -- pipewire.service"
+        ]
+    );
+    let events = history
+        .lock()
+        .unwrap()
+        .events(Some("action"), 0, i64::MAX)
+        .unwrap();
+    assert_eq!(
+        events[0]["data"]["alsoStops"],
+        json!(["wireplumber.service"])
+    );
+    // A service no unit depends on carries neither key nor warning.
+    let v = dry(&a, &root, pid(1300)).unwrap();
+    assert!(v["wouldDo"][0].get("alsoStops").is_none());
+    assert!(v["wouldDo"][0].get("alsoStopsUnknown").is_none());
+    assert_eq!(v["warnings"], json!([]));
+}
+
+#[test]
+fn a_dependent_that_holds_a_refused_process_refuses_the_stop() {
+    use mirqab_core::proto::strings;
+    let s = scratch("dependent");
+    let deps = s.0.join("run/mirqab-test/dependents");
+    std::fs::create_dir_all(&deps).unwrap();
+    let root = Root::new(&s.0);
+    let (a, rec) = recorded();
+    // The daemon's own unit (pid 4321) as a dependent of the sync service.
+    std::fs::write(deps.join(SYNC), "mirqab.service active\n").unwrap();
+    let f = dry(&a, &root, pid(1300)).unwrap_err();
+    assert_eq!(f.code, Code::Refused);
+    assert_eq!(
+        f.message,
+        strings::refuse_unit_dependent(SYNC, "mirqab.service", &strings::refuse_daemon(4321))
+    );
+    let f = a
+        .handle(&root, &ask(Action::Quit, json!({"args": pid(1300)})), None)
+        .unwrap_err();
+    assert_eq!(f.code, Code::Refused, "no plan is made either");
+    assert_eq!(a.live_plans(), 0);
+    // The session bus as a dependent refuses it too.
+    std::fs::write(deps.join(SYNC), "dbus-broker.service active\n").unwrap();
+    let f = dry(&a, &root, pid(1300)).unwrap_err();
+    assert_eq!(
+        f.message,
+        strings::refuse_unit_dependent(
+            SYNC,
+            "dbus-broker.service",
+            &strings::refuse_session_bus_unit("dbus-broker.service")
+        )
+    );
+    // An inactive dependent is not asked about at all.
+    std::fs::write(deps.join(SYNC), "mirqab.service inactive\n").unwrap();
+    assert!(dry(&a, &root, pid(1300)).is_ok());
+    assert!(rec.lines().is_empty());
+}
+
+#[test]
+fn a_question_that_fails_still_plans_and_says_so() {
+    let s = scratch("unknown");
+    // A directory where the answer should be: the read fails.
+    std::fs::create_dir_all(s.0.join("run/mirqab-test/dependents").join(SYNC)).unwrap();
+    let root = Root::new(&s.0);
+    let (a, rec) = recorded();
+    let data = plan(&a, &root, Action::Quit, pid(1300));
+    assert_eq!(data["wouldDo"][0]["alsoStopsUnknown"], true);
+    assert!(data["wouldDo"][0].get("alsoStops").is_none());
+    confirm(
+        &a,
+        &root,
+        Action::Quit,
+        pid(1300),
+        data["plan"].as_str().unwrap(),
+        None,
+    )
+    .unwrap();
+    assert_eq!(
+        rec.lines(),
+        [format!("RUN systemctl --user stop --no-block -- {SYNC}")]
+    );
+}
+
+#[test]
+fn the_session_bus_is_never_stopped() {
+    use mirqab_core::proto::strings;
+    let s = scratch("bus");
+    let (a, rec) = recorded();
+    for unit in ["dbus-broker.service", "dbus.service"] {
+        std::fs::write(
+            s.0.join("proc/1300/cgroup"),
+            format!("0::/user.slice/user-1000.slice/user@1000.service/session.slice/{unit}\n"),
+        )
+        .unwrap();
+        let root = Root::new(&s.0);
+        let f = dry(&a, &root, pid(1300)).unwrap_err();
+        assert_eq!(f.code, Code::Refused);
+        assert_eq!(f.message, strings::refuse_session_bus_unit(unit));
+        let stem = unit.trim_end_matches(".service");
+        let f = dry(&a, &root, group(&format!("service:{stem}"))).unwrap_err();
+        assert_eq!(f.code, Code::Refused, "{unit} as a group");
+        assert_eq!(f.message, strings::refuse_session_bus_unit(unit));
+    }
+    assert!(rec.lines().is_empty());
 }

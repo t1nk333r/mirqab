@@ -4,12 +4,15 @@
 //! sorting, `limit` and `expand`; a pid reused with a new start time is a
 //! new process; the inspector's golden output for five processes, the
 //! verdict rules, `pacman` asked once per path, and unreadable files left
-//! out rather than failing.
+//! out rather than failing. Part 3: `start` in every listed process, and
+//! the `process` stream (one pid's `stat` and `statm`): its figures across
+//! the `.t1` twin, `gone` for a missing pid and a changed start time.
 
 use mirqab_core::Root;
 use mirqab_core::proto::stream::{AppGroup, AppsData, Inspect};
 use mirqab_core::sampler::Sampler;
 use mirqab_core::samplers::apps::{self, Apps};
+use mirqab_core::samplers::process::{self, Process};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -323,7 +326,12 @@ fn the_stream_matches_its_golden_file() {
     let s = scratch("golden");
     let mut a = probed(&pacman(&s.0));
     let (_, second) = two_samples(&mut a);
-    let got = apps::view(&serde_json::to_value(&second).unwrap(), &json!({}));
+    // Every group open, as the Apps page asks (plan 006, part 3): the
+    // golden holds each process with its start time.
+    let got = apps::view(
+        &serde_json::to_value(&second).unwrap(),
+        &json!({"expand": true}),
+    );
     let golden: Value =
         serde_json::from_str(include_str!("../../../tests/golden/apps.json")).unwrap();
     assert_eq!(
@@ -611,4 +619,114 @@ fn a_process_moved_after_its_first_sample_is_regrouped() {
     .unwrap();
     let third = data(a.sample(&root, t0 + Duration::from_secs(4)));
     assert_eq!(ids(&third), ["scope:app-Hyprland-late-0a0a0a0a"]);
+}
+
+#[test]
+fn every_listed_process_carries_its_start_time() {
+    let s = scratch("start");
+    let mut a = probed(&pacman(&s.0));
+    let d = data(apps::view(
+        &a.sample(&fixture("root-desktop"), Instant::now()),
+        &json!({"expand": true}),
+    ));
+    let browser = by_id(&d, "scope:app-Hyprland-browser.sh-5650fedc");
+    let starts: Vec<(u32, u64)> = browser
+        .processes
+        .as_ref()
+        .unwrap()
+        .iter()
+        .map(|p| (p.pid, p.start))
+        .collect();
+    // The values `wouldDo` carries for the same processes.
+    assert!(starts.contains(&(2001, 5010)), "{starts:?}");
+    assert!(starts.contains(&(2000, 5000)), "{starts:?}");
+    for g in &d.groups {
+        for p in g.processes.as_ref().unwrap() {
+            assert!(p.start > 0, "{} has a start time", p.pid);
+        }
+    }
+}
+
+fn process_probed() -> Process {
+    let mut p = Process::new();
+    p.probe(&fixture("root-desktop")).unwrap();
+    p
+}
+
+/// Two readings for `params`: root-desktop, then root-desktop.t1 two
+/// seconds later, each shaped by the stream's view.
+fn process_twice(params: &[Value]) -> (Vec<Value>, Vec<Value>) {
+    let mut p = process_probed();
+    p.wants(params);
+    let t0 = Instant::now();
+    let a = p.sample(&fixture("root-desktop"), t0);
+    p.wants(params);
+    let b = p.sample(&fixture("root-desktop.t1"), t0 + Duration::from_secs(2));
+    let shape = |d: &Value| params.iter().map(|q| process::view(d, q)).collect();
+    (shape(&a), shape(&b))
+}
+
+#[test]
+fn the_process_stream_reads_one_pid_across_two_ticks() {
+    let (first, second) = process_twice(&[json!({"pid": 2001})]);
+    assert_eq!(first[0]["cpu"], Value::Null, "no rate on the first reading");
+    assert_eq!(first[0]["start"], 5010);
+    // 80 ticks of 100 in 2 s: 40 % of one core.
+    assert_eq!(second[0]["cpu"], 40.0);
+    let golden: Value =
+        serde_json::from_str(include_str!("../../../tests/golden/process.json")).unwrap();
+    assert_eq!(
+        second[0],
+        golden,
+        "actual:\n{}",
+        serde_json::to_string_pretty(&second[0]).unwrap()
+    );
+}
+
+#[test]
+fn a_missing_pid_or_a_new_start_time_is_gone() {
+    let params = [
+        json!({"pid": 99999}),
+        // 7000 is another process in .t1 (procs.tsv): pinned at the first.
+        json!({"pid": 7000}),
+        // Named with its start time: the old process, then gone.
+        json!({"pid": 7000, "start": 300000}),
+        // Named with the new one's: gone at first, there in .t1.
+        json!({"pid": 7000, "start": 360000}),
+    ];
+    let (first, second) = process_twice(&params);
+    let gone = |pid: u32| json!({"pid": pid, "gone": true});
+    assert_eq!(first[0], gone(99999));
+    assert_eq!(second[0], gone(99999));
+    assert_eq!(first[1]["name"], "oldjob");
+    assert_eq!(second[1], gone(7000), "another process took the pid");
+    assert_eq!(first[2]["name"], "oldjob");
+    assert_eq!(second[2], gone(7000));
+    assert_eq!(first[3], gone(7000));
+    assert_eq!(second[3]["name"], "newjob");
+    assert_eq!(second[3]["cpu"], Value::Null, "no baseline for the new one");
+
+    // A pid empty when first watched stays gone when a process takes it.
+    let mut p = process_probed();
+    let ask = [json!({"pid": 7000})];
+    p.wants(&ask);
+    let s = scratch("procgone");
+    std::fs::create_dir_all(s.0.join("proc")).unwrap();
+    let t0 = Instant::now();
+    let empty = p.sample(&Root::new(&s.0), t0);
+    assert_eq!(process::view(&empty, &ask[0]), gone(7000));
+    p.wants(&ask);
+    let later = p.sample(&fixture("root-desktop"), t0 + Duration::from_secs(1));
+    assert_eq!(process::view(&later, &ask[0]), gone(7000));
+}
+
+#[test]
+fn the_process_stream_takes_only_a_pid_and_a_start() {
+    let p = process_probed();
+    let accepts = p.accepts().expect("the stream checks its params");
+    assert!(accepts(&json!({"pid": 2001})).is_ok());
+    assert!(accepts(&json!({})).is_err());
+    assert!(accepts(&Value::Null).is_err());
+    assert!(p.live(), "a live graph may ask for 1 s");
+    assert_eq!(p.stream(), "process");
 }

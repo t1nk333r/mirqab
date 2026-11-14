@@ -192,6 +192,22 @@ status_is "quitting a user service exits 0" 0 "$STATUS"
 is "a user service is stopped with systemctl" \
     "RUN systemctl --user stop --no-block -- app-org.example.Sync@autostart.service" "$(act_log)"
 : >"$MIRQAB_ACT_LOG"
+# Part 3: the units a stop takes with it (the fixture's answer for
+# pipewire.service), and the sound server's warning (owner, 2026-11-14).
+capture "$BIN/mirqab" quit 1210 --dry-run
+status_is "quit on a service with a dependent exits 0" 0 "$STATUS"
+like "and names the unit it also stops" "$OUTPUT" "also stops wireplumber.service (1 process)"
+unlike "but not an inactive one" "$OUTPUT" "pipewire-pulse"
+like "and warns about the sound" "$OUTPUT" "warning: pipewire.service is part of your sound"
+capture "$BIN/mirqab" quit 1210 --dry-run --json
+is "--json carries alsoStops" '[{"pids":[1211],"unit":"wireplumber.service"}]' \
+    "$(jq -c '.wouldDo[0].alsoStops' <<<"$OUTPUT")"
+is "and the warnings" "2" "$(jq '.warnings | length' <<<"$OUTPUT")"
+capture "$BIN/mirqab" quit 1210 -y
+status_is "quit -y on it exits 0" 0 "$STATUS"
+is "only the unit asked for is stopped by name" \
+    "RUN systemctl --user stop --no-block -- pipewire.service" "$(act_log)"
+: >"$MIRQAB_ACT_LOG"
 capture "$BIN/mirqab" quit 0
 status_is "pid 0 is a usage error" 64 "$STATUS"
 capture "$BIN/mirqab" quit

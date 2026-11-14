@@ -4,9 +4,10 @@
 //! when `dry_run` is set.
 
 use crate::exec;
+use crate::guard;
 use crate::proto::strings;
 use crate::root::Root;
-use crate::samplers::apps::procfs;
+use crate::samplers::apps::{group, procfs};
 use crate::sys;
 use serde_json::{Value, json};
 use std::os::fd::{AsFd, OwnedFd};
@@ -82,6 +83,75 @@ pub trait Sender: Send + Sync {
     fn send(&self, handle: Option<&OwnedFd>, target: Target, sig: Signal) -> std::io::Result<()>;
     /// A command for an action (`systemctl --user stop`).
     fn run(&self, argv: &[&str], timeout: Duration) -> Result<exec::Output, String>;
+    /// The active units a stop of the user unit `unit` takes down with it,
+    /// one level deep: those that name it in `Requires=`, `BindsTo=` or
+    /// `PartOf=` (its `RequiredBy`, `BoundBy` and `ConsistsOf`). Err when
+    /// it cannot be told (plan 006, part 3, decision 9). A read, but on
+    /// the sender so a fixture root asks no real service manager.
+    fn unit_dependents(&self, root: &Root, unit: &str) -> Result<Vec<String>, String>;
+}
+
+/// How long each `systemctl show` of `unit_dependents` may take.
+const SHOW_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// A unit state that a stop still changes.
+fn is_active(state: &str) -> bool {
+    matches!(state, "active" | "activating" | "reloading" | "refreshing")
+}
+
+/// A name `systemctl` may be handed as a unit: unit-name characters and a
+/// type suffix, nothing that could read as an option or a path.
+fn unit_like(name: &str) -> bool {
+    !name.starts_with('-')
+        && name.contains('.')
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || ":_.@\\-".contains(c))
+}
+
+/// The units in the `RequiredBy=`, `BoundBy=` and `ConsistsOf=` lines of
+/// `systemctl show`, each once, `unit` itself left out. The lines are read
+/// by key: systemd prints the properties in its own order, not the order
+/// of the `-p` flags (systemd 262, 2026-11-14), so `--value` would not say
+/// which line is which.
+pub fn dependents_named(show: &str, unit: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for line in show.lines() {
+        let Some((key, val)) = line.split_once('=') else {
+            continue;
+        };
+        if !matches!(key, "RequiredBy" | "BoundBy" | "ConsistsOf") {
+            continue;
+        }
+        for name in val.split_whitespace() {
+            if name != unit && !out.iter().any(|n| n == name) {
+                out.push(name.to_string());
+            }
+        }
+    }
+    out
+}
+
+/// The `Id=` of each block of `systemctl show -p Id -p ActiveState` whose
+/// state a stop still changes.
+pub fn active_ids(show: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let (mut id, mut state): (Option<&str>, Option<&str>) = (None, None);
+    for line in show.lines().chain([""]) {
+        if line.trim().is_empty() {
+            if let (Some(i), Some(st)) = (id, state)
+                && is_active(st)
+            {
+                out.push(i.to_string());
+            }
+            (id, state) = (None, None);
+        } else if let Some(v) = line.strip_prefix("Id=") {
+            id = Some(v.trim());
+        } else if let Some(v) = line.strip_prefix("ActiveState=") {
+            state = Some(v.trim());
+        }
+    }
+    out
 }
 
 /// The live machine: pidfd_open, then pidfd_send_signal (sys.rs).
@@ -103,6 +173,52 @@ impl Sender for Real {
 
     fn run(&self, argv: &[&str], timeout: Duration) -> Result<exec::Output, String> {
         exec::run(argv, None, timeout).map_err(|e| e.to_string())
+    }
+
+    /// Two reads of the user's service manager, 2 s each: which units name
+    /// `unit`, then which of them are active.
+    fn unit_dependents(&self, _root: &Root, unit: &str) -> Result<Vec<String>, String> {
+        let show = |argv: &[&str]| -> Result<String, String> {
+            match exec::run(argv, None, SHOW_TIMEOUT) {
+                Ok(out) if out.success() => Ok(out.stdout),
+                Ok(out) => Err(out.stderr.trim().to_string()),
+                Err(e) => Err(e.to_string()),
+            }
+        };
+        let named = dependents_named(
+            &show(&[
+                "systemctl",
+                "--user",
+                "show",
+                "-p",
+                "RequiredBy",
+                "-p",
+                "BoundBy",
+                "-p",
+                "ConsistsOf",
+                "--",
+                unit,
+            ])?,
+            unit,
+        );
+        if named.is_empty() {
+            return Ok(Vec::new());
+        }
+        if let Some(odd) = named.iter().find(|n| !unit_like(n)) {
+            return Err(strings::act_odd_dependent(odd));
+        }
+        let mut argv = vec![
+            "systemctl",
+            "--user",
+            "show",
+            "-p",
+            "Id",
+            "-p",
+            "ActiveState",
+            "--",
+        ];
+        argv.extend(named.iter().map(String::as_str));
+        Ok(active_ids(&show(&argv)?))
     }
 }
 
@@ -170,6 +286,30 @@ impl Sender for Recording {
             stdout: String::new(),
             stderr: String::new(),
         })
+    }
+
+    /// The fixture's answer, `run/mirqab-test/dependents/<unit>` under the
+    /// root: one `<unit> <ActiveState>` a line. No file is no dependents;
+    /// a file that cannot be read is a question that failed. Nothing is
+    /// asked of a real service manager, and nothing is recorded: it is a
+    /// read.
+    fn unit_dependents(&self, root: &Root, unit: &str) -> Result<Vec<String>, String> {
+        if !unit_like(unit) {
+            return Err(strings::act_odd_dependent(unit));
+        }
+        let text = match root.read(&format!("run/mirqab-test/dependents/{unit}")) {
+            Ok(t) => t,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(e) => return Err(e.to_string()),
+        };
+        Ok(text
+            .lines()
+            .filter_map(|l| {
+                let mut w = l.split_whitespace();
+                let (name, state) = (w.next()?, w.next()?);
+                (name != unit && is_active(state)).then(|| name.to_string())
+            })
+            .collect())
     }
 }
 
@@ -259,6 +399,10 @@ pub fn refusal(root: &Root, guard: &Guard, pid: u32, facts: &Facts) -> Option<St
         .any(|w| w[0] == manager && w[1] == "init.scope")
     {
         return Some(strings::refuse_user_manager(pid));
+    }
+    // The session bus ends the session (owner, 2026-11-14, plan 006 Q2).
+    if let Some(unit) = group::host_service(&cgroup).filter(|u| guard::is_session_bus(u)) {
+        return Some(strings::refuse_session_bus(pid, unit));
     }
     guard
         .refused
@@ -562,6 +706,84 @@ mod tests {
         assert!(rec.lines().is_empty(), "a dry run sends nothing");
         signal(&root, &rec, &guard, t(4242), Signal::Term, false).unwrap();
         assert_eq!(rec.lines(), ["TERM 4242 500"]);
+        remove_path(&d, false).unwrap();
+    }
+
+    #[test]
+    fn dependents_are_read_by_key_and_only_active_ones_count() {
+        // The order systemd 262 printed for `-p ConsistsOf -p RequiredBy
+        // -p BoundBy` on the development machine (2026-11-14).
+        let show = "RequiredBy=\nBoundBy=wireplumber.service pipewire-pulse.service\nConsistsOf=\n";
+        assert_eq!(
+            dependents_named(show, "pipewire.service"),
+            ["wireplumber.service", "pipewire-pulse.service"]
+        );
+        assert_eq!(
+            dependents_named(
+                "ConsistsOf=a.service x.service\nRequiredBy=a.service\nId=x.service\n",
+                "x.service"
+            ),
+            ["a.service"]
+        );
+        let states = "Id=wireplumber.service\nActiveState=active\n\nId=pipewire-pulse.service\nActiveState=inactive\n\nId=b.service\nActiveState=activating";
+        assert_eq!(active_ids(states), ["wireplumber.service", "b.service"]);
+        assert!(unit_like("app-two\\x2dwords@1.service"));
+        assert!(!unit_like("-H.service"));
+        assert!(!unit_like("../x.service"));
+        assert!(!unit_like("plain"));
+    }
+
+    #[test]
+    fn the_session_bus_is_never_signalled() {
+        let d = scratch("bus");
+        let user = "/user.slice/user-1000.slice/user@1000.service";
+        procs(
+            &d,
+            &[
+                (
+                    4242,
+                    "dbus-broker",
+                    0,
+                    [1000; 4],
+                    &format!("{user}/session.slice/dbus-broker.service"),
+                ),
+                (
+                    4343,
+                    "dbus-daemon",
+                    0,
+                    [1000; 4],
+                    &format!("{user}/session.slice/dbus.service"),
+                ),
+                (
+                    4444,
+                    "pipewire",
+                    0,
+                    [1000; 4],
+                    &format!("{user}/session.slice/pipewire.service"),
+                ),
+            ],
+        );
+        let root = Root::new(&d);
+        let guard = Guard {
+            own_uid: 1000,
+            daemon: vec![],
+            refused: vec![],
+        };
+        let rec = Recording::default();
+        let t = |pid| Target { pid, start: 500 };
+        for (pid, unit) in [(4242, "dbus-broker.service"), (4343, "dbus.service")] {
+            assert_eq!(
+                signal(&root, &rec, &guard, t(pid), Signal::Term, false),
+                Err(ActError::Refused(strings::refuse_session_bus(pid, unit)))
+            );
+        }
+        assert!(rec.lines().is_empty());
+        signal(&root, &rec, &guard, t(4444), Signal::Term, false).unwrap();
+        assert_eq!(
+            rec.lines(),
+            ["TERM 4444 500"],
+            "the sound server may be quit"
+        );
         remove_path(&d, false).unwrap();
     }
 
