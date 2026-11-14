@@ -12,8 +12,9 @@
 - **Planned at**: 2026-11-13, from the owner
 - **State**: DONE (2026-11-14). Part 1 (`mirqab bar`, the haseen widget,
   the Waybar example; PR #10) and part 2 (the tray; PR #11). Two owner
-  checks stay open: the icon in the desktop's tray with a click toggling
-  the window (acceptance 1), and the haseen widget installed (acceptance
+  checks stay open: the tray menu opening each tab (the rest of acceptance
+  1; the icon shows on the owner's bar since plan 021, 2026-11-14, and a
+  click toggles the window), and the haseen widget installed (acceptance
   4).
 - **Owner decisions** (2026-11-13): the tray uses `ksni` with `zbus` held
   on 5.x; Unlicense goes on `cargo deny`'s allow-list for `ksni` only.

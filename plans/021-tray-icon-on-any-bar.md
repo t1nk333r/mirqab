@@ -10,8 +10,9 @@
 - **Depends on**: 004
 - **Category**: integration
 - **Planned at**: 2026-11-14, from the owner
-- **State**: DONE (2026-11-14). The owner's check (acceptance 1–3) stays
-  open.
+- **State**: DONE (2026-11-14). Acceptance 1 passed on the owner's haseen
+  bar (2026-11-14, after a bar restart: "Watchtower, clear"). Acceptance 2
+  and 3 (a light bar, a launcher) stay open.
 
 ## Problem
 
@@ -36,8 +37,8 @@ bars. The symbolic icon stays.
 
 | # | Fact | Source |
 |---|------|--------|
-| E1 | The tray sends only `IconName`, the value of `strings::TRAY_ICON`; it overrides neither `icon_theme_path` nor `icon_pixmap`. | crates/mirqab/src/tray/item.rs:85; crates/mirqab-proto/src/strings.rs:1036-1037 (`"mirqab-symbolic"`) |
-| E2 | Nothing else in the tree uses the name: `git grep -n -E 'mirqab-symbolic\|TRAY_ICON' origin/main -- . ':!plans'` prints README.md:260, strings.rs:1037, item.rs:85, tests/test-units.sh:50 and :52. The GTK interface does not load it. | command output, 2026-11-14 |
+| E1 | The tray sends only `IconName`, the value of `strings::TRAY_ICON`; it overrides neither `icon_theme_path` nor `icon_pixmap`. | crates/mirqab/src/tray/item.rs:85; crates/mirqab-proto/src/strings.rs:1128-1129 (`"mirqab-symbolic"`) |
+| E2 | Nothing else in the tree uses the name: `git grep -n -E 'mirqab-symbolic\|TRAY_ICON' origin/main -- . ':!plans'` prints README.md:260, strings.rs:1129, item.rs:85, tests/test-units.sh:50 and :52. The GTK interface does not load it. | command output, 2026-11-14 |
 | E3 | The symbolic icon is four paths filled `#2e3436` on a 16 × 16 view box. | dist/icons/mirqab-symbolic.svg |
 | E4 | Quickshell uses `IconName` whenever it is not empty (and there is no overlay name) and passes `IconThemePath` beside it; it uses `IconPixmap` only when the name is empty. | quickshell `src/services/status_notifier/item.cpp:96-109` (master, read 2026-11-14) |
 | E5 | Quickshell resolves the name with `QIcon::fromTheme`. With a path it then tries `QPixmap("/<path>/<name>")` — the name as given, no extension added. If both fail it draws a black image with two purple (`0xd900d8`) quarters. | quickshell `src/core/iconimageprovider.cpp:18-44`, `:50-66` |
@@ -105,8 +106,9 @@ install -Dm644 dist/icons/mirqab-symbolic.svg ~/.local/share/icons/hicolor/symbo
 ```
 
 and one sentence: a bar that was already running when the icon was
-installed keeps showing a placeholder until the bar is restarted, because
-bars look icons up once per process (E6). No string changes besides
+installed may keep showing a placeholder until the bar is restarted (seen
+with Quickshell, E6; the cause is not traced, see Unverified). No string
+changes besides
 `TRAY_ICON`.
 
 ## Rejected
@@ -119,7 +121,7 @@ bars look icons up once per process (E6). No string changes besides
 | Keep the symbolic icon and recolour it in haseen's bar | The bar renders in software and does not recolour on purpose (E7); and it would fix one bar only. |
 | A light-only icon | Invisible on a light bar. The owner asked for both. |
 | Install the icon under the application id as well | Two names for one file. One name is enough once the desktop entry uses it (D4). |
-| Refresh an icon cache or signal the bar from mirqab | There is no cache on the owner's machine (E6), and a bar's per-process lookup state is not mirqab's to reset. |
+| Refresh an icon cache or signal the bar from mirqab | There is no cache on the owner's machine (E6), and a running bar's icon state is not mirqab's to reset. |
 
 ## Files
 
@@ -171,19 +173,28 @@ Affected scope only: `crates/mirqab/tests/tray.rs` and `tests/test-units.sh`
 
 - [x] U1: render the draft icon at 16, 22 and 24 px on a dark and a light
       background with a fresh `qs` process (and once with librsvg); adjust
-      the outline width before anything else is touched.
+      the outline width before anything else is touched. Done with librsvg
+      only; no `qs` render (As built).
 - [ ] U2: check that Qt draws the dark-copy-under-light-shape outline
       without gaps at 16 px at scale 1 and 1.25.
 - [x] Draw `dist/icons/mirqab.svg`; update the symbolic icon's comment.
 - [x] `TRAY_ICON`, the desktop entry, the two tests.
 - [x] README; the as-built lines in plans 001, 004, 020; row in plans/README.md.
-- [ ] Gates; owner's check (acceptance 1–3).
+- [x] Gates (CI on c51e208: lint, test, docs, secrets).
+- [ ] Owner's check: acceptance 1 passed 2026-11-14; 2 and 3 open.
 
 ## As built
 
 - `dist/icons/mirqab.svg`: dark `#2e3436` copies under light `#eeeeec`
-  shapes, the outline about one unit wide on the 16-unit grid. The cabin
-  windows are holes in the light cabin, so the dark copy shows through.
+  shapes, the outline about one unit wide. The cabin, brace and base are
+  on whole units; the roof's horizontal edges are on half units (y = 3.5
+  and 4.5), so they are soft at 16 px. D1 said "on the pixel grid"; the
+  roof is the exception. The cabin windows are holes in the light cabin,
+  so the dark copy shows through.
+- Between the legs, y = 9–10 has no dark copy (the brace starts at
+  y = 10). At 16 px on a light background that is two mid-grey pixels
+  under the cabin; on a dark one it does not show. Left for the light-bar
+  check (acceptance 2).
 - U1 with librsvg (`rsvg-convert` at 16, 22, 24 and 48 px on `#161616` and
   `#f2f2f2`): every size reads on both backgrounds. On the dark one the
   light fill carries the shape and the outline merges with the bar; at 22
@@ -191,16 +202,23 @@ Affected scope only: `crates/mirqab/tests/tray.rs` and `tests/test-units.sh`
   stays legible. U2 (Qt at scale 1.25) is left to the owner's check on the
   installed icon.
 - `tests/test-units.sh` also refuses `stroke`, so the outline stays filled
-  shapes. `tray.rs` reads `IconName`, `IconThemePath` and `IconPixmap` in
+  shapes, and allows only `svg`, `g`, `path` and `rect` elements. `tray.rs` reads `IconName`, `IconThemePath` and `IconPixmap` in
   the existing activate test.
+- `Cargo.toml` and `Cargo.lock` are not in the diff, so the daemon's
+  dependencies are unchanged. Its stripped size was not measured.
+- Owner's check, 2026-11-14: with both icons installed and the bar
+  restarted, haseen's bar (Qt, Quickshell) shows the watchtower, clear
+  (acceptance 1).
 - Tests: `cargo test -p mirqab --test tray` 5/5; `tests/run.sh
-  tests/test-units.sh` 17/17.
+  tests/test-units.sh` 18/18.
 
 ## Unverified
 
 - **U2 — Qt at a fractional scale.** The drawing was rendered with librsvg
   only (As built). That Qt's SVG renderer draws it cleanly on the owner's
-  bar at scale 1.25 is the owner's check.
+  bar at scale 1.25 is the owner's check. Qt drew it clearly on the
+  owner's bar (As built); the scale of that screen was not recorded, so
+  1.25 stays unchecked.
 - **Other tray hosts.** Only Quickshell's source was read (E4, E5). What
   Waybar, KDE or GNOME's extension do with `IconThemePath` or with a
   pixmap beside a name is not known, so this plan claims nothing for them.
