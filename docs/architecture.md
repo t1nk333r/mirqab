@@ -428,7 +428,9 @@ to a daemon:
   the MCP server returns the list and acts only when the tool call sets
   `confirm`. Every redeemed plan is one `event` row of kind `action`
   (the action, the target, the caller's pid and name, each process's
-  result; never a command line).
+  result; never a command line). The redeem reply's `recorded` says
+  whether the row was written; when the history cannot be written the act
+  still runs and the CLI warns (owner, 2026-11-14).
 - Refused always, whatever the caller says: signalling pid 1, the daemon
   itself, a process where any of the four `Uid:` numbers is another
   user's (so a setuid program too), a kernel thread, anything outside the
@@ -436,8 +438,15 @@ to a daemon:
   manager (`user@<uid>.service/init.scope`), the session's compositor and
   its parents, and the caller and its parents (the socket peer's pid,
   walked strictly: an unreadable `stat`, a loop or depth 64 refuses the
-  action). A user service is stopped with `systemctl --user stop
-  --no-block`, never one that holds a refused process. Signals go through
+  action), and a compositor that cannot be told (a `wayland-*` socket
+  that cannot be probed). A user service, the first unit under the user
+  manager and never one nested in it, is stopped with `systemctl --user
+  stop --no-block`, never one that holds a refused process. Its refusals
+  are checked when the targets are resolved, and `systemctl` then acts on
+  the unit by name; units tied to it by `Requires=`, `BindsTo=` or
+  `PartOf=` stop with it unseen, `stop` runs `ExecStop=` and ends in
+  SIGKILL after `TimeoutStopSec`, and session services are not refused
+  (plan 006, "Known limits (part 2)"). Signals go through
   a pidfd opened before the last check, so the check and the signal are
   about the same process; the daemon signals for real only when its root
   is `/`, and records what it would have done on any other root (plan

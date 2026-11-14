@@ -1269,7 +1269,7 @@ impl Inner {
             .clients
             .get(&client)
             .and_then(|c| c.caller);
-        let caller = test_caller().or(peer);
+        let caller = caller_for(&self.root, peer, test_caller());
         let ask = match actions::parse(action, &req.params, caller) {
             Ok(a) => a,
             Err(f) => return Reply::err_data(req.id, f.code, f.message, f.data),
@@ -1382,12 +1382,19 @@ fn ui_start_timeout() -> Duration {
 /// `MIRQAB_CALLER_PID` when `MIRQAB_TEST=1`: under a fixture root the real
 /// caller has no `proc/<pid>/stat`, and the strict walk of its ancestry
 /// would refuse every action, so a test names a fixture pid instead (plan
-/// 006, decision 7).
+/// 006, decision 7). `caller_for` honours it on a fixture root only.
 fn test_caller() -> Option<u32> {
     if std::env::var("MIRQAB_TEST").as_deref() != Ok("1") {
         return None;
     }
     std::env::var("MIRQAB_CALLER_PID").ok()?.parse().ok()
+}
+
+/// The caller whose ancestry an action refuses: on the live root always the
+/// kernel's peer pid, whatever the environment says; on a fixture root the
+/// test's pid when one is named (review of PR #17).
+fn caller_for(root: &Root, peer: Option<u32>, test: Option<u32>) -> Option<u32> {
+    if root.is_host() { peer } else { test.or(peer) }
 }
 
 /// A handler already queued its reply.
@@ -1462,5 +1469,21 @@ fn read_lines(stream: &UnixStream, mut f: impl FnMut(&[u8])) {
         if buf.len() >= MAX_LINE {
             return;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_test_caller_counts_only_on_a_fixture_root() {
+        assert_eq!(caller_for(&Root::host(), Some(7), Some(3060)), Some(7));
+        assert_eq!(caller_for(&Root::host(), None, Some(3060)), None);
+        assert_eq!(
+            caller_for(&Root::new("/tmp/x"), Some(7), Some(3060)),
+            Some(3060)
+        );
+        assert_eq!(caller_for(&Root::new("/tmp/x"), Some(7), None), Some(7));
     }
 }

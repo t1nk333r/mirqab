@@ -188,7 +188,13 @@ pub fn run(args: Args) -> ExitCode {
                 ExitCode::SUCCESS
             }
             Ok(v) => {
-                confirm::ask_with(header, &plan_lines(&v["wouldDo"], &v["skipped"]), yes, true);
+                confirm::ask_with(
+                    header,
+                    &plan_lines(&v["wouldDo"], &v["skipped"]),
+                    yes,
+                    true,
+                    false,
+                );
                 ExitCode::SUCCESS
             }
             Err(e) => exit_for(&socket, e),
@@ -208,31 +214,41 @@ pub fn run(args: Args) -> ExitCode {
         &plan_lines(&data["wouldDo"], &data["skipped"]),
         yes,
         false,
+        json_out,
     ) {
         Answer::Go => {}
         Answer::DryRun | Answer::No => return ExitCode::from(EXIT_CONFIRM),
     }
     match ask(json!({"confirm": true, "plan": plan})) {
-        Ok(v) if json_out => {
-            crate::out::line(&v.to_string());
-            if v["failed"].as_array().is_some_and(|f| !f.is_empty()) {
-                ExitCode::from(EXIT_FAILED)
-            } else {
-                ExitCode::SUCCESS
-            }
-        }
         Ok(v) => {
-            let (lines, failed) = result_lines(&v);
-            for l in lines {
-                crate::out::line(&l);
-            }
-            if failed {
-                ExitCode::from(EXIT_FAILED)
+            if json_out {
+                crate::out::line(&v.to_string());
             } else {
-                ExitCode::SUCCESS
+                for l in result_lines(&v).0 {
+                    crate::out::line(&l);
+                }
             }
+            // The act ran, but its audit row could not be written: said
+            // in both modes (owner, 2026-11-14: act and warn).
+            if v["recorded"] == Value::Bool(false) {
+                crate::out::err(strings::QUIT_NOT_RECORDED);
+            }
+            ExitCode::from(exit_after(&v))
         }
         Err(e) => exit_for(&socket, e),
+    }
+}
+
+/// The exit code after a confirmed call (decision 11, review of PR #17):
+/// 1 when anything failed, or when nothing was done and something was left
+/// alone (refused or started since the confirmation); 0 otherwise, so a
+/// target that had already exited is still success.
+pub(crate) fn exit_after(v: &Value) -> u8 {
+    let empty = |k: &str| v[k].as_array().is_none_or(Vec::is_empty);
+    if !empty("failed") || (empty("done") && !empty("skipped")) {
+        EXIT_FAILED
+    } else {
+        0
     }
 }
 
@@ -272,5 +288,24 @@ mod tests {
         assert!(!failed);
         let (_, failed) = result_lines(&json!({"failed": [{"pid": 1, "name": "x", "error": "e"}]}));
         assert!(failed);
+    }
+
+    #[test]
+    fn nothing_done_and_something_left_alone_is_a_failure() {
+        let d = json!({"pid": 1});
+        let reply = |done: Value, gone: Value, failed: Value, skipped: Value| {
+            exit_after(&json!({"done": done, "gone": gone, "failed": failed, "skipped": skipped}))
+        };
+        assert_eq!(reply(json!([d]), json!([]), json!([]), json!([])), 0);
+        assert_eq!(reply(json!([]), json!([d]), json!([]), json!([])), 0);
+        assert_eq!(
+            reply(json!([]), json!([]), json!([]), json!([d])),
+            EXIT_FAILED
+        );
+        assert_eq!(reply(json!([d]), json!([]), json!([]), json!([d])), 0);
+        assert_eq!(
+            reply(json!([]), json!([]), json!([d]), json!([])),
+            EXIT_FAILED
+        );
     }
 }

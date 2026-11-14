@@ -184,8 +184,11 @@ none.
 
 Other properties:
 
-- `pidfd_open` on a thread id that is not a thread-group leader fails with
-  `EINVAL`: a second guard for D3.
+- `pidfd_open` on a thread id that is not a thread-group leader fails:
+  `EINVAL` on older kernels, `ENOENT` on 7.2 (review of PR #17, run on
+  kernel 7.2.7 against the reviewer's own thread; `sys.rs`'s test checks
+  either). Both are `failed` with `strings::act_not_leader`: a second guard
+  for D3.
 - `ENOSYS` (a kernel before 5.3) is `failed` with a message; there is no
   fallback to `kill(pid)`. **[machine]** the planner's kernel is 7.2.
 - `ESRCH` at step 1 or 4 means the process is gone: reported under `gone`,
@@ -280,8 +283,14 @@ row for mirqab itself say what Quit does.
   (pid 1050 in `procs.tsv`), and it covers a host where the socket probe
   fails.
 
-Ancestors come from a strict walk (decision 9). If neither source finds a
-compositor, the action proceeds: a server or a tty session has none.
+Ancestors come from a strict walk (decision 9). The socket probe fails
+closed (review of PR #17): it reads `$XDG_RUNTIME_DIR`, else
+`run/user/<uid>`; a socket that refuses the connection (ECONNREFUSED, left
+by a compositor that died) is skipped; any other connect or `peer_pid`
+error, or a directory that cannot be read, refuses the action, dry run
+included (`strings::refuse_compositor_unknown`). Only a runtime directory
+that does not exist, or one with no live `wayland-*` socket, means no
+compositor: a server or a tty session has none.
 
 **7. The caller's own ancestry is refused.** `sys::peer_pid` on the
 accepted connection gives the caller. The daemon walks its ancestry
@@ -332,8 +341,13 @@ delivered, and the stream shows the result.
 `action`, through `history.rs:285`:
 `{"action":"apps.quit","target":{"group":"…"}|{"pid":N},"caller":{"pid":N,"name":"zsh"},"results":[{"pid":N,"name":"…","signal":"TERM","result":"done|gone|failed|skipped"}],"unit":"…"}`.
 Names are `comm`; no command lines. A dry run and a `needs-confirm` reply
-write nothing. With no history file (`Options.history` is `None`) the action
-still runs.
+write nothing. With no history file (`Options.history` is `None`), or one
+that cannot be opened or written, the action still runs, and the redeem
+reply's `"recorded": false` says the row is missing; `mirqab quit` then
+prints `strings::QUIT_NOT_RECORDED` on stderr. Owner's decision on the
+review of PR #17 (2026-11-14): act and warn. The ruling's alternative,
+refusing every act while the history file cannot be opened, was not
+taken.
 
 **11. The command line.**
 `mirqab quit <pid|name> [-y] [--force] [--dry-run] [--json]`.
@@ -345,8 +359,9 @@ still runs.
 - Flow: call without `confirm`; print the `wouldDo` and `skipped` lines;
   `confirm::ask`; call again with the plan. `--dry-run` sends `dryRun` and
   exits 0. No terminal and no `-y`: exit 3 (005:52-59).
-- Exit 0 when every target is `done` or `gone`; 1 on `refused`, or when any
-  target `failed`.
+- Exit 0 when every target is `done` or `gone`; 1 on `refused`, when any
+  target `failed`, or when nothing was done and something was skipped
+  (refused or started since the confirmation; review of PR #17).
 - `CallError::Daemon` gains the reply's `data` (`cli.rs:16-19`, `:47-49`).
 - A new `CLI_COMMANDS` entry (strings.rs:19) drives help, `docs/cli.md` and
   the completions. Every printed line is a function in `strings.rs`, printed
@@ -452,6 +467,25 @@ The dialog is part 3. In part 2 the owner runs, on their own session:
   the host, as the inspector's D3 path assumes.
 - How `group.rs` places pid 900 (`login`, uid 0) in the session scope; the
   session-group test should be written against what the sampler returns.
+- Deferred from the review of PR #17 (D4): `systemctl --user kill` after
+  `stop --no-block` on a transient unit that is unloaded once stopped. The
+  unit may be gone before the `kill`; the command would then fail and
+  Force quit would report `failed` and exit 1 although the unit stopped.
+  To be settled by the owner's acceptance run (checklist 3h).
+
+#### Known limits (part 2)
+
+Written down by the review of PR #17 (K8); the fixes are deferred (D1):
+
+- `systemctl stop` also stops units tied to this one by `Requires=`,
+  `BindsTo=` or `PartOf=`; their processes are not in `wouldDo` and no
+  refusal sees them.
+- Quit of a service is `stop`, which runs `ExecStop=` and ends in SIGKILL
+  after `TimeoutStopSec`.
+- Session services (the session bus, the audio server) are not refused.
+- For a unit the refusals are checked at each resolution, but `systemctl`
+  acts on the unit by name: there is no pidfd and start-time binding at
+  the moment of the command, as there is for a signal.
 
 ### Page
 
@@ -558,11 +592,22 @@ times. A stub `pacman` answering `-Qo`.
 5. [x] CLI `apps`, `what`, `quit`; MCP `top_apps`, `what_is_process`
    (part 1 did `apps`, `what` and both MCP tools; part 2 `quit`).
 6. [ ] `crates/mirqab-view/src/tabs/apps.rs` (the view model and the tab's cards); `crates/mirqab-ui/src/tabs/apps/{mod,page,group_row,process_row,inspector,top_card}.rs` (part 3).
+   - Deferred from the review of PR #17 (D1): before the dialog offers
+     Quit on a service row, list the units a stop takes with it
+     (`systemctl --user show -p RequiredBy -p BoundBy -p ConsistsOf`, a
+     host-only read with a fixture answer), consider Quit as
+     `systemctl --user kill --signal=TERM` instead of `stop`, and a
+     deny-list for session services (the owner's call). "Known limits
+     (part 2)" writes the limit down meanwhile.
    - Deferred from the review of PR #16 (D5): session-scope group ids
      (`session:<sid>`) can be reused after a logout; the view model's row
      keys must not rely on them alone across frames.
 7. [ ] Focus tracking: `crates/mirqab-core/src/desktop/hyprland.rs` (event
    socket reader, active only while `apps` has a subscriber) (part 4).
+   - Deferred from the review of PR #17 (D2): the compositor probe's
+     connect is blocking; a frozen compositor with a full listen queue
+     holds one client thread (no lock). Make it non-blocking, which needs
+     a non-blocking connect std does not offer (new `unsafe` in `sys.rs`).
 8. [ ] Tests above (part 1 wrote the read side's).
    - Deferred from the review of PR #16 (D6): views on a re-subscribe
      with new params, their cleanup on unsubscribe, and two subscribers
@@ -787,7 +832,8 @@ with where it lives:
   (`crates/mirqab-core/src/act.rs:294`) takes a `Target { pid, start }`
   (`:67`) and a `&dyn Sender` (`:76`); `kill(1)` is gone. ESRCH at open,
   at the start-time check or at send is `ActError::Gone`, ENOSYS a
-  failure with `strings::ACT_NO_PIDFD`, with no fallback.
+  failure with `strings::ACT_NO_PIDFD`, with no fallback; EINVAL or
+  ENOENT (a thread id) a failure with `strings::act_not_leader`.
 - **Two senders.** `act::Real` signals through the pidfd and runs
   commands through `exec.rs`; `act::Recording` (`act.rs:114`) writes
   `TERM 2001 5010` and `RUN systemctl …` lines to memory and, when
@@ -806,18 +852,23 @@ with where it lives:
   `strings::refuse_*`.
 - **The compositor** is every process of the user whose `comm` is in
   `actions::COMPOSITORS` (`actions.rs:52`) plus, on the live machine only,
-  the `SO_PEERCRED` pid of each `wayland-*` socket in `$XDG_RUNTIME_DIR`
-  (`compositor_sockets`, `actions.rs:333`), read per resolution.
+  the `SO_PEERCRED` pid of each `wayland-*` socket in `$XDG_RUNTIME_DIR`,
+  else `run/user/<uid>` (`compositor_sockets`, `actions.rs:342`), read per
+  resolution; a probe that fails other than by ECONNREFUSED refuses the
+  action (review of PR #17).
 - **The caller** is the peer's pid, kept on the `Client`
   (`crates/mirqab-core/src/server.rs:661`); `MIRQAB_CALLER_PID` replaces
-  it when `MIRQAB_TEST=1` (`test_caller`, `server.rs:1386`). An
+  it when `MIRQAB_TEST=1` and the root is a fixture (`caller_for`,
+  `server.rs:1396`; on `/` the kernel's peer pid always wins). An
   unidentified caller (`REFUSE_NO_CALLER`) and a strict walk that fails
   refuse the action, dry run included.
 - **The strict walk.** `guard::ancestry_strict`
   (`crates/mirqab-core/src/guard.rs:37`) returns `WalkError::Unreadable`,
   `Loop` or `TooDeep`; the old quiet `ancestry` had no caller and is gone.
 - **Plans** (`crates/mirqab-core/src/plan.rs`): `make` and `redeem`
-  (`:98`, `:140`) take the boot-time clock; at most `MAX_PLANS` = 64,
+  (`:98`, `:140`) take the boot-time clock, read once per request by
+  `Actions` (`actions::Clock`; an unreadable clock fails the request with
+  `strings::ACT_NO_CLOCK` before anything is planned or redeemed); at most `MAX_PLANS` = 64,
   the oldest dropped; targets are `act::Target`; `redeem` returns the
   planned targets still there (`kept`) and the rest (`gone`).
 - **Resolution** (`resolve`, `actions.rs:491`). A pid: its `Tgid:` first
@@ -849,15 +900,20 @@ with where it lives:
   `action` (`actions.rs:814`): `action`, `target`, `caller` (pid and
   `comm`), `results` (pid, name, signal, `done|gone|failed|skipped`),
   and `unit` for a service. A dry run and a `needs-confirm` reply write
-  nothing; without a history file the action still runs.
+  nothing; without a history file, or with one that cannot be written,
+  the action still runs and the reply says `"recorded": false`
+  (`actions.rs:838`, `:867`).
 - **The CLI.** `crates/mirqab/src/quit.rs`: a number is a pid, anything
   else a name matched whole and ignoring case against `get apps` with no
   limit (`subject`, `quit.rs:115`); several matches are printed with
   their ids and pids and exit 1. The plan is printed under "This will
   quit:" or "This will force quit:" (`confirm::ask_with`,
   `crates/mirqab/src/confirm.rs:23`); a declined or unanswerable prompt
-  exits 3, as in `mcp-config`. Exit 1 on `refused` or when any target
-  failed. `CallError::Daemon` carries the reply's `data`
+  exits 3, as in `mcp-config`. With `--json` the list goes to stderr
+  and stdout holds the answer alone. Exit 1 on `refused`, when any target
+  failed, or when nothing was done and something was skipped
+  (`exit_after`, `quit.rs:246`); `recorded: false` prints
+  `strings::QUIT_NOT_RECORDED` on stderr. `CallError::Daemon` carries the reply's `data`
   (`crates/mirqab/src/cli.rs:20`). The `quit` entry of `CLI_COMMANDS`
   makes the help, `docs/cli.md` and the completions; `cli_positionals`
   now skips placeholders with capitals, so `PID|NAME` is not offered as
@@ -931,6 +987,68 @@ Deviations from the design, each with its reason:
   first branch (its cgroup is under `user@1000.service`).
 - **A single sub-uid pid** in a rootless container (5001) is refused as
   another user's process; the runtime hint of D4 is given for the group.
+- **The host's service, not the deepest one** (review of PR #17, K1).
+  The design took a process's unit from the deepest `.service` in its
+  cgroup. A process in a nested cgroup (a rootless container running its
+  own systemd, or a service's sub-cgroups) then named a unit of another
+  manager, and `systemctl --user stop` would have stopped the host's unit
+  of that name. `group::host_service` (`group.rs:129`) takes the first
+  unit under the user manager after its slices, and only if it is a
+  `.service`; a nested process is signalled by pid. A `service:` group is
+  stopped only when every member is in that host service.
+
+From the review of PR #17 (2026-11-14; the ruling kept 10 items, deferred
+4 and dropped the rest):
+
+- **K1, the host's service.** Above. Tests: `units_under_the_user_manager`
+  in `group.rs`; `a_nested_cgroup_never_names_a_host_service` in
+  `tests/actions.rs` (the libpod path's dry run is one `TERM 1300` entry
+  with no `run`; `outer.service/payload/inner.service` stops
+  `outer.service`).
+- **K2, `--json` keeps stdout clean.** `confirm::ask_with` takes
+  `to_stderr` (`crates/mirqab/src/confirm.rs:31`); `quit.rs:217` passes
+  `json_out`. Test: `tests/test-cli.sh` parses stdout of
+  `quit 2001 -y --json` alone with `jq -e`.
+- **K3, the test caller only on a fixture root.** `caller_for`
+  (`server.rs:1396`). Test: `the_test_caller_counts_only_on_a_fixture_root`.
+- **K4, the clock.** `sys::boottime` returns `io::Result`
+  (`sys.rs:108`); `Actions::with_clock` (`actions.rs:648`) and one reading
+  per request (`actions.rs:672`). Test:
+  `a_plan_expires_on_the_actions_clock_and_no_clock_acts_on_nothing`
+  (121 s expired, 119 s acts, an erroring clock fails with no plan).
+- **K5, a thread id's errno.** `open_error` maps ENOENT with EINVAL
+  (`act.rs:339`). Tests in `sys.rs`: a spawned thread's tid gives ENOENT
+  or EINVAL and this process's pid a pidfd; `peer_pid` of a socket pair
+  and `boottime`.
+- **K6, act and warn** (owner, 2026-11-14). `recorded` in the redeem
+  reply; `QUIT_NOT_RECORDED`; architecture §5.4 and decision 10. The
+  ruling's step 1, refusing every act while the history cannot be
+  opened, was not taken. Tests: `each_redeemed_plan_is_one_action_event`
+  (`recorded: true`), `an_act_without_a_history_says_it_was_not_recorded`
+  (`recorded: false`, the act recorded by the sender), and
+  `an_act_with_no_writable_history_runs_and_says_it_was_not_recorded` in
+  `protocol.rs` (a directory where the history file should be: history
+  off, a dry run lists, the confirmed act runs on the recording sender
+  and replies `recorded: false`).
+- **K7, the probe fails closed.** `compositor_sockets(dir)` and
+  `runtime_dir` (`actions.rs:342`, `:375`), the refusal at `:409`. Test:
+  `the_compositor_probe_skips_dead_sockets_and_fails_closed` (a live
+  listener gives this pid; after it is dropped the stale socket is
+  skipped; `.lock` and a regular file are ignored; a missing directory is
+  empty).
+- **K8, the limits of a unit.** The module doc of `actions.rs`, "Known
+  limits (part 2)" above, architecture §5.4. No test (text).
+- **K9, untested rules.** `act.rs`'s refusal test gains a kernel thread
+  that is otherwise the user's (4949) and the test process as the daemon,
+  each with its exact reason; `a_failed_stop_skips_the_kill` in
+  `tests/actions.rs` (a sender whose `systemctl` exits 1: one `failed`
+  entry with the `stop` argv, no `kill` run).
+- **K10, exit 1 when nothing was done.** `exit_after` (`quit.rs:246`);
+  the help text in `docs/cli.md`. Test:
+  `nothing_done_and_something_left_alone_is_a_failure` (five replies).
+- **Counts after the fixes.** `tests/actions.rs` 15, `protocol.rs` 19,
+  `mirqab-core` unit tests 51, `mirqab` 18, `mirqab-proto` 18,
+  `tests/test-cli.sh` 185 checks.
 
 ## Acceptance (part 2)
 

@@ -103,8 +103,9 @@ pub fn stdout_closed() -> bool {
 
 /// Time since boot, suspend included (CLOCK_BOOTTIME): a plan made before
 /// a suspend must not be live after it (plan 006). `Instant` stops while
-/// the machine sleeps.
-pub fn boottime() -> Duration {
+/// the machine sleeps. An error is returned, never a zero: a clock stuck
+/// at zero would keep every plan alive for ever (review of PR #17).
+pub fn boottime() -> std::io::Result<Duration> {
     let mut ts = libc::timespec {
         tv_sec: 0,
         tv_nsec: 0,
@@ -113,20 +114,21 @@ pub fn boottime() -> Duration {
     // CLOCK_BOOTTIME exists on every kernel mirqab runs on (2.6.39+).
     let rc = unsafe { libc::clock_gettime(libc::CLOCK_BOOTTIME, &mut ts) };
     if rc != 0 {
-        return Duration::ZERO;
+        return Err(std::io::Error::last_os_error());
     }
-    Duration::new(
+    Ok(Duration::new(
         ts.tv_sec.max(0) as u64,
         ts.tv_nsec.clamp(0, 999_999_999) as u32,
-    )
+    ))
 }
 
 /// A pidfd for `pid` (pidfd_open(2), Linux 5.3). It refers to that one
 /// process for as long as it is open, whatever pid the kernel hands out
 /// later, so a check made after opening it and a signal sent through it
 /// are about the same process (plan 006, decision 1). ESRCH: no such
-/// process; EINVAL: `pid` is a thread that leads no thread group; ENOSYS:
-/// a kernel before 5.3. The fd is close-on-exec, as every pidfd is.
+/// process; EINVAL (older kernels) or ENOENT (seen on 7.2): `pid` is a
+/// thread that leads no thread group; ENOSYS: a kernel before 5.3. The fd
+/// is close-on-exec, as every pidfd is.
 pub fn pidfd_open(pid: u32) -> std::io::Result<OwnedFd> {
     let pid =
         libc::pid_t::try_from(pid).map_err(|_| std::io::Error::from_raw_os_error(libc::EINVAL))?;
@@ -161,4 +163,38 @@ pub fn pidfd_signal(fd: BorrowedFd<'_>, signo: i32) -> std::io::Result<()> {
         return Err(std::io::Error::last_os_error());
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_thread_that_leads_no_group_has_no_pidfd() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let (stop_tx, stop_rx) = std::sync::mpsc::channel::<()>();
+        let t = std::thread::spawn(move || {
+            // SAFETY: gettid takes no arguments, cannot fail and touches no
+            // memory.
+            let tid = unsafe { libc::syscall(libc::SYS_gettid) };
+            tx.send(tid as u32).unwrap();
+            let _ = stop_rx.recv();
+        });
+        let tid = rx.recv().unwrap();
+        let err = pidfd_open(tid).expect_err("a thread id is not a process");
+        assert!(
+            matches!(err.raw_os_error(), Some(libc::ENOENT | libc::EINVAL)),
+            "{err:?}"
+        );
+        stop_tx.send(()).unwrap();
+        t.join().unwrap();
+        assert!(pidfd_open(std::process::id()).is_ok());
+    }
+
+    #[test]
+    fn the_peer_pid_and_the_boot_clock() {
+        let (a, _b) = UnixStream::pair().unwrap();
+        assert_eq!(peer_pid(&a).unwrap(), std::process::id());
+        assert!(boottime().unwrap() > Duration::ZERO);
+    }
 }

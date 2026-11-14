@@ -119,6 +119,25 @@ pub fn user_unit(cgroup: &str) -> Option<&str> {
         .copied()
 }
 
+/// The user service a process belongs to on the host, for `systemctl
+/// --user`: the first unit under the user manager once its slices are
+/// skipped, and only when that unit is a `.service`. A cgroup nested inside
+/// it (a rootless container running its own systemd,
+/// `…/libpod-<id>.scope/container/system.slice/dbus-broker.service`, or a
+/// service's own sub-cgroups) names units of another manager, never the
+/// host's: the deepest name would stop the wrong unit (review of PR #17).
+pub fn host_service(cgroup: &str) -> Option<&str> {
+    let parts: Vec<&str> = cgroup.split('/').collect();
+    let manager = parts
+        .iter()
+        .position(|p| p.starts_with("user@") && p.ends_with(".service"))?;
+    parts[manager + 1..]
+        .iter()
+        .find(|p| !p.ends_with(".slice"))
+        .copied()
+        .filter(|p| p.ends_with(".service"))
+}
+
 /// The deepest unit anywhere in a cgroup path, for the inspector.
 pub fn any_unit(cgroup: &str) -> Option<&str> {
     cgroup
@@ -526,6 +545,27 @@ mod tests {
             None
         );
         assert_eq!(user_unit("/system.slice/sshd.service"), None);
+        // The host's service, never one nested in it (review of PR #17).
+        let nested = format!(
+            "{u}/user.slice/libpod-{}.scope/container/system.slice/dbus-broker.service",
+            "c0ffee00".repeat(8)
+        );
+        assert_eq!(host_service(&nested), None);
+        assert_eq!(
+            host_service(&format!(
+                "{u}/app.slice/outer.service/payload/inner.service"
+            )),
+            Some("outer.service")
+        );
+        assert_eq!(
+            host_service(&format!(
+                "{u}/app.slice/app-org.example.Sync@autostart.service"
+            )),
+            Some("app-org.example.Sync@autostart.service")
+        );
+        assert_eq!(host_service(&format!("{u}/init.scope")), None);
+        assert_eq!(host_service(&format!("{u}/app.slice/app-x-1.scope")), None);
+        assert_eq!(host_service("/system.slice/sshd.service"), None);
         assert_eq!(any_unit("/system.slice/sshd.service"), Some("sshd.service"));
         // The unit name stays escaped; only ids taken from it are decoded.
         let escaped = format!("{u}/app.slice/app-flatpak-org.example.Two\\x2dWords-123.scope");

@@ -7,13 +7,17 @@
 //! gets the real sender.
 
 use mirqab_core::Root;
-use mirqab_core::act::{self, Recording};
+use mirqab_core::act::{self, Recording, Sender, Signal, Target};
+use mirqab_core::exec;
 use mirqab_core::history::History;
 use mirqab_core::proto::Code;
 use mirqab_core::samplers::apps::actions::{self, Action, Actions, Failure};
 use serde_json::{Value, json};
+use std::os::fd::OwnedFd;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 /// The fixture's caller: `python3` in a foot terminal, under zsh (3050),
 /// foot (3000), Hyprland (1050) and login (900).
@@ -483,6 +487,18 @@ fn each_redeemed_plan_is_one_action_event() {
     assert_eq!(e["caller"], json!({"pid": CALLER, "name": "python3"}));
     assert_eq!(pids(&e["results"]), [2001, 2000, 2010, 2011, 2012]);
     assert_eq!(e["results"][0]["result"], "done");
+    let v = confirm(
+        &a,
+        &root,
+        Action::Quit,
+        group(BROWSER),
+        plan(&a, &root, Action::Quit, group(BROWSER))["plan"]
+            .as_str()
+            .unwrap(),
+        Some(&history),
+    )
+    .unwrap();
+    assert_eq!(v["recorded"], true, "the row was written");
     assert_eq!(e["results"][0]["signal"], "TERM");
     let text = e.to_string();
     for private in ["--new-window", "/usr/lib/example-browser", "contentproc"] {
@@ -495,4 +511,174 @@ fn a_fixture_root_never_gets_the_real_sender() {
     // Whatever MIRQAB_TEST says: the choice reads the root only.
     assert!(!act::sender_for(&fixture("root-desktop")).is_real());
     assert!(act::sender_for(&Root::host()).is_real());
+}
+
+#[test]
+fn an_act_without_a_history_says_it_was_not_recorded() {
+    let root = fixture("root-desktop");
+    let (a, rec) = recorded();
+    let data = plan(&a, &root, Action::Quit, pid(7100));
+    let v = confirm(
+        &a,
+        &root,
+        Action::Quit,
+        pid(7100),
+        data["plan"].as_str().unwrap(),
+        None,
+    )
+    .unwrap();
+    assert_eq!(v["recorded"], false);
+    assert_eq!(rec.lines(), ["TERM 7100 34000"], "the act still ran");
+}
+
+#[test]
+fn a_nested_cgroup_never_names_a_host_service() {
+    // A rootless container running its own systemd: its dbus-broker.service
+    // is not the session's (review of PR #17).
+    let s = scratch("nested");
+    let cgroup = s.0.join("proc/1300/cgroup");
+    std::fs::write(
+        &cgroup,
+        format!(
+            "0::/user.slice/user-1000.slice/user@1000.service/user.slice/libpod-{}.scope/container/system.slice/dbus-broker.service\n",
+            "c0ffee00".repeat(8)
+        ),
+    )
+    .unwrap();
+    let (a, rec) = recorded();
+    let root = Root::new(&s.0);
+    let v = dry(&a, &root, pid(1300)).unwrap();
+    assert_eq!(
+        v["wouldDo"],
+        json!([{"signal": "TERM", "pid": 1300, "start": 2600, "name": "example-sync"}])
+    );
+    assert!(!v.to_string().contains("\"run\""), "no host service: {v}");
+    // A service's own sub-cgroup is that service, not the inner name.
+    std::fs::write(
+        &cgroup,
+        "0::/user.slice/user-1000.slice/user@1000.service/app.slice/outer.service/payload/inner.service\n",
+    )
+    .unwrap();
+    let v = dry(&a, &root, pid(1300)).unwrap();
+    assert_eq!(
+        v["wouldDo"][0]["run"],
+        json!([
+            "systemctl",
+            "--user",
+            "stop",
+            "--no-block",
+            "--",
+            "outer.service"
+        ])
+    );
+    assert!(rec.lines().is_empty());
+}
+
+/// A clock a test moves: seconds since boot, or an error when `u64::MAX`.
+fn test_clock(at: &Arc<AtomicU64>) -> actions::Clock {
+    let at = Arc::clone(at);
+    Arc::new(move || match at.load(Ordering::SeqCst) {
+        u64::MAX => Err(std::io::Error::other("no clock")),
+        s => Ok(Duration::from_secs(s)),
+    })
+}
+
+#[test]
+fn a_plan_expires_on_the_actions_clock_and_no_clock_acts_on_nothing() {
+    let root = fixture("root-desktop");
+    let at = Arc::new(AtomicU64::new(1000));
+    let rec = Arc::new(Recording::default());
+    let a = Actions::with_clock(rec.clone(), test_clock(&at));
+    let data = plan(&a, &root, Action::Quit, pid(7100));
+    at.store(1000 + 121, Ordering::SeqCst);
+    let f = confirm(
+        &a,
+        &root,
+        Action::Quit,
+        pid(7100),
+        data["plan"].as_str().unwrap(),
+        None,
+    )
+    .unwrap_err();
+    assert_eq!(f.code, Code::BadRequest);
+    assert_eq!(f.message, mirqab_core::proto::strings::PLAN_EXPIRED);
+    assert!(rec.lines().is_empty());
+
+    let data = plan(&a, &root, Action::Quit, pid(7100));
+    at.store(1121 + 119, Ordering::SeqCst);
+    let v = confirm(
+        &a,
+        &root,
+        Action::Quit,
+        pid(7100),
+        data["plan"].as_str().unwrap(),
+        None,
+    )
+    .unwrap();
+    assert_eq!(pids(&v["done"]), [7100]);
+
+    at.store(u64::MAX, Ordering::SeqCst);
+    let fresh = Actions::with_clock(rec.clone(), test_clock(&at));
+    let f = fresh
+        .handle(&root, &ask(Action::Quit, json!({"args": pid(7100)})), None)
+        .unwrap_err();
+    assert_eq!(f.code, Code::Failed);
+    assert_eq!(fresh.live_plans(), 0);
+    assert_eq!(rec.lines().len(), 1, "only the one confirmed above");
+}
+
+/// A sender whose commands all fail: `systemctl` exits 1.
+#[derive(Default)]
+struct Failing {
+    runs: Mutex<Vec<String>>,
+}
+
+impl Sender for Failing {
+    fn is_real(&self) -> bool {
+        false
+    }
+    fn open(&self, _pid: u32) -> std::io::Result<Option<OwnedFd>> {
+        Ok(None)
+    }
+    fn send(&self, _h: Option<&OwnedFd>, _t: Target, _s: Signal) -> std::io::Result<()> {
+        Ok(())
+    }
+    fn run(&self, argv: &[&str], _timeout: Duration) -> Result<exec::Output, String> {
+        self.runs.lock().unwrap().push(argv.join(" "));
+        Ok(exec::Output {
+            status: Some(1),
+            stdout: String::new(),
+            stderr: "boom".into(),
+        })
+    }
+}
+
+#[test]
+fn a_failed_stop_skips_the_kill() {
+    let root = fixture("root-desktop");
+    let sender = Arc::new(Failing::default());
+    let a = Actions::new(sender.clone());
+    let data = plan(&a, &root, Action::Kill, pid(1300));
+    let v = confirm(
+        &a,
+        &root,
+        Action::Kill,
+        pid(1300),
+        data["plan"].as_str().unwrap(),
+        None,
+    )
+    .unwrap();
+    assert_eq!(v["done"], json!([]));
+    let failed = v["failed"].as_array().unwrap();
+    assert_eq!(failed.len(), 1);
+    assert_eq!(
+        failed[0]["run"],
+        json!(["systemctl", "--user", "stop", "--no-block", "--", SYNC])
+    );
+    assert_eq!(failed[0]["error"], "boom");
+    assert_eq!(
+        sender.runs.lock().unwrap().len(),
+        1,
+        "no kill after a failed stop"
+    );
 }

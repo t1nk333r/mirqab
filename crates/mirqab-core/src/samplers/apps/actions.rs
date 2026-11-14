@@ -16,14 +16,19 @@
 //! else waits on them. Group ids do not depend on desktop entries, so the
 //! walk groups without them.
 //!
-//! Refused (decision 5, checked here and again inside `act::signal` just
-//! before each signal): pid 1, the daemon, another uid on any of the four
-//! `Uid:` numbers, kernel threads, anything outside the user's slice, the
-//! user manager, the compositor and its parents, the caller and its
-//! parents. A group leaves its refused members out and lists them under
-//! `skipped`; it is refused only when nothing is left. A user service is
-//! stopped with `systemctl --user stop --no-block`, so it does not
-//! restart; a unit that holds a refused process is not stopped.
+//! Refused (decision 5): pid 1, the daemon, another uid on any of the
+//! four `Uid:` numbers, kernel threads, anything outside the user's slice,
+//! the user manager, the compositor and its parents, the caller and its
+//! parents. For a signal the refusals are checked at each resolution and
+//! again inside `act::signal`, just before the signal, through the pidfd.
+//! A group leaves its refused members out and lists them under `skipped`;
+//! it is refused only when nothing is left. A user service (the first unit
+//! under the user manager, never one nested in it) is stopped with
+//! `systemctl --user stop --no-block`, so it does not restart; for a unit
+//! the refusals are checked at each resolution, and `systemctl` then acts
+//! on the unit by name, with no pidfd behind it. A unit that holds a
+//! refused process is not stopped. Units tied to it (`Requires=`,
+//! `BindsTo=`, `PartOf=`) stop with it and are seen by no refusal.
 
 use super::desktop::Desktop;
 use super::group::{self, Kind};
@@ -39,7 +44,7 @@ use crate::sys;
 use serde_json::{Value, json};
 use std::os::unix::fs::FileTypeExt;
 use std::os::unix::net::UnixStream;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -328,17 +333,21 @@ fn own_uid(root: &Root) -> u32 {
 }
 
 /// The compositor's pids on the live machine: the listener of each
-/// `wayland-*` socket in the runtime directory, by `SO_PEERCRED`. Read at
-/// plan time and again at redeem; never polled.
-fn compositor_sockets() -> Vec<u32> {
-    let Some(dir) = std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from) else {
-        return Vec::new();
-    };
-    let Ok(entries) = std::fs::read_dir(&dir) else {
-        return Vec::new();
+/// `wayland-*` socket in `dir` (the runtime directory), by `SO_PEERCRED`.
+/// Read at plan time and again at redeem; never polled. It fails closed
+/// (review of PR #17): a socket nobody listens on (ECONNREFUSED, left by a
+/// compositor that died) is skipped, but any other connect or `peer_pid`
+/// error, or a directory that cannot be read, is an error naming it. A
+/// directory that does not exist has no compositor (a tty, a server).
+fn compositor_sockets(dir: &Path) -> Result<Vec<u32>, String> {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(format!("{}: {e}", dir.display())),
     };
     let mut out = Vec::new();
-    for e in entries.flatten() {
+    for e in entries {
+        let e = e.map_err(|err| format!("{}: {err}", dir.display()))?;
         let name = e.file_name();
         let name = name.to_string_lossy();
         if !name.starts_with("wayland-") || name.ends_with(".lock") {
@@ -347,15 +356,27 @@ fn compositor_sockets() -> Vec<u32> {
         if !e.file_type().is_ok_and(|t| t.is_socket()) {
             continue;
         }
-        if let Some(pid) = UnixStream::connect(e.path())
-            .ok()
-            .and_then(|s| sys::peer_pid(&s).ok())
-            && !out.contains(&pid)
-        {
+        let path = e.path();
+        let stream = match UnixStream::connect(&path) {
+            Ok(s) => s,
+            Err(err) if err.kind() == std::io::ErrorKind::ConnectionRefused => continue,
+            Err(err) => return Err(format!("{}: {err}", path.display())),
+        };
+        let pid = sys::peer_pid(&stream).map_err(|err| format!("{}: {err}", path.display()))?;
+        if !out.contains(&pid) {
             out.push(pid);
         }
     }
-    out
+    Ok(out)
+}
+
+/// The runtime directory the compositor's sockets are in:
+/// `$XDG_RUNTIME_DIR`, else `run/user/<uid>` under the (live) root.
+fn runtime_dir(root: &Root, own_uid: u32) -> Option<PathBuf> {
+    std::env::var_os("XDG_RUNTIME_DIR")
+        .filter(|d| !d.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| root.path(&format!("run/user/{own_uid}")).ok())
 }
 
 /// The guard for one resolution: the daemon, the compositor and its
@@ -381,8 +402,12 @@ fn make_guard(
         .filter(|p| p.info.uid == Some(own_uid) && COMPOSITORS.contains(&p.stat.comm.as_str()))
         .map(Proc::pid)
         .collect();
-    if root.is_host() {
-        for pid in compositor_sockets() {
+    if root.is_host()
+        && let Some(dir) = runtime_dir(root, own_uid)
+    {
+        let found = compositor_sockets(&dir)
+            .map_err(|why| Failure::new(Code::Refused, strings::refuse_compositor_unknown(&why)))?;
+        for pid in found {
             if !compositors.contains(&pid) {
                 compositors.push(pid);
             }
@@ -451,7 +476,7 @@ fn unit_step(root: &Root, guard: &Guard, procs: &[Proc], unit: &str) -> Result<S
     let mut members: Vec<usize> = procs
         .iter()
         .enumerate()
-        .filter(|(_, p)| p.info.cgroup.as_deref().and_then(group::user_unit) == Some(unit))
+        .filter(|(_, p)| service_of(p) == Some(unit))
         .map(|(i, _)| i)
         .collect();
     members = ordered(procs, &members);
@@ -480,11 +505,7 @@ fn unit_step(root: &Root, guard: &Guard, procs: &[Proc], unit: &str) -> Result<S
 
 /// The service unit a process is stopped through, when it is in one.
 fn service_of(p: &Proc) -> Option<&str> {
-    p.info
-        .cgroup
-        .as_deref()
-        .and_then(group::user_unit)
-        .filter(|u| u.ends_with(".service"))
+    p.info.cgroup.as_deref().and_then(group::host_service)
 }
 
 /// What `subject` resolves to now, from a fresh walk.
@@ -554,7 +575,12 @@ fn resolve(root: &Root, subject: &Subject, caller: Option<u32>) -> Result<Resolu
                     strings::refuse_container(short, runtime),
                 ));
             }
-            let unit = g.unit.as_deref().filter(|u| u.ends_with(".service"));
+            // A unit only when every member is in that host service; any
+            // other group is signalled by pid (review of PR #17).
+            let unit = g
+                .unit
+                .as_deref()
+                .filter(|u| g.members.iter().all(|&i| service_of(&procs[i]) == Some(*u)));
             if let (Kind::Service, Some(unit)) = (g.kind, unit) {
                 steps.push(unit_step(root, &guard, &procs, unit)?);
             } else {
@@ -603,17 +629,27 @@ fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|p| p.into_inner())
 }
 
-/// The daemon's actions on apps: the plans and the sender.
+/// The clock plans are made and expire on: the boot-time clock, or a test's.
+pub type Clock = Arc<dyn Fn() -> std::io::Result<Duration> + Send + Sync>;
+
+/// The daemon's actions on apps: the plans, the sender and the clock.
 pub struct Actions {
     plans: Mutex<Plans>,
     sender: Arc<dyn Sender>,
+    clock: Clock,
 }
 
 impl Actions {
     pub fn new(sender: Arc<dyn Sender>) -> Self {
+        Self::with_clock(sender, Arc::new(sys::boottime))
+    }
+
+    /// `new` with another clock (tests move it past a plan's expiry).
+    pub fn with_clock(sender: Arc<dyn Sender>, clock: Clock) -> Self {
         Actions {
             plans: Mutex::new(Plans::new()),
             sender,
+            clock,
         }
     }
 
@@ -624,13 +660,16 @@ impl Actions {
 
     /// Answers one parsed request: the `wouldDo` of a dry run, a
     /// `needs-confirm` failure with a new plan, or what was done. Each
-    /// redeemed plan is written to `history` as one `action` event.
+    /// redeemed plan is written to `history` as one `action` event, and the
+    /// reply's `recorded` says whether it was. The clock is read once,
+    /// first: without it nothing is planned or redeemed (review of PR #17).
     pub fn handle(
         &self,
         root: &Root,
         ask: &Ask,
         history: Option<&Mutex<History>>,
     ) -> Result<Value, Failure> {
+        let now = (self.clock)().map_err(|_| Failure::new(Code::Failed, strings::ACT_NO_CLOCK))?;
         let res = match resolve(root, &ask.subject, ask.caller) {
             Ok(r) => r,
             Err(f) => {
@@ -642,7 +681,7 @@ impl Actions {
                         ask.action.name(),
                         &ask.subject.to_value(),
                         &[],
-                        sys::boottime(),
+                        now,
                     );
                 }
                 return Err(f);
@@ -656,7 +695,7 @@ impl Actions {
                 ask.action.name(),
                 ask.subject.to_value(),
                 res.targets(),
-                sys::boottime(),
+                now,
             );
             return Err(Failure {
                 code: Code::NeedsConfirm,
@@ -668,7 +707,7 @@ impl Actions {
                 })),
             });
         };
-        self.redeem(root, ask, id, res, history)
+        self.redeem(root, ask, id, res, history, now)
     }
 
     fn redeem(
@@ -678,6 +717,7 @@ impl Actions {
         id: &str,
         res: Resolution,
         history: Option<&Mutex<History>>,
+        now: Duration,
     ) -> Result<Value, Failure> {
         let current = res.targets();
         let redeemed = lock(&self.plans)
@@ -686,7 +726,7 @@ impl Actions {
                 ask.action.name(),
                 &ask.subject.to_value(),
                 &current,
-                sys::boottime(),
+                now,
             )
             .map_err(|e| match e {
                 PlanError::Unknown => Failure::new(Code::BadRequest, strings::PLAN_UNKNOWN),
@@ -793,6 +833,9 @@ impl Actions {
                 }
             }
         }
+        // The act ran; whether its row was written is said, never hidden
+        // (plan 005 rule 5; owner, 2026-11-14: act and warn).
+        let mut recorded = false;
         if let Some(h) = history {
             let caller = ask.caller.map(|pid| {
                 let name = act::facts(root, pid).map(|f| f.comm);
@@ -811,8 +854,9 @@ impl Actions {
                 .duration_since(UNIX_EPOCH)
                 .map(|d| d.as_secs() as i64)
                 .unwrap_or(0);
-            if let Err(e) = lock(h).add_event(ts, "action", &data) {
-                crate::server::log(&format!("history: the action was not recorded: {e}"));
+            match lock(h).add_event(ts, "action", &data) {
+                Ok(()) => recorded = true,
+                Err(e) => crate::server::log(&format!("history: the action was not recorded: {e}")),
             }
         }
         Ok(json!({
@@ -820,6 +864,7 @@ impl Actions {
             "gone": gone,
             "failed": failed,
             "skipped": skipped.iter().map(Skip::to_value).collect::<Vec<_>>(),
+            "recorded": recorded,
         }))
     }
 }
@@ -858,6 +903,23 @@ mod tests {
         assert_eq!(a.redeem.as_deref(), Some("plan-1"));
         let a = p(json!({"args": {"pid": 7}, "plan": "plan-1"})).unwrap();
         assert_eq!(a.redeem, None, "a plan without confirm: true does not act");
+    }
+
+    #[test]
+    fn the_compositor_probe_skips_dead_sockets_and_fails_closed() {
+        // Under /tmp, not $TMPDIR: a socket path must stay under 108 bytes.
+        let d = PathBuf::from("/tmp").join(format!("mqw-{}", std::process::id()));
+        let _ = act::remove_path(&d, false);
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(d.join("wayland-9.lock"), "").unwrap();
+        std::fs::write(d.join("wayland-8"), "not a socket").unwrap();
+        let listener = std::os::unix::net::UnixListener::bind(d.join("wayland-9")).unwrap();
+        assert_eq!(compositor_sockets(&d), Ok(vec![std::process::id()]));
+        drop(listener);
+        assert!(d.join("wayland-9").exists(), "the socket file stays");
+        assert_eq!(compositor_sockets(&d), Ok(vec![]), "nobody listens");
+        assert_eq!(compositor_sockets(&d.join("missing")), Ok(vec![]));
+        let _ = act::remove_path(&d, false);
     }
 
     #[test]

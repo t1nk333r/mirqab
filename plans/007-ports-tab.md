@@ -209,6 +209,10 @@ place of `getifaddrs` when under a fixture root).
      since plan 006 part 2; the MCP server's connection and `kill_port`
      use it here, and every act through MCP adds `"via": "mcp"` to its
      `action` event;
+   - Deferred from the review of PR #17 (D3): with that change of the
+     `action` row's shape, write an intent row before the act (so a crash
+     mid-batch leaves a trace) and put each target's `start` and the plan
+     id in the row;
    - plan 005's acceptance 3 repeated through MCP (`kill_port` called
      twice, a recording sender, no real signal);
    - a unit test that every tool's description leads with its side

@@ -334,7 +334,9 @@ fn open_error(pid: u32, e: &std::io::Error) -> ActError {
     match e.raw_os_error() {
         Some(libc::ESRCH) => ActError::Gone(strings::act_gone(pid)),
         Some(libc::ENOSYS) => ActError::Failed(strings::ACT_NO_PIDFD.to_string()),
-        Some(libc::EINVAL) => ActError::Failed(strings::act_not_leader(pid)),
+        // A thread that leads no thread group: EINVAL on older kernels,
+        // ENOENT on 7.2 (review of PR #17).
+        Some(libc::EINVAL | libc::ENOENT) => ActError::Failed(strings::act_not_leader(pid)),
         _ => ActError::Failed(e.to_string()),
     }
 }
@@ -500,6 +502,10 @@ mod tests {
                     "/user.slice/user-1000.slice/user@1000.service/init.scope",
                 ),
                 (4848, "parent", 0, [1000; 4], app),
+                // Everything else the user's: only the flag refuses it.
+                (4949, "kthreadish", 0x0020_0000, [1000; 4], app),
+                // The test process itself stands for the daemon.
+                (std::process::id(), "daemon", 0, [1000; 4], app),
             ],
         );
         let root = Root::new(&d);
@@ -519,17 +525,13 @@ mod tests {
         for pid in [1, 4343, 4444, 4545, 4646, 4747, 4848] {
             assert!(refused(pid), "{pid} is refused");
         }
-        assert!(matches!(
-            signal(
-                &root,
-                &rec,
-                &guard,
-                t(std::process::id()),
-                Signal::Term,
-                false
-            ),
-            Err(ActError::Refused(_) | ActError::Gone(_))
-        ));
+        let reason = |pid: u32| match signal(&root, &rec, &guard, t(pid), Signal::Term, false) {
+            Err(ActError::Refused(why)) => why,
+            other => panic!("{pid}: {other:?}"),
+        };
+        assert_eq!(reason(4949), strings::refuse_kernel(4949));
+        let me = std::process::id();
+        assert_eq!(reason(me), strings::refuse_daemon(me));
         assert!(matches!(
             signal(&root, &rec, &guard, t(9999), Signal::Term, false),
             Err(ActError::Gone(_))

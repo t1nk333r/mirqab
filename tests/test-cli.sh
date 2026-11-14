@@ -148,6 +148,13 @@ status_is "quit -y exits 0" 0 "$STATUS"
 like "and says what it sent" "$OUTPUT" "sent TERM to 2001 browser"
 is "the recording has the signal and the start time" "TERM 2001 5010" "$(act_log)"
 : >"$MIRQAB_ACT_LOG"
+# With --json, stdout holds the answer alone; the list goes to stderr.
+code=0
+out="$("$BIN/mirqab" quit 2001 -y --json 2>/dev/null)" || code=$?
+status_is "quit -y --json exits 0" 0 "$code"
+jq -e '.done[0].pid == 2001 and .recorded == true' <<<"$out" >/dev/null && ok || not_ok "quit -y --json prints only the result on stdout" "$out"
+is "and the recording has the signal" "TERM 2001 5010" "$(act_log)"
+: >"$MIRQAB_ACT_LOG"
 capture "$BIN/mirqab" quit 7100 -y --force
 status_is "quit --force exits 0" 0 "$STATUS"
 is "--force sends KILL" "KILL 7100 34000" "$(act_log)"

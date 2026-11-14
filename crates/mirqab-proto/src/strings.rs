@@ -100,7 +100,7 @@ pub const CLI_COMMANDS: &[CliCommand] = &[
             "quit PID|NAME [-y] [--force] [--dry-run] [--json]",
             "quit an app or a process, after asking",
         )],
-        help: "Asks a process to quit (SIGTERM), or with --force ends it (SIGKILL). A number is a pid; anything else is an app's name as mirqab apps shows it, matched whole and ignoring case, and quits every process of that app, its main process first. A user service is stopped with systemctl --user, so it does not restart. It prints what it will do and asks; -y goes ahead without asking; without a terminal and without -y it does nothing and exits 3; --dry-run prints the list and stops. Never signalled: pid 1, another user's processes, the daemon, the session's compositor, your user manager, and the program asking and its parents.",
+        help: "Asks a process to quit (SIGTERM), or with --force ends it (SIGKILL). A number is a pid; anything else is an app's name as mirqab apps shows it, matched whole and ignoring case, and quits every process of that app, its main process first. A user service is stopped with systemctl --user, so it does not restart. It prints what it will do and asks; -y goes ahead without asking; without a terminal and without -y it does nothing and exits 3; --dry-run prints the list and stops. With --json the list goes to stderr and stdout holds the daemon's answer. It exits 1 when anything failed, or when nothing was done because everything was left alone; a process that had already exited counts as done. Never signalled: pid 1, another user's processes, the daemon, the session's compositor, your user manager, and the program asking and its parents.",
     },
     CliCommand {
         name: "bar",
@@ -1350,6 +1350,14 @@ pub fn walk_loop(pid: u32) -> String {
 
 pub fn walk_too_deep(depth: usize) -> String {
     format!("more than {depth} parents")
+}
+
+pub const ACT_NO_CLOCK: &str = "the boot-time clock cannot be read, so no plan is made or used";
+pub const QUIT_NOT_RECORDED: &str =
+    "mirqab: done, but not recorded: the daemon could not write this action to its history";
+
+pub fn refuse_compositor_unknown(why: &str) -> String {
+    format!("the session's compositor cannot be told ({why}), so nothing is signalled")
 }
 
 pub const ACT_DRY_RUN_BOOL: &str = "dryRun must be true or false";
