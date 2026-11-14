@@ -479,6 +479,12 @@ pub fn refusal(root: &Root, guard: &Guard, pid: u32, facts: &Facts) -> Option<St
     if let Some(unit) = group::host_service(&cgroup).filter(|u| guard::is_session_bus(u)) {
         return Some(strings::refuse_session_bus(pid, unit));
     }
+    // And by command name, read now with the rest of `facts`: a bus run
+    // by `dbus-run-session` is in no bus unit (owner, 2026-11-14, part 4
+    // Q1).
+    if guard::is_session_bus_comm(&facts.comm) {
+        return Some(strings::refuse_session_bus_comm(pid, &facts.comm));
+    }
     guard
         .refused
         .iter()
@@ -931,6 +937,27 @@ mod tests {
                     [1000; 4],
                     &format!("{user}/session.slice/pipewire.service"),
                 ),
+                (
+                    4646,
+                    "dbus-daemon",
+                    0,
+                    [1000; 4],
+                    &format!("{user}/app.slice/app-Hyprland-test-1.scope"),
+                ),
+                (
+                    4747,
+                    "dbus-broker-lau",
+                    0,
+                    [1000; 4],
+                    "/user.slice/user-1000.slice/session-2.scope",
+                ),
+                (
+                    4848,
+                    "dbus-broker",
+                    0,
+                    [1000; 4],
+                    &format!("{user}/app.slice/app-Hyprland-test-2.scope"),
+                ),
             ],
         );
         let root = Root::new(&d);
@@ -949,6 +976,21 @@ mod tests {
             assert_eq!(
                 signal(&root, &rec, &guard, t(pid), Signal::Term, false),
                 Err(ActError::Refused(strings::refuse_session_bus(pid, unit)))
+            );
+        }
+        assert!(rec.lines().is_empty());
+        // A private bus outside any bus unit, by command name: through
+        // `signal`, so after the pidfd step, as every refusal.
+        for (pid, comm) in [
+            (4646, "dbus-daemon"),
+            (4747, "dbus-broker-lau"),
+            (4848, "dbus-broker"),
+        ] {
+            assert_eq!(
+                signal(&root, &rec, &guard, t(pid), Signal::Term, false),
+                Err(ActError::Refused(strings::refuse_session_bus_comm(
+                    pid, comm
+                )))
             );
         }
         assert!(rec.lines().is_empty());

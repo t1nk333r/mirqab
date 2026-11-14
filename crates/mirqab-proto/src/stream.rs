@@ -253,6 +253,11 @@ pub struct AppsData {
     pub totals: AppsTotals,
     /// The order in force: `cpu`, `mem` or `name`.
     pub sort: String,
+    /// The focus source the `idleHeavy` tags come from (`hyprland`);
+    /// absent when there is none, so a reader can tell "not tagged" from
+    /// "cannot be tagged" (plan 006, part 4).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub focus: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -288,6 +293,11 @@ pub struct AppGroup {
     /// Every member, only in the groups a subscriber expanded.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub processes: Option<Vec<AppProcess>>,
+    /// "Idle but heavy": at least 20 % of one core on average over a full
+    /// five minutes in which none of its processes had focus (plan 006,
+    /// part 4). Only while a focus source runs; absent when false.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub idle_heavy: bool,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]

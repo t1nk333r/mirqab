@@ -57,6 +57,24 @@ pub fn ancestry_strict(root: &Root, pid: u32) -> Result<Vec<u32>, WalkError> {
 /// where `dbus.service` is only its alias (review of PR #18).
 pub const SESSION_BUS: &[&str] = &["dbus.service", "dbus-broker.service", "dbus-daemon.service"];
 
+/// The session bus by command name (owner, 2026-11-14, part 4 Q1): a
+/// bus started by `dbus-run-session` or `dbus-launch` is in no bus unit,
+/// and ending it ends whatever runs on it, so these processes of the user
+/// are never signalled whatever unit they are in.
+pub const SESSION_BUS_COMMS: &[&str] = &["dbus-daemon", "dbus-broker", "dbus-broker-launch"];
+
+/// Whether a process named `comm` is a session bus. The kernel cuts a
+/// command name to 15 bytes, so `dbus-broker-launch` runs as
+/// `dbus-broker-lau`.
+pub fn is_session_bus_comm(comm: &str) -> bool {
+    SESSION_BUS_COMMS
+        .iter()
+        .any(|n| comm == *n || (n.len() > COMM_MAX && n.get(..COMM_MAX) == Some(comm)))
+}
+
+/// TASK_COMM_LEN − 1.
+const COMM_MAX: usize = 15;
+
 /// Services Quit may stop, with a warning in the confirmation: the sound
 /// server and the desktop portals come back on next use, and stopping a
 /// stuck one is a real use (owner, 2026-11-14, plan 006 Q2).
@@ -120,6 +138,16 @@ mod tests {
         assert!(is_session_bus("dbus-daemon.service"));
         assert!(!is_session_bus("dbus.socket"));
         assert!(!is_session_bus("dbus-broker-launch.service"));
+        for c in [
+            "dbus-daemon",
+            "dbus-broker",
+            "dbus-broker-launch",
+            "dbus-broker-lau",
+        ] {
+            assert!(is_session_bus_comm(c), "{c}");
+        }
+        assert!(!is_session_bus_comm("dbus-monitor"));
+        assert!(!is_session_bus_comm("dbus"));
         for u in [
             "pipewire.service",
             "pipewire-pulse.service",

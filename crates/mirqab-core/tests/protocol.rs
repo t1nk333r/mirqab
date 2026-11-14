@@ -4,7 +4,10 @@
 //! interface's `ui` stream; config.set; and a flooding client is dropped.
 //! Plan 006 (D6): a re-subscribe replaces a view and leaves no old one
 //! behind, an unsubscribe removes it, two subscribers that differ only in
-//! interval share one line; and the `process` stream.
+//! interval share one line; and the `process` stream. Part 4: the minute
+//! writer writes a sampler's events; a `get apps` and an `apps.inspect`
+//! whose `pacman` takes 2 s no longer hold a subscriber's frame back
+//! (D1); `status.focus` is null without a focus source.
 
 use mirqab_core::proto::{Request, ServerFrame, frame};
 use mirqab_core::root::Root;
@@ -58,6 +61,9 @@ impl Sampler for Counted {
     fn idle(&mut self) {
         self.idle += 1;
     }
+    fn status(&self) -> Vec<(&'static str, Value)> {
+        vec![("counted_idle", json!(self.idle))]
+    }
     fn view(&self) -> Option<mirqab_core::sampler::View> {
         Some(|data, params| json!({"n": data["n"], "idle": data["idle"], "params": params}))
     }
@@ -100,6 +106,7 @@ fn start(name: &str) -> Daemon {
         config_path: dir.join("config/mirqab/config.json"),
         samplers: vec![Box::new(Fake), Box::<Counted>::default(), Box::new(Missing)],
         history: None,
+        minute_period: None,
     })
     .expect("listens");
     std::thread::spawn(move || server.serve());
@@ -760,6 +767,7 @@ fn an_act_with_no_writable_history_runs_and_says_it_was_not_recorded() {
         config_path: dir.join("config.json"),
         samplers: Vec::new(),
         history: Some(history),
+        minute_period: None,
     })
     .expect("listens with history off");
     std::thread::spawn(move || server.serve());
@@ -853,6 +861,7 @@ fn a_sample_is_stamped_after_it_got_the_sampler() {
         config_path: dir.join("config/mirqab/config.json"),
         samplers: vec![Box::new(Clocked(std::sync::Arc::clone(&log)))],
         history: None,
+        minute_period: None,
     })
     .expect("listens");
     std::thread::spawn(move || server.serve());
@@ -1038,9 +1047,232 @@ fn a_stream_left_without_subscribers_is_told_before_its_next_sample() {
     c.call("subscribe", Some("counted"), json!({})).unwrap();
     assert_eq!(c.event("counted").unwrap()["idle"], 0);
     c.call("unsubscribe", Some("counted"), Value::Null).unwrap();
-    // The loop wakes on the unsubscribe and finds no subscriber.
-    std::thread::sleep(Duration::from_millis(300));
+    // The loop wakes on the unsubscribe, finds no subscriber and tells
+    // the sampler then, before anyone subscribes again: a focus source
+    // must not outlive the page (review of PR #20). Seen through status.
+    let until = Instant::now() + Duration::from_secs(1);
+    loop {
+        let n = c.call("status", None, Value::Null).unwrap()["counted_idle"].clone();
+        if n == 1 {
+            break;
+        }
+        assert!(Instant::now() < until, "idle not called yet: {n}");
+        std::thread::sleep(Duration::from_millis(20));
+    }
     c.call("subscribe", Some("counted"), json!({})).unwrap();
     assert_eq!(c.event("counted").unwrap()["idle"], 1, "one call");
     assert_eq!(c.event("counted").unwrap()["idle"], 1, "and only one");
+}
+
+/// A stream whose minute writes one event naming the config it was given.
+struct Minuter;
+impl Sampler for Minuter {
+    fn stream(&self) -> &'static str {
+        "minuter"
+    }
+    fn probe(&mut self, _root: &Root) -> Result<(), String> {
+        Ok(())
+    }
+    fn sample(&mut self, _root: &Root, _now: Instant) -> Value {
+        Value::Null
+    }
+    fn minute_events(&mut self, _root: &Root, config: &Value) -> Vec<(&'static str, Value)> {
+        vec![("top-apps", json!({"topApps": config["trends"]["topApps"]}))]
+    }
+}
+
+/// A daemon on root-desktop with these samplers, a history file when
+/// `history`, and the minute writer's period.
+fn start_with(
+    name: &str,
+    samplers: Vec<Box<dyn Sampler>>,
+    history: bool,
+    minute: Option<Duration>,
+) -> Daemon {
+    let dir = PathBuf::from("/tmp").join(format!("mqp-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let socket = dir.join("run/daemon.sock");
+    let server = server::listen(Options {
+        socket: socket.clone(),
+        root: Root::new(fixture("root-desktop")),
+        config_path: dir.join("config/mirqab/config.json"),
+        samplers,
+        history: history.then(|| dir.join("history.db")),
+        minute_period: minute,
+    })
+    .expect("listens");
+    std::thread::spawn(move || server.serve());
+    Daemon { socket, dir }
+}
+
+#[test]
+fn the_minute_writer_writes_a_samplers_events() {
+    let d = start_with(
+        "events",
+        vec![Box::new(Minuter)],
+        true,
+        Some(Duration::from_secs(1)),
+    );
+    let mut c = Client::connect(&d);
+    c.hello();
+    let until = Instant::now() + Duration::from_secs(5);
+    let rows = loop {
+        let rows = c
+            .call("history.events", None, json!({"kind": "top-apps"}))
+            .unwrap();
+        if rows.as_array().is_some_and(|r| !r.is_empty()) || Instant::now() > until {
+            break rows;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    };
+    let first = &rows[0];
+    assert_eq!(first["kind"], "top-apps", "{rows}");
+    assert_eq!(
+        first["data"],
+        json!({"topApps": true}),
+        "the effective config"
+    );
+    // The fixture's `apps` writes none: nothing on it reaches 10 %.
+    assert!(
+        rows.as_array()
+            .unwrap()
+            .iter()
+            .all(|r| r["data"] == json!({"topApps": true})),
+        "{rows}"
+    );
+    // Turned off, the sampler is told so.
+    c.call(
+        "config.set",
+        None,
+        json!({"key": "trends.topApps", "value": false}),
+    )
+    .unwrap();
+    let until = Instant::now() + Duration::from_secs(5);
+    loop {
+        let rows = c
+            .call("history.events", None, json!({"kind": "top-apps"}))
+            .unwrap();
+        if rows
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|r| r["data"] == json!({"topApps": false}))
+        {
+            break;
+        }
+        assert!(Instant::now() < until, "{rows}");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+/// The gaps between `n` consecutive `stream` events, with `busy` called
+/// between reads from another client.
+fn gaps(sub: &mut Client, stream: &str, n: usize) -> Vec<Duration> {
+    let mut last = None;
+    let mut out = Vec::new();
+    while out.len() < n {
+        sub.event(stream).expect("an event");
+        let now = Instant::now();
+        if let Some(l) = last {
+            out.push(now - l);
+        }
+        last = Some(now);
+    }
+    out
+}
+
+#[test]
+fn a_get_of_apps_no_longer_holds_a_subscribers_frame_back() {
+    let d = start("lateframe");
+    let mut sub = Client::connect(&d);
+    let mut getter = Client::connect(&d);
+    sub.hello();
+    getter.hello();
+    sub.call("subscribe", Some("apps"), json!({"interval": 2000}))
+        .unwrap();
+    sub.event("apps").unwrap();
+    // Gets back to back. Each waits half a second between its two
+    // readings when the subscriber's baseline is under a second old, and
+    // since D1 it waits without the sampler's lock. (At a 2 s interval the
+    // old wait under the lock could not reach the next tick either: it
+    // ended within 1.5 s of the last one. This guards the new path.)
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let s2 = std::sync::Arc::clone(&stop);
+    let t = std::thread::spawn(move || {
+        let mut n = 0;
+        while !s2.load(std::sync::atomic::Ordering::SeqCst) {
+            getter.call("get", Some("apps"), json!({})).unwrap();
+            n += 1;
+        }
+        n
+    });
+    let g = gaps(&mut sub, "apps", 3);
+    stop.store(true, std::sync::atomic::Ordering::SeqCst);
+    assert!(t.join().unwrap() >= 4, "the gets ran");
+    for gap in &g {
+        assert!(
+            *gap < Duration::from_millis(2250) && *gap > Duration::from_millis(1750),
+            "{g:?}"
+        );
+    }
+}
+
+#[test]
+fn an_inspect_whose_pacman_is_slow_does_not_hold_the_stream() {
+    use std::os::unix::fs::PermissionsExt;
+    let bin = PathBuf::from("/tmp").join(format!("mqp-pacstub-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&bin);
+    std::fs::create_dir_all(&bin).unwrap();
+    let stub = bin.join("pacman");
+    std::fs::write(&stub, "#!/bin/sh\nsleep 2\nexit 1\n").unwrap();
+    std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let apps = mirqab_core::samplers::apps::Apps::with_pacman(stub.to_string_lossy());
+    let d = start_with("slowpac", vec![Box::new(apps)], false, None);
+    let mut sub = Client::connect(&d);
+    let mut getter = Client::connect(&d);
+    sub.hello();
+    getter.hello();
+    sub.call("subscribe", Some("apps"), json!({"interval": 2000}))
+        .unwrap();
+    sub.event("apps").unwrap();
+    // Asked a second after a frame, the 2 s answer spans the next tick:
+    // before D1 that tick waited for it, a whole second late.
+    let t = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_secs(1));
+        let t0 = Instant::now();
+        let v = getter
+            .call("get", Some("apps.inspect"), json!({"pid": 2001}))
+            .unwrap();
+        (t0.elapsed(), v)
+    });
+    let first = Instant::now();
+    sub.event("apps").expect("the tick in the middle of pacman");
+    let mid = first.elapsed();
+    let g = gaps(&mut sub, "apps", 1);
+    let (took, v) = t.join().unwrap();
+    // The old code gave 3010 ms; 2600 leaves room for a loaded runner.
+    assert!(mid < Duration::from_millis(2600), "{mid:?}");
+    assert!(took >= Duration::from_secs(2), "pacman ran: {took:?}");
+    assert_eq!(v["name"], "browser");
+    for gap in &g {
+        assert!(*gap < Duration::from_millis(2600), "{g:?}");
+    }
+    let _ = std::fs::remove_dir_all(&bin);
+}
+
+#[test]
+fn status_names_no_focus_source_on_a_fixture() {
+    let d = start("focus");
+    let mut c = Client::connect(&d);
+    c.hello();
+    let s = c.call("status", None, Value::Null).unwrap();
+    assert_eq!(s["focus"], Value::Null, "{s}");
+    assert!(s.as_object().unwrap().contains_key("focus"));
+    c.call("subscribe", Some("apps"), json!({})).unwrap();
+    c.event("apps").unwrap();
+    assert_eq!(
+        c.call("status", None, Value::Null).unwrap()["focus"],
+        Value::Null
+    );
 }

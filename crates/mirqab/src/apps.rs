@@ -34,14 +34,22 @@ fn pct(v: Option<f64>) -> String {
 /// `mirqab apps`' lines: a header, a row per group, and with `all` its
 /// processes under it.
 pub(crate) fn apps_lines(d: &AppsData, all: bool) -> Vec<String> {
-    let mut out = vec![strings::APPS_HEADER.to_string()];
+    // The "idle but heavy" column only when a row has the tag (plan 006,
+    // part 4).
+    let idle = d.groups.iter().any(|g| g.idle_heavy);
+    let header = if idle {
+        strings::APPS_HEADER_IDLE
+    } else {
+        strings::APPS_HEADER
+    };
+    let mut out = vec![header.to_string()];
     for g in &d.groups {
-        out.push(strings::apps_row(
-            &g.name,
-            &pct(g.cpu),
-            &format::bytes(g.rss_bytes),
-            g.procs,
-        ));
+        let row = strings::apps_row(&g.name, &pct(g.cpu), &format::bytes(g.rss_bytes), g.procs);
+        out.push(if idle {
+            strings::apps_row_idle(&row, g.idle_heavy)
+        } else {
+            row
+        });
         if all {
             for p in g.processes.iter().flatten() {
                 out.push(strings::apps_process_row(
@@ -166,9 +174,11 @@ mod tests {
                 ..Default::default()
             },
             sort: "cpu".into(),
+            focus: None,
         };
         let lines = apps_lines(&d, false);
         assert_eq!(lines.len(), 3, "a header and two rows: {lines:?}");
+        assert_eq!(lines[0], strings::APPS_HEADER, "no idle column untagged");
         for l in &lines {
             assert!(!l.contains('\x1b') && !l.contains('\n'), "{l:?}");
         }
@@ -201,6 +211,7 @@ mod tests {
                 ..Default::default()
             },
             sort: "cpu".into(),
+            focus: None,
         };
         let more = strings::apps_more(3);
         assert!(!apps_lines(&d, false).contains(&strings::apps_more(0)));
@@ -215,5 +226,24 @@ mod tests {
         assert!(err.contains("restart the daemon"), "{err}");
         assert!(parse_inspect(json!({"pid": "seven"})).is_err());
         assert!(parse_apps(json!({"groups": []})).is_ok());
+    }
+
+    #[test]
+    fn the_idle_column_shows_only_when_a_row_is_tagged() {
+        let mut busy = group("cargo");
+        busy.idle_heavy = true;
+        let d = AppsData {
+            groups: vec![busy, group("editor")],
+            totals: AppsTotals {
+                groups: 2,
+                ..Default::default()
+            },
+            sort: "cpu".into(),
+            focus: Some("hyprland".into()),
+        };
+        let lines = apps_lines(&d, false);
+        assert_eq!(lines[0], strings::APPS_HEADER_IDLE);
+        assert!(lines[1].ends_with("  idle"), "{:?}", lines[1]);
+        assert!(!lines[2].contains("idle"), "{:?}", lines[2]);
     }
 }

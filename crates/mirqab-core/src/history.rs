@@ -11,6 +11,11 @@ pub const SCHEMA: &str = "1";
 /// Minute samples and events are kept this long; daily totals 90 days.
 pub const KEEP_SECS: i64 = 30 * 86_400;
 pub const KEEP_DAILY_DAYS: i64 = 90;
+/// `top-apps` rows are kept three days, not thirty (plan 006, part 4): a
+/// row every minute for 30 days is 10.6 MB with its index, and 64 series
+/// already take 38.4 of the 40 MiB budget; three days of the worst case
+/// is about 1.1 MB.
+pub const KEEP_TOP_APPS_SECS: i64 = 3 * 86_400;
 /// The most series history holds (§6.1).
 pub const MAX_SERIES: usize = 64;
 
@@ -366,6 +371,11 @@ impl History {
         n += self
             .conn
             .execute("DELETE FROM event WHERE ts < ?1", [now - KEEP_SECS])?;
+        // By the (kind, ts) index.
+        n += self.conn.execute(
+            "DELETE FROM event WHERE kind = 'top-apps' AND ts < ?1",
+            [now - KEEP_TOP_APPS_SECS],
+        )?;
         n += self.conn.execute(
             "DELETE FROM daily WHERE day < ?1",
             [now.div_euclid(86_400) - KEEP_DAILY_DAYS],

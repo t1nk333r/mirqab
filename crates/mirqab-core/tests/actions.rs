@@ -9,7 +9,10 @@
 //! refused process, a question that fails, the session bus refused and
 //! the sound server's warning. Review of PR #18: a quoted, escaped name in
 //! `systemctl show` found and checked; a dependent scope or slice checked;
-//! a confirmation refused when the dependents changed.
+//! a confirmation refused when the dependents changed. Part 4: a pid
+//! asked with its start time is `failed` once it names another process
+//! (S4), and a session bus outside any bus unit is refused by its command
+//! name (owner, 2026-11-14, Q1).
 
 use mirqab_core::Root;
 use mirqab_core::act::{self, Recording, Sender, Signal, Target};
@@ -1028,4 +1031,104 @@ fn a_confirmation_does_not_stop_a_dependent_it_did_not_show() {
         rec.lines(),
         ["RUN systemctl --user stop --no-block -- pipewire.service"]
     );
+}
+
+#[test]
+fn a_pid_asked_with_its_start_time_fails_once_it_names_another_process() {
+    use mirqab_core::proto::strings;
+    let (a, rec) = recorded();
+    let (t0, t1) = (fixture("root-desktop"), fixture("root-desktop.t1"));
+    // 7000 is `oldjob` (start 300000) in root-desktop, `newjob` in the twin.
+    let args = json!({"pid": 7000, "start": 300000});
+    let p = plan(&a, &t0, Action::Quit, args.clone());
+    assert_eq!(p["wouldDo"][0]["start"], 300000);
+    let id = p["plan"].as_str().unwrap().to_string();
+    let f = confirm(&a, &t1, Action::Quit, args.clone(), &id, None).unwrap_err();
+    assert_eq!(f.code, Code::Failed);
+    assert_eq!(f.message, strings::apps_process_gone(7000));
+    assert!(rec.lines().is_empty(), "nothing sent");
+    // A service's pid with another start: refused the same way, before
+    // the unit is looked at.
+    let f = a
+        .handle(
+            &t0,
+            &ask(Action::Quit, json!({"args": {"pid": 1300, "start": 1}})),
+            None,
+        )
+        .unwrap_err();
+    assert_eq!(f.code, Code::Failed);
+    assert_eq!(f.message, strings::apps_process_gone(1300));
+    // The right start plans as a bare pid does; a plan is bound to the
+    // subject it was made for, start included.
+    let p = plan(&a, &t0, Action::Quit, json!({"pid": 7000, "start": 300000}));
+    let f = confirm(
+        &a,
+        &t0,
+        Action::Quit,
+        pid(7000),
+        p["plan"].as_str().unwrap(),
+        None,
+    )
+    .unwrap_err();
+    assert_eq!(f.code, Code::Refused, "{}", f.message);
+    for bad in [
+        json!({"args": {"pid": 7000, "start": "x"}}),
+        json!({"args": {"pid": 7000, "start": 1, "group": "x"}}),
+    ] {
+        assert_eq!(
+            actions::parse(Action::Quit, &bad, Some(CALLER))
+                .unwrap_err()
+                .code,
+            Code::BadRequest,
+            "{bad}"
+        );
+    }
+}
+
+#[test]
+fn a_session_bus_outside_its_units_is_refused_by_name() {
+    use mirqab_core::proto::strings;
+    let s = scratch("busname");
+    // A private bus a `dbus-run-session` started, in the login session's
+    // scope (no unit of its own): a `tree:` group of the user's.
+    let p = s.0.join("proc/9500");
+    std::fs::create_dir_all(&p).unwrap();
+    std::fs::write(
+        p.join("stat"),
+        "9500 (dbus-daemon) S 1 9500 9500 0 -1 4194560 0 0 0 0 1 1 0 0 20 0 1 0 900000 0 0 0",
+    )
+    .unwrap();
+    std::fs::write(
+        p.join("status"),
+        "Name:\tdbus-daemon\nTgid:\t9500\nUid:\t1000\t1000\t1000\t1000\n",
+    )
+    .unwrap();
+    std::fs::write(
+        p.join("cgroup"),
+        "0::/user.slice/user-1000.slice/session-2.scope\n",
+    )
+    .unwrap();
+    let root = Root::new(&s.0);
+    let (a, rec) = recorded();
+    let f = a
+        .handle(&root, &ask(Action::Quit, json!({"args": pid(9500)})), None)
+        .unwrap_err();
+    assert_eq!(f.code, Code::Refused);
+    assert_eq!(
+        f.message,
+        strings::refuse_session_bus_comm(9500, "dbus-daemon")
+    );
+    let f = a
+        .handle(
+            &root,
+            &ask(Action::Kill, json!({"args": group("tree:9500")})),
+            None,
+        )
+        .unwrap_err();
+    assert_eq!(f.code, Code::Refused, "its group too: {}", f.message);
+    assert_eq!(
+        f.data.unwrap()["skipped"][0]["reason"],
+        strings::refuse_session_bus_comm(9500, "dbus-daemon")
+    );
+    assert!(rec.lines().is_empty());
 }

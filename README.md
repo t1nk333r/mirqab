@@ -16,8 +16,10 @@ history, the view crate (`crates/mirqab-view`, with number formatting, the
 theme token table, the icon glyphs, graph geometry and the sidebar model;
 its tests need no display) and the window (`crates/mirqab-ui`). Plans 002
 and 003 are complete too, and milestone M1 (a running app with Home and
-System) is done. Plan 006 (Apps) has its page; the focus tracking for
-"idle but heavy" and the cost benchmark remain.
+System) is done. Plan 006 (Apps) has its page and its cost budget in CI.
+Its daemon side of "idle but heavy" is in (focus tracking, the tag in
+`mirqab apps`, `status` and the MCP server, and the top-apps history);
+the page does not show the tag yet.
 
 - Measured cost (2026-11-13, on the development machine, release build):
   idle, with no subscriber, 0.000 % of one core over 60 s and 5.0 MiB.
@@ -41,23 +43,29 @@ System) is done. Plan 006 (Apps) has its page; the focus tracking for
   power and CPU clock. It keeps 30 days in
   `~/.local/state/mirqab/history.db`, or `$XDG_STATE_HOME/mirqab/history.db`
   when that is set. The budget is 40 MiB for the file and its write-ahead
-  log together, and the file is compacted once a day. Minutes while the
-  daemon is not running are not stored. With `--root DIR` (fixture trees,
+  log together, and the file is compacted once a day. The `top-apps`
+  events (the heaviest apps by name, in the minutes one app was busy) are
+  kept 3 days, not 30; `trends.topApps` (default on) turns them off. Minutes
+  while the daemon is not running are not stored. With `--root DIR` (fixture trees,
   used by the tests) the daemon keeps `history.db` and `config.json` beside
   its socket instead, so fixture numbers never reach your files, and only
   one daemon may use a history file (`history.db.lock`).
-- The CLI has `daemon`, `status [--json]`, `open [TAB] [--window]`,
+- The CLI has `daemon`, `status [--json]` (which also names the focus
+  source the IDLE tag uses, or none), `open [TAB] [--window]`,
   `toggle [TAB]`, `close`, `history SERIES... [--range 1h|24h|7d|30d]
   [--json]`, `history --list`, `load [--json]` (CPU, load, memory, pressure
   and the thermal word), `sensors [--json]` (temperatures, GPUs and power),
   `apps [--sort cpu|mem|name] [--all] [--json]` (apps by CPU, memory or
-  name; `--all` lists every process), `what PID [--json]` (explains one
+  name; `--all` lists every process; with Hyprland and the Apps page open,
+  an IDLE column marks apps that used 20 % of a core for five minutes with
+  no window focused), `what PID [--json]` (explains one
   process), `quit PID|NAME [-y] [--force] [--dry-run] [--json]` (quits a
   process or an app after asking; `--force` sends SIGKILL, and a user
   service is stopped through systemctl, and the list shows the other
   services that stop with it and warns before the sound server or a
   desktop portal is stopped; it never signals pid 1, the daemon, the
-  compositor, your user manager, the session bus, another user's
+  compositor, your user manager, the session bus (and a process named
+  dbus-daemon, dbus-broker or dbus-broker-launch), another user's
   processes, kernel threads, anything outside your user slice, rootless
   containers, or the program asking and its parents), `bar ITEM [--watch]
   [--interval SEC] [--format waybar|plain|json]` and `bar --list`
@@ -335,7 +343,9 @@ speaks the Model Context Protocol on stdin and stdout. Its tools only
 read: `system_load`, `explain_slowness`, `top_apps` (the apps using the
 most CPU or memory now) and `what_is_process` (explains one process by
 pid). `what_is_process` leaves out command lines, working directories and
-open file paths, as they can hold secrets.
+open file paths, as they can hold secrets. `top_apps` sets `idleHeavy:
+true` on a group that used 20 % of a core for five minutes with no window
+focused; that mark needs Hyprland and the Apps page open.
 
 `mirqab mcp-config CLIENT` prints how to register it. CLIENT is `claude`,
 `codex`, `gemini`, `opencode`, `cursor` or `json`. With `--write`, mirqab

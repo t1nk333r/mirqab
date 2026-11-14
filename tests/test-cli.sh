@@ -59,6 +59,10 @@ capture "$BIN/mirqab" status
 status_is "status exits 0" 0 "$STATUS"
 like "status prints the version" "$OUTPUT" "mirqab 0.1.0"
 like "status prints the subscriber count" "$OUTPUT" "subscribers 0"
+# Plan 006, part 4: no focus source on a fixture root (no Hyprland in its
+# runtime dir, and the environment is never read there).
+is "status --json has a null focus" "null" "$("$BIN/mirqab" status --json | jq -c .focus)"
+like "status prints the focus line" "$OUTPUT" "focus       none"
 capture "$BIN/mirqab" open system --dry-run
 status_is "open --dry-run exits 0 without an interface" 0 "$STATUS"
 is "open --dry-run says what it would do" '{"event":"show","mode":null,"tab":"system"}' "$(jq -c '.wouldDo[0]' <<<"$OUTPUT")"

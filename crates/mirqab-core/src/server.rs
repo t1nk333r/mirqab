@@ -20,7 +20,7 @@ use crate::history::{self, History};
 use crate::proto::stream::{self, Machine, ProcessCost, SelfData, UiCost, UiEvent};
 use crate::proto::{Code, Event, Hello, PROTOCOL, Reply, Request, ServerFrame, frame, strings};
 use crate::root::Root;
-use crate::sampler::{Accepts, Sampler, View};
+use crate::sampler::{Accepts, Answer, Sampler, View};
 use crate::samplers::apps::Apps;
 use crate::samplers::apps::actions::{self, Action, Actions};
 use crate::samplers::process::Process;
@@ -61,6 +61,9 @@ pub struct Options {
     pub samplers: Vec<Box<dyn Sampler>>,
     /// The history file; None runs without history (some tests).
     pub history: Option<PathBuf>,
+    /// How often the minute writer wakes: None is once a minute, as the
+    /// daemon always runs; a test passes a second to see it write.
+    pub minute_period: Option<Duration>,
 }
 
 #[derive(Debug)]
@@ -109,8 +112,8 @@ struct SlotRun {
     last: Option<Instant>,
     /// Sample at once: a new subscriber should not wait a whole interval.
     now: bool,
-    /// The stream had no subscriber since its last sample: the sampler is
-    /// told (`Sampler::idle`) before the next one.
+    /// The stream was left with no subscriber after a sample, and the
+    /// sampler was told (`Sampler::idle`); cleared by the next sample.
     idle: bool,
 }
 
@@ -191,6 +194,8 @@ struct Inner {
     history: Option<Mutex<History>>,
     /// Why history is off, when a file was given but could not be opened.
     history_error: Option<String>,
+    /// The minute writer's period (`Options::minute_period`).
+    minute: Duration,
     /// Quit and Force quit: the plans, and a sender that signals for real
     /// only when the root is `/` (plan 006, decision 2).
     actions: Actions,
@@ -446,6 +451,10 @@ pub fn listen(opts: Options) -> Result<Server, ListenError> {
         shared,
         history,
         history_error,
+        minute: opts
+            .minute_period
+            .filter(|d| !d.is_zero())
+            .unwrap_or(Duration::from_secs(60)),
         actions,
     });
     if inner.history.is_some() {
@@ -513,16 +522,27 @@ fn unix_now() -> i64 {
 /// done with no subscribers.
 fn history_loop(inner: Arc<Inner>) {
     let mut last_prune = 0;
+    let period = inner.minute.as_millis().max(1);
     loop {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default();
-        let into_minute = Duration::from_millis((now.as_millis() % 60_000) as u64);
-        std::thread::sleep(Duration::from_secs(60) - into_minute);
+        let into_minute = Duration::from_millis((now.as_millis() % period) as u64);
+        std::thread::sleep(inner.minute.saturating_sub(into_minute));
         let ts = unix_now();
+        // The config as it is now: `trends.topApps` decides whether the
+        // `apps` sampler walks for its row at all (plan 006, part 4).
+        let config = {
+            let mut c = lock(&inner.config);
+            c.refresh();
+            c.effective().clone()
+        };
         let mut values = Vec::new();
+        let mut events = Vec::new();
         for slot in inner.slots.values() {
-            values.extend(lock(&slot.sampler).minute(&inner.root));
+            let mut sampler = lock(&slot.sampler);
+            values.extend(sampler.minute(&inner.root));
+            events.extend(sampler.minute_events(&inner.root, &config));
         }
         let Some(h) = &inner.history else { return };
         let mut h = lock(h);
@@ -532,6 +552,11 @@ fn history_loop(inner: Arc<Inner>) {
         // now is then never half-written in a query (review of phase C).
         if let Err(e) = h.write_minute(ts - 30, &values) {
             log(&format!("history write failed: {e}"));
+        }
+        for (kind, data) in &events {
+            if let Err(e) = h.add_event(ts - 30, kind, data) {
+                log(&format!("history: the {kind} event was not written: {e}"));
+            }
         }
         if ts - last_prune >= 3600 {
             if let Err(e) = h.prune(ts) {
@@ -568,8 +593,16 @@ fn sampler_loop(inner: Arc<Inner>, name: String, slot: Arc<Slot>) {
         let run = state.runs.entry(name.clone()).or_default();
         let Some(ms) = interval else {
             run.now = false;
-            // Only after a sample: before the first there is nothing kept.
-            run.idle = run.last.is_some();
+            // The last subscriber left: the sampler is told now, once, and
+            // only after a sample (before the first there is nothing kept).
+            // A focus source must not outlive the page (plan 006, part 4).
+            if run.last.is_some() && !run.idle {
+                run.idle = true;
+                drop(state);
+                lock(&slot.sampler).idle();
+                state = lock(&inner.state);
+                continue;
+            }
             state = slot.wake.wait(state).unwrap_or_else(|p| p.into_inner());
             continue;
         };
@@ -591,7 +624,7 @@ fn sampler_loop(inner: Arc<Inner>, name: String, slot: Arc<Slot>) {
         }
         run.now = false;
         run.last = Some(now);
-        let was_idle = std::mem::take(&mut run.idle);
+        run.idle = false;
         // The params each subscriber shapes its view with, taken while the
         // lock is held anyway; the views are made after it is released.
         let mut wanted: Vec<Value> = Vec::new();
@@ -609,9 +642,6 @@ fn sampler_loop(inner: Arc<Inner>, name: String, slot: Arc<Slot>) {
         // and a rate over a stale stamp reads high (review of PR #16).
         let data = {
             let mut sampler = lock(&slot.sampler);
-            if was_idle {
-                sampler.idle();
-            }
             sampler.wants(&wanted);
             sampler.sample(&inner.root, Instant::now())
         };
@@ -1015,7 +1045,9 @@ impl Inner {
             }
             let answer =
                 lock(&self.slots[stream_name].sampler).query(&self.root, query, &req.params);
-            return match answer {
+            // A `Later` runs here, with the sampler's lock released (plan
+            // 006, part 4, decision 10).
+            return match answer.map(Answer::finish) {
                 Some(Ok(v)) => Reply::ok(req.id, v),
                 Some(Err((code, message))) => Reply::err(req.id, code, message),
                 None => Reply::err(
@@ -1035,10 +1067,22 @@ impl Inner {
         {
             return Reply::err(req.id, Code::BadRequest, why);
         }
-        let data = {
-            // A `get` names what it wants as a subscriber does; the next
-            // tick hands the subscribers' params back before it samples.
+        // A `get` names what it wants as a subscriber does; the next tick
+        // hands the subscribers' params back before it samples. A sampler
+        // that needs a second reading takes the first in `prime`, and the
+        // wait between them is spent without its lock, so a subscriber's
+        // tick can run in it (plan 006, part 4, decision 10; D1 of PR #16).
+        let gap = {
             let mut sampler = lock(&slot.sampler);
+            sampler.wants(std::slice::from_ref(&params));
+            sampler.prime(&self.root, Instant::now())
+        };
+        if let Some(gap) = gap {
+            std::thread::sleep(gap);
+        }
+        let data = {
+            let mut sampler = lock(&slot.sampler);
+            // A tick in the gap handed the sampler its subscribers' params.
             sampler.wants(std::slice::from_ref(&params));
             sampler.snapshot(&self.root, Instant::now())
         };
@@ -1076,11 +1120,19 @@ impl Inner {
         }
         let ui = state.ui.map(|(_, pid)| pid);
         drop(state);
+        // What the samplers add (`focus`, plan 006 part 4), each under its
+        // own lock, which no sampler holds across a wait.
+        let mut extra = serde_json::Map::new();
+        for slot in self.slots.values() {
+            for (k, v) in lock(&slot.sampler).status() {
+                extra.insert(k.to_string(), v);
+            }
+        }
         let mut meter = Meter::new(&self.root, "proc/self");
         let cost = meter.read(&self.root, Instant::now());
         let mut config = lock(&self.config);
         config.refresh();
-        json!({
+        let mut out = json!({
             "version": crate::proto::VERSION,
             "protocol": PROTOCOL,
             "pid": std::process::id(),
@@ -1099,7 +1151,11 @@ impl Inner {
                 "problems": config.problems(),
             },
             "history": self.history_status(),
-        })
+        });
+        if let Some(o) = out.as_object_mut() {
+            o.extend(extra);
+        }
+        out
     }
 
     fn config_get(&self, req: &Request) -> Reply {

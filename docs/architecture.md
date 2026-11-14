@@ -327,14 +327,14 @@ DankMaterialShell (MIT); `NOTICE.md` carries both notices.
 |--------|--------|--------|
 | `subscribe` | `stream`, `params.interval` (ms, optional), `params.live` (bool, optional; §5.3). Any other `params` key belongs to the stream (the `apps` stream's `sort`, `limit`, `expand`; the `process` stream's `pid` and `start`). One sample is taken per tick and each subscriber gets its own view of it, shaped by its own params. Subscribing again to the same stream replaces the params. Params a stream cannot serve are `bad-request` | The effective interval; then events |
 | `unsubscribe` | `stream` | — |
-| `get` | `stream`, `params` | One snapshot, no subscription, shaped by `params` as a subscription's view is. `stream` may be `<stream>.<query>` (`apps.inspect` with `params.pid`), answered by that stream's sampler; an unknown query is `unknown-stream` |
+| `get` | `stream`, `params` | One snapshot, no subscription, shaped by `params` as a subscription's view is. `stream` may be `<stream>.<query>` (`apps.inspect` with `params.pid` and optionally `params.start`, which answers `failed` "pid N is another process now" when the pid holds another process), answered by that stream's sampler; an unknown query is `unknown-stream` |
 | `history.query` | `series[]`, `range` (`1h`, `24h`, `7d`, `30d`) or `from`/`to` (unix seconds) | Per series its `unit` and `points`, each `[unixSeconds, avg, max]` unscaled; empty buckets omitted |
 | `history.events` | `kind`, `from`, `to` | Event rows |
 | `history.list` | — | The series history keeps: key, unit, scale |
 | `action` | `name`, `args`, `dryRun`; for a destructive action `confirm` (a boolean) and `plan` | What was done, or `wouldDo`. A destructive action without `confirm: true` and a plan is the error `needs-confirm`, whose `data` holds `plan`, `wouldDo`, `skipped` and `warnings` (§5.4) |
 | `config.get` / `config.set` | key paths | The config; the daemon is the only writer |
 | `capabilities` | — | The list from `hello`: the streams this machine serves, plus `history` when the history file is open (a capability, not a stream) |
-| `status` | — | Version, uptime, subscribers, self-cost |
+| `status` | — | Version, uptime, subscribers, self-cost, and `focus`: `{"source": "hyprland"}` while a focus source runs (only while `apps` has a subscriber, plan 006 part 4), else null |
 | `shutdown` | — | — |
 
 Rules:
@@ -370,16 +370,41 @@ Streams: `system`, `apps`, `process`, `ports`, `agents`, `awake`, `disk`,
   check the params first (`Sampler::accepts`: Err is `bad-request` for a
   subscribe or a `get`), and may be told the distinct params of its
   subscribers before each sample (`Sampler::wants`), so it reads only what
-  they name. When a stream had no subscriber since its last sample, the
-  sampler is told before the next one (`Sampler::idle`) and forgets what it
-  kept for the earlier subscribers.
+  they name. When a stream is left with no subscriber, the sampler is
+  told once, within an interval (`Sampler::idle`), and forgets and stops
+  what it kept for the earlier subscribers. No sampler sleeps or asks
+  another program while holding its lock, except the `apps` sampler:
+  its focus source waits on the compositor under the lock, up to 1.5 s
+  once when the page opens (two connects and a request) and up to 0.5 s
+  when it closes (a request's deadline), and its `get` sleeps 500 ms
+  under the lock only when no primed reading fits. A `get` whose rates
+  need two readings takes the
+  first in `Sampler::prime`, which returns the wait and queues the
+  reading (one per pending `get`, served in order, used at 250 ms to
+  10 s old), and the server sleeps it without the lock before
+  `snapshot`; a query may answer
+  `Answer::Later(closure)`, which the server runs after it released the
+  lock (the inspector's `pacman`). Once a minute `Sampler::minute_events`
+  gives the `event` rows to write, with the effective config, and
+  `Sampler::status` adds keys to `status` (plan 006, part 4).
 - `apps` (plan 006, every 2 s, never `live`): `params.sort` (`cpu`,
   `mem`, `name`), `params.limit` (groups, default 50; the System group
   comes last, outside it, and `totals.groups` counts the groups before
   the limit) and `params.expand` (group ids whose processes are listed,
   or `true` for all). Each listed process carries its `start` time, so
   a pid and its start time name a row across frames. The query
-  `apps.inspect {pid}` explains one process.
+  `apps.inspect {pid, start?}` explains one process. While `apps` has a
+  subscriber the sampler runs a focus source (`crates/mirqab-core/src/desktop/`,
+  Hyprland's event socket; started by the first sample, stopped by
+  `Sampler::idle`, so the closed window keeps no reader thread or socket)
+  and tags a group `idleHeavy` when it used at least 20 % of one core on
+  average over a full five minutes in which none of its processes, nor
+  any process in the same host unit (a terminal's jobs), had focus at
+  any moment: a tag needs five minutes since focus was lost (the source
+  keeps every change of focus, "no window" included); the
+  frame's `focus` names the source, and both are absent without one.
+  Once a minute, subscribers or not, it may write a `top-apps` event
+  (§6.1).
 - `process` (plan 006, part 3, the Apps inspector's single-process
   sample, `live`): `params.pid` and optionally `params.start`. Each tick
   reads `stat` and `statm` of each distinct pid its subscribers name,
@@ -436,6 +461,11 @@ to a daemon:
 - The strings `sudo` and `pkexec` appear in exactly one file,
   `crates/mirqab/src/elevate.rs`, which only ever runs the fixed commands
   listed in §8. Check: `grep -rn 'sudo\|pkexec' crates tools dist | grep -v elevate.rs`.
+- An action on one process may name it by `{"pid": N}` or by
+  `{"pid": N, "start": S}`, the start time a row of the `apps` frame
+  lists; when the pid's process started at another time the action is
+  `failed` ("pid N is another process now"), for a signal and for a
+  service alike, at the plan and at the confirmation (plan 006, part 4).
 - Destructive actions (`apps.quit`, `*.stop`, `*.kill`, `*.cleanup`,
   `disk.clean`, `disk.eject`) need `confirm: true`. Always two calls: the
   first (no `confirm`, or `confirm: true` without a plan) never acts and
@@ -482,7 +512,11 @@ to a daemon:
   plan's could, is refused and nothing runs. The session bus
   (`dbus.service`, `dbus-broker.service`, `dbus-daemon.service`) is never
   stopped or signalled, and a stop that would also stop it is refused too,
-  as a dependent. Stopping the sound server (`pipewire`, `pipewire-pulse`,
+  as a dependent; nor is a process of the user named `dbus-daemon`,
+  `dbus-broker` or `dbus-broker-launch` (the kernel's 15-byte
+  `dbus-broker-lau`), whatever unit it is in, so a bus that
+  `dbus-run-session` started is refused too (owner, 2026-11-14, plan 006
+  part 4). Stopping the sound server (`pipewire`, `pipewire-pulse`,
   `wireplumber`) or a desktop portal (`xdg-desktop-portal*`) is allowed; the
   plan's `warnings` say what it breaks, the CLI prints them, and the
   interface's dialog shows them (owner, 2026-11-14; plan 006, part 3b). Quit
@@ -554,7 +588,14 @@ series, and the cap is 64.
 
 Also kept: bytes per interface per day for 90 days (`daily`), and events
 for 30 days (`event`): sleep blockers seen, devices connecting, agent
-sessions starting and ending, spikes, alerts fired.
+sessions starting and ending, spikes, alerts fired, actions taken. The
+`apps` sampler's `top-apps` rows (the three heaviest groups by CPU and by
+memory, by name only, and the process count) are written at most once a
+minute, only when the CPU leader used at least 10 % of one core and the
+six names differ from the last row's, and are kept **3 days**: a row
+every minute for 30 days is 10.6 MB with its index, more than the budget
+of §6.2 leaves (plan 006, part 4). `config.trends.topApps` (default on)
+turns them off, and the walk with them.
 
 ### 6.2 Schema
 
@@ -603,9 +644,14 @@ minute running now is never half-written in a query.
   stores per-minute averages; a true average of a gauge needs sampling all
   minute, which the idle budget forbids. Recorded as a difference.
 - Pressure uses the kernel's own `avg60`, which is already a minute's mean.
+- Events a sampler gives for the minute (`Sampler::minute_events`, the
+  `top-apps` row) are written in the same wakeup, labelled as the values
+  are. Without a subscriber the `apps` sampler walks `proc/` once for it
+  and differences against the previous minute's walk, so the first minute
+  after start writes nothing; with one it reads its last sample.
 - A gap (suspend, daemon stopped) stores nothing; graphs draw a break.
 - Pruning runs once an hour: `DELETE … WHERE ts < now − 30 d` for `sample`
-  and `event`, 90 d for `daily`.
+  and `event`, 3 d for `top-apps` events, 90 d for `daily`.
 - Compaction runs once a day (`VACUUM`, then a truncating checkpoint):
   rows arrive series by series, so each series' run grows in the middle of
   the key and its pages split half full. The time of the last compaction is
@@ -892,6 +938,8 @@ signalled; the interface shows them read-only.
 | Daemon CPU, no subscribers | **< 0.3 % of one core** over 60 s | `tools/bench-idle.sh`: utime+stime delta from `/proc/<pid>/stat` |
 | Daemon RSS, no subscribers | < 15 MiB | `VmRSS` after 60 s |
 | Daemon CPU, System tab open with its live graph at 1 s | < 1 % of one core | Same script with `--subscribe system --live` |
+| Daemon RSS, tray registered, no subscribers | < 15 MiB | Same script with `--tray` (plan 004; in CI's bench step since plan 006, part 4) |
+| Daemon CPU, Apps tab open at 400 processes | < 1.5 % of one core | Same script with `--subscribe apps --max-cpu 1.5 --procs 400`: a scratch copy of the fixture with its user processes cloned (plan 006, part 4). A proxy: the fixture is files in the page cache, and procfs on the live machine costs more per read; the row catches added reads per process, not the absolute cost |
 | Interface process, window closed for 60 s | does not exist | `pgrep -x mirqab-ui` |
 | Interface RSS, open | reported, not gated; plan 001 measures it with the default renderer and with `GSK_RENDERER=cairo` and records both | footer |
 | `history.db` at 30 days, with its log | < 40 MiB | synthetic fill test |
@@ -1016,6 +1064,7 @@ refusals in §5.4 will apply. Plan 005.
 ```
 crates/mirqab-proto/    library: frames, stream data shapes, error codes, strings (serde only)
 crates/mirqab-core/     library: root, exec, act, server, samplers, history, rules, dbus
+  src/desktop/          what the compositor says: window focus (Hyprland's event socket)
 crates/mirqab/          binary `mirqab`: daemon, cli, mcp, bar, tray, elevate. No GTK
 crates/mirqab-fand/     binary `mirqab-fand`: the root helper (libc, serde_json)
 crates/mirqab-view/     library: view models per tab, geometry, cards, icons, theme tokens. No GTK

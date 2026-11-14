@@ -57,6 +57,12 @@
         "enabled": {"type": "boolean", "default": true, "description": "Show the tray icon. Read when the daemon starts."}
       }
     },
+    "trends": {
+      "type": "object",
+      "properties": {
+        "topApps": {"type": "boolean", "default": true, "description": "Once a minute, record the heaviest apps by CPU and memory as a top-apps event (names only), when the leader used at least 10 % of a core. Off: no record and no walk of the process list."}
+      }
+    },
     "tabs": {
       "type": "object",
       "properties": {

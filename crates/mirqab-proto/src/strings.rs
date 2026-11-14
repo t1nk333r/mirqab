@@ -31,7 +31,7 @@ pub const CLI_COMMANDS: &[CliCommand] = &[
             "status [--json]",
             "version, socket, subscribers and the daemon's cost",
         )],
-        help: "Prints the version, the socket, each stream's subscribers and interval, and what the daemon costs.",
+        help: "Prints the version, the socket, each stream's subscribers and interval, what the daemon costs, and the focus source the Apps page's \"idle but heavy\" tag uses (Hyprland, only while the page is open).",
     },
     CliCommand {
         name: "open",
@@ -84,7 +84,7 @@ pub const CLI_COMMANDS: &[CliCommand] = &[
             "apps [--sort cpu|mem|name] [--all] [--json]",
             "apps by CPU or memory, helpers folded in",
         )],
-        help: "One row per app: CPU (percent of one core, over the last seconds), memory and how many processes, heaviest first. A browser's helpers count as the browser and a terminal's jobs as themselves; other users' processes are one System group, last. --sort orders by cpu (default), mem or name. --all lists every process under its app.",
+        help: "One row per app: CPU (percent of one core, over the last seconds), memory and how many processes, heaviest first. A browser's helpers count as the browser and a terminal's jobs as themselves; other users' processes are one System group, last. --sort orders by cpu (default), mem or name. --all lists every process under its app. On Hyprland, while the Apps page is open, an app that used over 20 % of a core for five minutes with none of its windows in focus is tagged in an IDLE column, shown only when some row is tagged.",
     },
     CliCommand {
         name: "what",
@@ -100,7 +100,7 @@ pub const CLI_COMMANDS: &[CliCommand] = &[
             "quit PID|NAME [-y] [--force] [--dry-run] [--json]",
             "quit an app or a process, after asking",
         )],
-        help: "Asks a process to quit (SIGTERM), or with --force ends it (SIGKILL). A number is a pid; anything else is an app's name as mirqab apps shows it, matched whole and ignoring case, and quits every process of that app, its main process first. A user service is stopped with systemctl --user, so it does not restart; the list names the other services the stop takes with it, and warns before the sound server or a desktop portal is stopped. The stop is refused when one of those services holds a process mirqab never signals, and at the confirmation when a service that was not listed would now stop too; when systemd cannot say what depends on a service, the list says so. It prints what it will do and asks; -y goes ahead without asking; without a terminal and without -y it does nothing and exits 3; --dry-run prints the list and stops. With --json the list goes to stderr and stdout holds the daemon's answer. It exits 1 when anything failed, or when nothing was done because everything was left alone; a process that had already exited counts as done. Never stopped or signalled: pid 1, another user's processes, kernel threads, anything outside your user's session, the daemon, the session's compositor, your user manager, the session bus, and the program asking and its parents. A rootless container is not quit; stop it with its runtime. When the action could not be written to mirqab's history, it is still done and a warning says so.",
+        help: "Asks a process to quit (SIGTERM), or with --force ends it (SIGKILL). A number is a pid; anything else is an app's name as mirqab apps shows it, matched whole and ignoring case, and quits every process of that app, its main process first. A user service is stopped with systemctl --user, so it does not restart; the list names the other services the stop takes with it, and warns before the sound server or a desktop portal is stopped. The stop is refused when one of those services holds a process mirqab never signals, and at the confirmation when a service that was not listed would now stop too; when systemd cannot say what depends on a service, the list says so. It prints what it will do and asks; -y goes ahead without asking; without a terminal and without -y it does nothing and exits 3; --dry-run prints the list and stops. With --json the list goes to stderr and stdout holds the daemon's answer. It exits 1 when anything failed, or when nothing was done because everything was left alone; a process that had already exited counts as done. Never stopped or signalled: pid 1, another user's processes, kernel threads, anything outside your user's session, the daemon, the session's compositor, your user manager, the session bus (also any process named dbus-daemon, dbus-broker or dbus-broker-launch), and the program asking and its parents. A rootless container is not quit; stop it with its runtime. When the action could not be written to mirqab's history, it is still done and a warning says so.",
     },
     CliCommand {
         name: "bar",
@@ -551,7 +551,7 @@ pub fn cli_completions(shell: &str) -> Option<String> {
 
 pub const MCP_INSTRUCTIONS: &str = "mirqab reports this Linux machine's state. Read tools only: system_load for CPU, load, memory, pressure and the thermal word; explain_slowness when the user says the machine is slow; top_apps for the apps using the most CPU or memory; what_is_process to explain one process by pid. Every tool reads the mirqab daemon; if it is not running, the result says how to start it.";
 pub const MCP_TOP_APPS_TITLE: &str = "Top apps";
-pub const MCP_TOP_APPS: &str = "Reads only: the apps using the most CPU (or memory) now, from the mirqab daemon. Helper processes are folded into their app (a browser's content processes count as the browser, a terminal's jobs as themselves); other users' processes are one System group, listed last. CPU is percent of one core and may pass 100.";
+pub const MCP_TOP_APPS: &str = "Reads only: the apps using the most CPU (or memory) now, from the mirqab daemon. Helper processes are folded into their app (a browser's content processes count as the browser, a terminal's jobs as themselves); other users' processes are one System group, listed last. CPU is percent of one core and may pass 100. A group marked idleHeavy used over 20 % of a core with none of its windows in focus for five minutes; the mark appears only while the Apps page has been open five minutes on Hyprland.";
 pub const MCP_WHAT_TITLE: &str = "What is this process";
 pub const MCP_WHAT: &str = "Reads only: explains one process by pid, from the mirqab daemon: a verdict in plain words (packaged by which repository, Flatpak, container, not owned by any package, replaced since it started), its parents, user, executable, unit, sandbox, memory and counts of open files. Command lines, the working directory and open files' paths are left out, as they can hold secrets.";
 pub const MCP_ARG_SORT: &str = "cpu (default), mem or name";
@@ -1301,6 +1301,32 @@ pub fn apps_no_process(pid: u32) -> String {
     format!("no process {pid}")
 }
 
+/// A pid asked for with a start time that is not its process's now: the
+/// process exited and the pid was given to another (plan 006, part 4,
+/// decisions 8 and 9).
+pub fn apps_process_gone(pid: u32) -> String {
+    format!("pid {pid} is another process now")
+}
+
+/// `start` beside a pid that is not a whole number.
+pub const APPS_START_NUMBER: &str =
+    "start must be a whole number: the process's start time, as the apps stream lists it";
+
+// --- Focus (plan 006, part 4) -----------------------------------------------
+
+/// No Hyprland instance in the runtime directory: no focus source.
+pub const FOCUS_NO_HYPRLAND: &str = "no Hyprland instance";
+/// Hyprland's answer to `j/activewindow` was not an object, or too long.
+pub const FOCUS_BAD_ANSWER: &str = "Hyprland's answer is not a window";
+
+/// `mirqab status`: the focus source, or none.
+pub fn status_focus(source: Option<&str>) -> String {
+    match source {
+        Some(s) => format!("focus       {}", plain(s)),
+        None => "focus       none (the Apps page is closed, or no Hyprland)".to_string(),
+    }
+}
+
 // --- Quit and Force quit (plan 006, part 2) ---------------------------------
 
 pub fn refuse_init(pid: u32) -> String {
@@ -1405,6 +1431,15 @@ pub fn refuse_session_bus(pid: u32, unit: &str) -> String {
     )
 }
 
+/// A session bus found by its command name, in any unit (owner,
+/// 2026-11-14, part 4 Q1).
+pub fn refuse_session_bus_comm(pid: u32, comm: &str) -> String {
+    format!(
+        "pid {pid} is a session bus ({}); the programs on it lose it when it ends, and ending your session's bus ends your session",
+        plain(comm)
+    )
+}
+
 /// The session bus's unit, asked to stop.
 pub fn refuse_session_bus_unit(unit: &str) -> String {
     format!(
@@ -1468,7 +1503,8 @@ pub fn apps_no_group(id: &str) -> String {
     format!("no app group {}", plain(id))
 }
 
-pub const ACT_ARGS: &str = "args is {\"pid\": N} or {\"group\": \"ID\"}, exactly one";
+pub const ACT_ARGS: &str =
+    "args is {\"pid\": N}, {\"pid\": N, \"start\": S} or {\"group\": \"ID\"}, and nothing else";
 pub const ACT_CONFIRM_BOOL: &str = "confirm must be true or false";
 pub const ACT_CONFIRM_FALSE: &str = "a plan is redeemed only with confirm: true";
 pub const ACT_PLAN_STRING: &str = "plan must be a plan id";
@@ -1608,6 +1644,19 @@ pub const APPS_HEADER: &str = "NAME                         CPU      MEMORY  PRO
 pub fn apps_row(name: &str, cpu: &str, memory: &str, procs: u32) -> String {
     let name = fit(name, 28);
     format!("{name:<28} {cpu:>6} {memory:>11}  {procs}")
+}
+
+/// `mirqab apps` when a row is "idle but heavy" (plan 006, part 4): the
+/// header and the rows gain a last column.
+pub const APPS_HEADER_IDLE: &str = "NAME                         CPU      MEMORY  PROCESSES  IDLE";
+
+/// A row of `apps_row` with the last column: `idle` when tagged.
+pub fn apps_row_idle(row: &str, idle: bool) -> String {
+    if idle {
+        format!("{row:<55}  idle")
+    } else {
+        row.to_string()
+    }
 }
 
 /// `mirqab apps --all`: one process under its group.
@@ -2069,5 +2118,13 @@ mod tests {
         );
         assert!(s.contains("subscribers 3"));
         assert!(s.contains("self       2 every 2000 ms"));
+        assert_eq!(status_focus(Some("hyprland")), "focus       hyprland");
+    }
+
+    #[test]
+    fn the_idle_column_lines_up_with_its_header() {
+        let row = apps_row_idle(&apps_row("cargo", "91%", "2 GB", 2), true);
+        assert_eq!(row.find("idle"), APPS_HEADER_IDLE.find("IDLE"));
+        assert_eq!(apps_row_idle("x", false), "x");
     }
 }

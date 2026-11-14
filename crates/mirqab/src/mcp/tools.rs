@@ -215,11 +215,16 @@ fn top_apps(socket: &Path, args: &Value) -> Value {
         .groups
         .iter()
         .map(|g| {
-            json!({
+            let mut v = json!({
                 "id": g.id, "name": g.name, "kind": g.kind, "cpu": g.cpu,
                 "rssBytes": g.rss_bytes, "procs": g.procs,
                 "top": g.top.as_ref().map(|t| json!({"pid": t.pid, "name": t.name, "cpu": t.cpu})),
-            })
+            });
+            // "Idle but heavy" (plan 006, part 4), only when tagged.
+            if g.idle_heavy {
+                v["idleHeavy"] = json!(true);
+            }
+            v
         })
         .collect();
     let data = json!({

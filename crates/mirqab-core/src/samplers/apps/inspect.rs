@@ -1,4 +1,4 @@
-//! The process inspector, `get apps.inspect {pid}` (plan 006): where a
+//! The process inspector, `get apps.inspect {pid, start?}` (plan 006): where a
 //! process came from, whether a package owns it, how it is sandboxed and
 //! what it holds, headed by a plain-words verdict from fixed rules. Linux
 //! has no code signatures; package ownership, Flatpak and the kernel's
@@ -159,6 +159,9 @@ pub struct Ctx<'a> {
     pub own_home: Option<&'a str>,
     /// The group the `apps` stream counts the process in.
     pub group: Option<GroupRef>,
+    /// The start time the asker knows the process by: another one at the
+    /// pid is `failed`, before any verdict (plan 006, part 4, decision 9).
+    pub start: Option<u64>,
 }
 
 /// The ELF machine type and word size from the first 20 bytes of a file.
@@ -274,13 +277,37 @@ fn fdinfo_bytes(v: &str) -> Option<u64> {
     })
 }
 
-/// GPU memory from `fdinfo/*` (https://docs.kernel.org/gpu/drm-usage-stats.html).
-/// A process holds several fds of one DRM client, and each reports the
-/// client's memory, so a client is counted once by `drm-client-id`.
+/// File descriptors listed at most for GPU memory: a process with more is
+/// left without the row (plan 006, part 4, decision 13).
+pub const MAX_GPU_FDS: usize = 1024;
+
+/// GPU memory from the `fdinfo` of the fds that are DRM device nodes
+/// (https://docs.kernel.org/gpu/drm-usage-stats.html). `fd/` is listed
+/// once, at most `MAX_GPU_FDS` entries (more leaves the row out), and
+/// only an fd whose link names a path under `/dev/dri/` has its `fdinfo`
+/// read (D2 of PR #16: every `fdinfo` was read). A process holds several
+/// fds of one DRM client, and each reports the client's memory, so a
+/// client is counted once by `drm-client-id`.
 fn gpu(root: &Root, pid: u32) -> Option<GpuMemory> {
-    let names = root.read_dir(&format!("proc/{pid}/fdinfo")).ok()?;
+    let dir = root.path(&format!("proc/{pid}/fd")).ok()?;
+    let mut fds: Vec<u32> = Vec::new();
+    for e in std::fs::read_dir(dir).ok()?.take(MAX_GPU_FDS + 1) {
+        if let Some(n) = e.ok().and_then(|e| e.file_name().to_str()?.parse().ok()) {
+            fds.push(n);
+        }
+    }
+    if fds.len() > MAX_GPU_FDS {
+        return None;
+    }
+    fds.sort_unstable();
     let mut clients: HashMap<String, [Option<u64>; 3]> = HashMap::new();
-    for n in names {
+    for n in fds {
+        let is_drm = root
+            .readlink(&format!("proc/{pid}/fd/{n}"))
+            .is_ok_and(|t| t.to_string_lossy().starts_with(crate::root::DRM_DIR));
+        if !is_drm {
+            continue;
+        }
         let Ok(text) = root.read(&format!("proc/{pid}/fdinfo/{n}")) else {
             continue;
         };
@@ -364,18 +391,43 @@ fn verdict(code: &str, text: String) -> Verdict {
     }
 }
 
-/// One process explained, or `failed` when there is no such process.
-pub fn inspect(
-    root: &Root,
-    pid: u32,
-    ctx: &Ctx,
-    owners: &mut Owners,
-) -> Result<Inspect, (Code, String)> {
+/// What `read` leaves for `finish`: the package database's answer, which
+/// may take seconds and so is asked with no sampler lock held (plan 006,
+/// part 4, decision 10).
+pub struct Pending {
+    out: Inspect,
+    exe: String,
+    in_home: bool,
+}
+
+/// The first half of the inspector: everything read from `proc/`.
+pub enum Read {
+    /// Explained already: a kernel thread, another user's process, or one
+    /// whose executable is not the host's to ask about.
+    Done(Box<Inspect>),
+    /// The executable's owner is still to be asked.
+    Owner(Box<Pending>),
+}
+
+/// One process read, or `failed` when there is no such process, or when
+/// it is not the one `ctx.start` names (`apps_process_gone`). The reads
+/// are checked against the process's start time when they end, so a pid
+/// reused in between is not explained with another process's files.
+pub fn read(root: &Root, pid: u32, ctx: &Ctx) -> Result<Read, (Code, String)> {
     let dir = format!("proc/{pid}");
-    let st = procfs::read_text(root, &format!("{dir}/stat"))
-        .as_deref()
-        .and_then(procfs::stat)
-        .ok_or_else(|| (Code::Failed, strings::apps_no_process(pid)))?;
+    let stat_now = || {
+        procfs::read_text(root, &format!("{dir}/stat"))
+            .as_deref()
+            .and_then(procfs::stat)
+    };
+    let st = stat_now().ok_or_else(|| (Code::Failed, strings::apps_no_process(pid)))?;
+    if ctx.start.is_some_and(|s| s != st.start) {
+        return Err((Code::Failed, strings::apps_process_gone(pid)));
+    }
+    let same = |st0: u64| match stat_now() {
+        Some(now) if now.start == st0 => Ok(()),
+        _ => Err((Code::Failed, strings::apps_process_gone(pid))),
+    };
     let status = procfs::read_text(root, &format!("{dir}/status"))
         .map(|t| procfs::status(&t))
         .unwrap_or_default();
@@ -425,7 +477,8 @@ pub fn inspect(
     };
     if kernel {
         out.verdict = verdict("kernel", strings::VERDICT_KERNEL.to_string());
-        return Ok(out);
+        same(st.start)?;
+        return Ok(Read::Done(Box::new(out)));
     }
     if status.uid != Some(ctx.own_uid) {
         // Another user's: name, CPU and memory only (plan 006, "Not
@@ -438,7 +491,8 @@ pub fn inspect(
             .or_else(|| status.uid.map(|u| u.to_string()))
             .unwrap_or_default();
         out.verdict = verdict("other-user", strings::verdict_other_user(&who));
-        return Ok(out);
+        same(st.start)?;
+        return Ok(Read::Done(Box::new(out)));
     }
 
     out.parents = parents(root, st.ppid);
@@ -465,11 +519,7 @@ pub fn inspect(
     }
     out.cgroup = cg;
     if out.flatpak.is_none() {
-        out.flatpak = root
-            .read(&format!("{dir}/root/.flatpak-info"))
-            .ok()
-            .as_deref()
-            .and_then(procfs::flatpak_info);
+        out.flatpak = procfs::read_flatpak_info(root, &dir);
     }
     out.arch = arch(root, pid);
     out.sandbox = Some(Sandbox {
@@ -499,13 +549,6 @@ pub fn inspect(
     // A path inside a sandbox or a container names a file of its own
     // tree, which the host's package database knows nothing about.
     let sandboxed = out.flatpak.is_some() || out.container.is_some();
-    let owner = match &out.exe {
-        Some(exe) if !sandboxed => owners.owner(exe),
-        _ => Owner::Unknown,
-    };
-    if let Owner::Package(p) = &owner {
-        out.package = Some(p.clone());
-    }
     let home = user
         .map(|u| u.home.as_str())
         .or(ctx.own_home)
@@ -514,7 +557,34 @@ pub fn inspect(
         (Some(exe), Some(h)) => exe.starts_with(&format!("{}/", h.trim_end_matches('/'))),
         _ => false,
     };
-    out.verdict = if out.exe_deleted {
+    same(st.start)?;
+    match out.exe.clone() {
+        Some(exe) if !sandboxed => Ok(Read::Owner(Box::new(Pending { out, exe, in_home }))),
+        _ => {
+            out.verdict = verdict_for(&out, Owner::Unknown, in_home);
+            Ok(Read::Done(Box::new(out)))
+        }
+    }
+}
+
+/// The second half: asks who owns the executable and forms the verdict.
+pub fn finish(p: Pending, owners: &mut Owners) -> Inspect {
+    let Pending {
+        mut out,
+        exe,
+        in_home,
+    } = p;
+    let owner = owners.owner(&exe);
+    if let Owner::Package(pkg) = &owner {
+        out.package = Some(pkg.clone());
+    }
+    out.verdict = verdict_for(&out, owner, in_home);
+    out
+}
+
+/// The verdict from fixed rules, in order.
+fn verdict_for(out: &Inspect, owner: Owner, in_home: bool) -> Verdict {
+    if out.exe_deleted {
         verdict("replaced", strings::VERDICT_REPLACED.to_string())
     } else if out.flatpak.is_some() {
         verdict("flatpak", strings::VERDICT_FLATPAK.to_string())
@@ -530,8 +600,7 @@ pub fn inspect(
             Owner::NotOwned => verdict("unowned", strings::VERDICT_UNOWNED.to_string()),
             Owner::Unknown => verdict("unknown", strings::VERDICT_UNKNOWN.to_string()),
         }
-    };
-    Ok(out)
+    }
 }
 
 #[cfg(test)]

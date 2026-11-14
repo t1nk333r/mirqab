@@ -1,13 +1,18 @@
 #!/usr/bin/env bash
 # tools/mkfixture.sh — writes generated fixture files from readable tables.
 #
-#   tools/mkfixture.sh procs [--out DIR]
+#   tools/mkfixture.sh procs [--out DIR] [--clones K]
 #       From tests/fixtures/procs.tsv, writes proc/<pid>/ for every process
 #       under DIR/root-desktop and DIR/root-desktop.t1 (default
 #       tests/fixtures), and proc/self/ns. Every numbered directory under
 #       those proc/ trees is removed first, so a row deleted from the table
 #       leaves nothing behind. tests/test-fixtures.sh runs it into a scratch
 #       directory and compares the result with the committed trees.
+#       --clones K also writes K copies of the user's (uid 1000) processes:
+#       copy k offsets pid, and ppid, pgrp, sid and tpgid where they name a
+#       user's process, by k x 100000, and suffixes the last unit of the
+#       cgroup path (`-c<k>` before `.scope` or `.service`), so groups
+#       multiply too. For tools/bench-idle.sh --procs; never committed.
 #
 # What it writes, per process (plan 006, "Tests and fixtures"): stat, statm,
 # status, cmdline and cgroup for everyone; for the user's own processes
@@ -28,7 +33,7 @@ declare -A NS_ID=([cgroup]=4026531835 [ipc]=4026531839 [mnt]=4026531841
 # What a renderD node's fd links to.
 DRM_NODE=/dev/dri/renderD128
 
-usage() { sed -n '2,10s/^# \{0,1\}//p' "$0"; }
+usage() { sed -n '2,15s/^# \{0,1\}//p' "$0"; }
 
 state_word() {
     case $1 in
@@ -154,12 +159,38 @@ write_proc() {
     fi
 }
 
+# clone_ref PID K — PID offset for copy K when it names a user's process.
+clone_ref() {
+    local p=$1 k=$2
+    if [[ $p =~ ^[0-9]+$ && -n ${USER_PIDS[$p]:-} ]]; then
+        echo $((p + k * 100000))
+    else
+        echo "$p"
+    fi
+}
+
+# clone_cgroup PATH K — the last unit of PATH with `-c<K>` before its type.
+clone_cgroup() {
+    local cg=$1 k=$2 last
+    last=${cg##*/}
+    case $last in
+    *.scope) echo "${cg%.scope}-c$k.scope" ;;
+    *.service) echo "${cg%.service}-c$k.service" ;;
+    *) echo "$cg" ;;
+    esac
+}
+
 procs() {
-    local out=tests/fixtures
+    local out=tests/fixtures clones=0
     while (($#)); do
         case $1 in
         --out)
             out=${2:?--out needs a directory}
+            shift 2
+            ;;
+        --clones)
+            clones=${2:?--clones needs a number}
+            [[ $clones =~ ^[0-9]+$ ]] || { usage >&2; exit 64; }
             shift 2
             ;;
         *) usage >&2; exit 64 ;;
@@ -189,6 +220,30 @@ procs() {
                 "$ut1" "$st1" "$thr" "$rss" "$shr" "$cgroup" "$exe" "$cmdline" "$ex1"
         fi
     done <tests/fixtures/procs.tsv
+    ((clones > 0)) || return 0
+    declare -gA USER_PIDS=()
+    while IFS=$'\t' read -r tree pid ppid uid _; do
+        [[ -z $tree || $tree == '#'* ]] && continue
+        [[ $uid == "$OWN_UID" ]] && USER_PIDS[$pid]=1
+    done <tests/fixtures/procs.tsv
+    local k cpid cppid cpgrp csid ctpgid ccg
+    for ((k = 1; k <= clones; k++)); do
+        while IFS=$'\t' read -r tree pid ppid uid state comm pgrp sid tpgid start ut st ut1 st1 thr rss shr cgroup exe cmdline extras; do
+            [[ -z $tree || $tree == '#'* || $uid != "$OWN_UID" ]] && continue
+            cpid=$((pid + k * 100000))
+            cppid=$(clone_ref "$ppid" "$k") cpgrp=$(clone_ref "$pgrp" "$k")
+            csid=$(clone_ref "$sid" "$k") ctpgid=$(clone_ref "$tpgid" "$k")
+            ccg=$(clone_cgroup "$cgroup" "$k")
+            if [[ $tree == both || $tree == t0 ]]; then
+                write_proc "$t0" "$cpid" "$cppid" "$uid" "$state" "$comm" "$cpgrp" "$csid" "$ctpgid" "$start" \
+                    "$ut" "$st" "$thr" "$rss" "$shr" "$ccg" "$exe" "$cmdline" "$extras"
+            fi
+            if [[ $tree == both || $tree == t1 ]]; then
+                write_proc "$t1" "$cpid" "$cppid" "$uid" "$state" "$comm" "$cpgrp" "$csid" "$ctpgid" "$start" \
+                    "$ut1" "$st1" "$thr" "$rss" "$shr" "$ccg" "$exe" "$cmdline" "$extras"
+            fi
+        done <tests/fixtures/procs.tsv
+    done
 }
 
 case ${1:-} in

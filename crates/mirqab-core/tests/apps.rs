@@ -7,14 +7,22 @@
 //! out rather than failing. Part 3: `start` in every listed process, and
 //! the `process` stream (one pid's `stat` and `statm`): its figures across
 //! the `.t1` twin, `gone` for a missing pid and a changed start time.
+//! Part 4: the "idle but heavy" tag with a fake focus source, the
+//! `top-apps` minute row, `apps.inspect` with a start time (S5), GPU
+//! memory read only from DRM fds and capped (D2), `.flatpak-info` read
+//! only as a regular file (D7), and `get`'s first reading taken in
+//! `prime` (D1).
 
 use mirqab_core::Root;
+use mirqab_core::desktop::{Focus, FocusedSince, focused_since};
 use mirqab_core::proto::stream::{AppGroup, AppsData, Inspect};
 use mirqab_core::sampler::Sampler;
+use mirqab_core::samplers::apps::focus::Thresholds;
 use mirqab_core::samplers::apps::{self, Apps};
 use mirqab_core::samplers::process::{self, Process};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 fn fixture(name: &str) -> Root {
@@ -345,6 +353,7 @@ fn the_stream_matches_its_golden_file() {
 fn inspect(a: &mut Apps, root: &Root, pid: u32) -> Value {
     a.query(root, "inspect", &json!({ "pid": pid }))
         .expect("a query the sampler knows")
+        .finish()
         .expect("an answer")
 }
 
@@ -775,5 +784,576 @@ fn a_get_of_a_missing_pid_does_not_wait() {
     assert_eq!(
         process::view(&got, &ask[0]),
         json!({"pid": 99999, "gone": true})
+    );
+}
+
+// --- Part 4 ------------------------------------------------------------------
+
+/// Focus changes, oldest first (`Some(pid)` a window, `None` none).
+type History = Vec<(Instant, Option<u32>)>;
+
+/// A focus source the test steers: a history of focus changes read by
+/// the same rule as Hyprland's (`desktop::focused_since`), whether a
+/// start succeeds, and how often it was started and stopped.
+#[derive(Clone, Default)]
+struct FakeFocus {
+    history: Arc<Mutex<History>>,
+    available: Arc<Mutex<bool>>,
+    running: Arc<Mutex<bool>>,
+    calls: Arc<Mutex<(u32, u32)>>,
+}
+
+impl FakeFocus {
+    /// A source that starts, with nothing focused yet.
+    fn up() -> FakeFocus {
+        let f = FakeFocus::default();
+        *f.available.lock().unwrap() = true;
+        f
+    }
+    /// Focus goes to `pid` (None: no window) at `at`.
+    fn focus(&self, at: Instant, pid: Option<u32>) {
+        self.history.lock().unwrap().push((at, pid));
+    }
+}
+
+impl Focus for FakeFocus {
+    fn start(&mut self, _root: &Root, _uid: u32) -> Result<&'static str, String> {
+        self.calls.lock().unwrap().0 += 1;
+        if *self.available.lock().unwrap() {
+            *self.running.lock().unwrap() = true;
+            Ok("fake")
+        } else {
+            Err("no source".into())
+        }
+    }
+    fn focused(&mut self, since: Instant) -> Option<FocusedSince> {
+        if !*self.running.lock().unwrap() {
+            return None;
+        }
+        Some(focused_since(&self.history.lock().unwrap(), since))
+    }
+    fn source(&self) -> Option<&'static str> {
+        self.running.lock().unwrap().then_some("fake")
+    }
+    fn stop(&mut self) {
+        *self.running.lock().unwrap() = false;
+        self.calls.lock().unwrap().1 += 1;
+    }
+}
+
+const CARGO: &str = "session:3030";
+const BROWSER: &str = "scope:app-Hyprland-browser.sh-5650fedc";
+
+/// Samples root-desktop and its `.t1` twin in turn, two seconds apart,
+/// from t0 + `from` s to t0 + `to` s; returns the last frame.
+fn alternate(a: &mut Apps, t0: Instant, from: u64, to: u64) -> AppsData {
+    let mut last = None;
+    for s in (from..=to).step_by(2) {
+        let tree = if (s / 2) % 2 == 0 {
+            "root-desktop"
+        } else {
+            "root-desktop.t1"
+        };
+        last = Some(data(a.sample(&fixture(tree), t0 + Duration::from_secs(s))));
+    }
+    last.unwrap()
+}
+
+#[test]
+fn a_busy_group_out_of_focus_is_tagged_once_its_window_is_full() {
+    let s = scratch("heavy");
+    let mut a = probed(&pacman(&s.0));
+    let fake = FakeFocus::up();
+    let t0 = Instant::now();
+    fake.focus(t0, Some(2001));
+    a.set_focus(Box::new(fake.clone()));
+    a.set_thresholds(Thresholds {
+        window: Duration::from_secs(3),
+        cpu: 20.0,
+    });
+    // cargo is 91 % and 0 % in turn (the twin's times go back), so 45.5 %
+    // on average; the browser is as busy, but it has the focus.
+    let d = alternate(&mut a, t0, 0, 4);
+    assert_eq!(d.focus.as_deref(), Some("fake"));
+    assert!(!by_id(&d, CARGO).idle_heavy, "the window is not full yet");
+    let d = alternate(&mut a, t0, 6, 6);
+    assert!(by_id(&d, CARGO).idle_heavy, "a full window, unfocused");
+    assert!(!by_id(&d, BROWSER).idle_heavy, "focused now");
+    assert!(
+        !by_id(&d, "session:3010").idle_heavy,
+        "vite: 6 % on average"
+    );
+    assert!(
+        d.groups.iter().filter(|g| g.idle_heavy).count() == 1,
+        "{:?}",
+        d.groups
+            .iter()
+            .filter(|g| g.idle_heavy)
+            .map(|g| &g.id)
+            .collect::<Vec<_>>()
+    );
+    // The serialised frame says it; an untagged group says nothing.
+    let v = serde_json::to_value(&d).unwrap();
+    let row = |id: &str| {
+        v["groups"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|g| g["id"] == id)
+            .unwrap()
+            .clone()
+    };
+    assert_eq!(row(CARGO)["idleHeavy"], true);
+    assert!(row(BROWSER).get("idleHeavy").is_none());
+    // A get while subscribed carries the tag too, and moves nothing.
+    let got = data(a.snapshot(&fixture("root-desktop.t1"), t0 + Duration::from_secs(8)));
+    assert!(by_id(&got, CARGO).idle_heavy);
+    // Alt-tab to the terminal: cargo is in view at once, and the browser,
+    // focused a second ago, is not "idle" (review of PR #20, B1).
+    fake.focus(t0 + Duration::from_secs(7), Some(3000));
+    let d = alternate(&mut a, t0, 8, 8);
+    assert!(!by_id(&d, CARGO).idle_heavy, "cleared at once");
+    assert!(!by_id(&d, BROWSER).idle_heavy, "it had focus a second ago");
+    // Window [7, 10] still touches the browser's focus, which ended at 7.
+    let d = alternate(&mut a, t0, 10, 10);
+    assert!(!by_id(&d, BROWSER).idle_heavy, "focus lost only 3 s ago");
+    // Window [9, 12]: a whole window since the browser lost focus.
+    let d = alternate(&mut a, t0, 12, 12);
+    assert!(
+        by_id(&d, BROWSER).idle_heavy,
+        "a full window since focus was lost"
+    );
+    assert!(!by_id(&d, CARGO).idle_heavy, "the terminal still has focus");
+    // Left without subscribers: the source stops and the windows go.
+    assert!(a.windows() > 0);
+    a.idle();
+    assert_eq!(a.windows(), 0);
+    assert_eq!(
+        *fake.calls.lock().unwrap(),
+        (1, 1),
+        "started once, stopped once"
+    );
+    // A page opened later starts the source again and counts afresh.
+    let d = alternate(&mut a, t0, 14, 16);
+    assert_eq!(fake.calls.lock().unwrap().0, 2);
+    assert!(!by_id(&d, BROWSER).idle_heavy);
+}
+
+#[test]
+fn no_window_in_focus_for_a_whole_window_tags() {
+    let s = scratch("blank");
+    let mut a = probed(&pacman(&s.0));
+    let fake = FakeFocus::up();
+    let t0 = Instant::now();
+    fake.focus(t0, Some(2001));
+    fake.focus(t0 + Duration::from_secs(1), None);
+    a.set_focus(Box::new(fake.clone()));
+    a.set_thresholds(Thresholds {
+        window: Duration::from_secs(3),
+        cpu: 20.0,
+    });
+    let d = alternate(&mut a, t0, 0, 4);
+    assert!(!by_id(&d, BROWSER).idle_heavy, "not a full window yet");
+    let d = alternate(&mut a, t0, 6, 6);
+    assert!(
+        by_id(&d, BROWSER).idle_heavy,
+        "no window since 1 s: window [3, 6]"
+    );
+    assert!(by_id(&d, CARGO).idle_heavy);
+}
+
+#[test]
+fn a_focus_source_that_is_not_running_is_asked_again_every_30_s() {
+    let s = scratch("retry");
+    let mut a = probed(&pacman(&s.0));
+    let fake = FakeFocus::default();
+    a.set_focus(Box::new(fake.clone()));
+    let t0 = Instant::now();
+    let root = fixture("root-desktop");
+    let starts = || fake.calls.lock().unwrap().0;
+    for at in [0, 2, 28] {
+        a.sample(&root, t0 + Duration::from_secs(at));
+    }
+    assert_eq!(starts(), 1, "once, not every tick");
+    a.sample(&root, t0 + Duration::from_secs(30));
+    assert_eq!(starts(), 2, "again after 30 s (review of PR #20, S3)");
+    *fake.available.lock().unwrap() = true;
+    let d = data(a.sample(&root, t0 + Duration::from_secs(60)));
+    assert_eq!(starts(), 3);
+    assert_eq!(
+        d.focus.as_deref(),
+        Some("fake"),
+        "found while the page is open"
+    );
+    a.sample(&root, t0 + Duration::from_secs(62));
+    assert_eq!(starts(), 3, "a running source is not started again");
+    a.idle();
+    a.sample(&root, t0 + Duration::from_secs(64));
+    assert_eq!(starts(), 4, "after idle, at once");
+}
+
+#[test]
+fn without_a_focus_source_nothing_is_tagged() {
+    let s = scratch("nofocus");
+    let mut a = probed(&pacman(&s.0));
+    let fake = FakeFocus::default();
+    a.set_focus(Box::new(fake.clone()));
+    a.set_thresholds(Thresholds {
+        window: Duration::from_secs(3),
+        cpu: 20.0,
+    });
+    let d = alternate(&mut a, Instant::now(), 0, 12);
+    assert!(d.focus.is_none());
+    assert!(d.groups.iter().all(|g| !g.idle_heavy));
+    assert_eq!(a.windows(), 0, "no windows are kept without a source");
+    assert_eq!(
+        fake.calls.lock().unwrap().0,
+        1,
+        "asked once, not every tick"
+    );
+}
+
+fn on() -> Value {
+    json!({"trends": {"topApps": true}})
+}
+
+#[test]
+fn the_top_apps_row_names_the_heaviest_and_only_when_it_says_something() {
+    let s = scratch("top");
+    let mut a = probed(&pacman(&s.0));
+    let t0 = Instant::now();
+    // No subscriber: the first minute only takes its baseline.
+    assert!(a.top_apps(&fixture("root-desktop"), &on(), t0).is_empty());
+    // Two seconds' worth of the twin's ticks over a whole minute: cargo
+    // at 3 % of a core, under the 10 % rule.
+    assert!(
+        a.top_apps(
+            &fixture("root-desktop.t1"),
+            &on(),
+            t0 + Duration::from_secs(60)
+        )
+        .is_empty()
+    );
+    let walks = a.walks();
+    assert_eq!(walks, 2, "one walk a minute (the probe walks none)");
+    // The subscriber's frames: cargo at 91 %, read from the last sample.
+    let _ = two_samples(&mut a);
+    let walks = a.walks();
+    let rows = a.top_apps(&fixture("root-desktop"), &on(), Instant::now());
+    assert_eq!(a.walks(), walks, "no walk of its own while subscribed");
+    assert_eq!(rows.len(), 1);
+    let (kind, row) = &rows[0];
+    assert_eq!(*kind, apps::TOP_APPS);
+    assert_eq!(
+        row["cpu"],
+        json!([["cargo", 91.0], ["Example Browser", 66.0], ["vite", 12.0]])
+    );
+    assert_eq!(row["mem"][0], json!(["cargo", 1_710_080_000_u64]));
+    assert_eq!(row["mem"][1][0], "Example Browser");
+    assert_eq!(row["mem"][2][0], "Hyprland");
+    assert_eq!(row["procs"], 44);
+    assert_eq!(
+        row.as_object().unwrap().keys().collect::<Vec<_>>(),
+        ["cpu", "mem", "procs"],
+        "names only: no ids, units, pids or command lines"
+    );
+    let text = row.to_string();
+    for no in ["scope:", "session:", "2001", "/usr/", "--"] {
+        assert!(!text.contains(no), "{no} in {text}");
+    }
+    // The same six names again: nothing.
+    assert!(
+        a.top_apps(&fixture("root-desktop"), &on(), Instant::now())
+            .is_empty()
+    );
+    // Off: nothing, and no walk.
+    a.idle();
+    let walks = a.walks();
+    let off = json!({"trends": {"topApps": false}});
+    assert!(
+        a.top_apps(&fixture("root-desktop"), &off, Instant::now())
+            .is_empty()
+    );
+    assert_eq!(a.walks(), walks);
+}
+
+#[test]
+fn the_top_apps_row_from_walks_a_minute_apart() {
+    let s = scratch("topwalk");
+    let mut a = probed(&pacman(&s.0));
+    let t0 = Instant::now();
+    assert!(a.top_apps(&fixture("root-desktop"), &on(), t0).is_empty());
+    // Two seconds apart, so the rates are the twin's.
+    let rows = a.top_apps(
+        &fixture("root-desktop.t1"),
+        &on(),
+        t0 + Duration::from_secs(2),
+    );
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].1["cpu"][0], json!(["cargo", 91.0]));
+    // A baseline older than two and a half minutes gives nothing.
+    assert!(
+        a.top_apps(
+            &fixture("root-desktop"),
+            &on(),
+            t0 + Duration::from_secs(300)
+        )
+        .is_empty()
+    );
+}
+
+fn inspect_with(
+    a: &mut Apps,
+    root: &Root,
+    params: Value,
+) -> Result<Value, (mirqab_core::proto::Code, String)> {
+    a.query(root, "inspect", &params).expect("known").finish()
+}
+
+#[test]
+fn the_inspector_asked_with_a_start_time_answers_gone_for_another_process() {
+    let s = scratch("s5");
+    let mut a = probed(&pacman(&s.0));
+    // pid 7000 is `oldjob` (start 300000) in root-desktop and `newjob`
+    // (start 360000) in the twin.
+    let ok = inspect_with(
+        &mut a,
+        &fixture("root-desktop"),
+        json!({"pid": 7000, "start": 300000}),
+    )
+    .unwrap();
+    assert_eq!(ok["name"], "oldjob");
+    let (code, msg) = inspect_with(
+        &mut a,
+        &fixture("root-desktop.t1"),
+        json!({"pid": 7000, "start": 300000}),
+    )
+    .unwrap_err();
+    assert_eq!(code, mirqab_core::proto::Code::Failed);
+    assert_eq!(msg, "pid 7000 is another process now");
+    let log = std::fs::read_to_string(s.0.join("pacman.log")).unwrap();
+    assert!(!log.contains("newjob"), "no verdict was formed: {log}");
+    // Without a start, as today: the process at the pid now.
+    let now = inspect_with(&mut a, &fixture("root-desktop.t1"), json!({"pid": 7000})).unwrap();
+    assert_eq!(now["name"], "newjob");
+    let (code, _) = inspect_with(
+        &mut a,
+        &fixture("root-desktop"),
+        json!({"pid": 7000, "start": "x"}),
+    )
+    .unwrap_err();
+    assert_eq!(code, mirqab_core::proto::Code::BadRequest);
+}
+
+#[test]
+fn the_inspector_asks_pacman_after_the_lock() {
+    // The verdict's package question is a closure the server runs once it
+    // let go of the sampler's lock; a kernel thread needs none.
+    let s = scratch("later");
+    let mut a = probed(&pacman(&s.0));
+    let root = fixture("root-desktop");
+    let later = a.query(&root, "inspect", &json!({"pid": 2001})).unwrap();
+    assert!(matches!(later, mirqab_core::sampler::Answer::Later(_)));
+    let log = std::fs::read_to_string(s.0.join("pacman.log")).unwrap();
+    assert!(log.is_empty(), "nothing asked yet: {log}");
+    assert_eq!(later.finish().unwrap()["verdict"]["code"], "packaged");
+    let kernel = a.query(&root, "inspect", &json!({"pid": 3})).unwrap();
+    assert!(matches!(kernel, mirqab_core::sampler::Answer::Ready(_)));
+}
+
+/// A process of the user (uid 1000) in a bare root: stat, status, and the
+/// login session's cgroup (no user unit claims it).
+fn own_proc(root: &Path, pid: u32, comm: &str) -> PathBuf {
+    let p = root.join(format!("proc/{pid}"));
+    std::fs::create_dir_all(&p).unwrap();
+    std::fs::write(
+        p.join("stat"),
+        format!("{pid} ({comm}) S 1 {pid} {pid} 0 -1 4194560 0 0 0 0 5 5 0 0 20 0 1 0 100 0 0 0"),
+    )
+    .unwrap();
+    std::fs::write(p.join("status"), "Uid:\t1000\t1000\t1000\t1000\n").unwrap();
+    std::fs::write(
+        p.join("cgroup"),
+        "0::/user.slice/user-1000.slice/session-2.scope\n",
+    )
+    .unwrap();
+    p
+}
+
+fn drm_fdinfo(client: u32, vram_kib: u64) -> String {
+    format!(
+        "pos:\t0\nflags:\t02100002\ndrm-driver:\tamdgpu\ndrm-client-id:\t{client}\ndrm-memory-vram:\t{vram_kib} KiB\n"
+    )
+}
+
+#[test]
+fn gpu_memory_comes_only_from_drm_fds_and_not_past_the_cap() {
+    let s = bare_root("gpu");
+    let p = own_proc(&s.0, 9300, "render");
+    std::fs::create_dir_all(p.join("fd")).unwrap();
+    std::fs::create_dir_all(p.join("fdinfo")).unwrap();
+    std::os::unix::fs::symlink("/dev/dri/renderD128", p.join("fd/3")).unwrap();
+    std::os::unix::fs::symlink("/tmp/not-a-gpu", p.join("fd/4")).unwrap();
+    std::os::unix::fs::symlink("socket:[1]", p.join("fd/5")).unwrap();
+    std::fs::write(p.join("fdinfo/3"), drm_fdinfo(1, 1024)).unwrap();
+    // It would parse, but its fd is no DRM node: never read.
+    std::fs::write(p.join("fdinfo/4"), drm_fdinfo(2, 4096)).unwrap();
+    std::fs::write(p.join("fdinfo/5"), "pos:\t0\n").unwrap();
+    let root = Root::new(&s.0);
+    let mut a = Apps::with_pacman(s.0.join("pacman").to_string_lossy());
+    a.probe(&root).unwrap();
+    let v = inspect(&mut a, &root, 9300);
+    assert_eq!(v["gpu"]["vramBytes"], 1024 * 1024, "{v}");
+    assert_eq!(v["files"]["count"], 3);
+
+    // Past 1024 fds the row is left out (and the rest still answers).
+    let q = own_proc(&s.0, 9301, "many");
+    std::fs::create_dir_all(q.join("fd")).unwrap();
+    std::fs::create_dir_all(q.join("fdinfo")).unwrap();
+    for n in 0..1100 {
+        std::os::unix::fs::symlink("/dev/dri/renderD128", q.join(format!("fd/{n}"))).unwrap();
+        std::fs::write(q.join(format!("fdinfo/{n}")), drm_fdinfo(n, 1)).unwrap();
+    }
+    let v = inspect(&mut a, &root, 9301);
+    assert!(v.get("gpu").is_none(), "{}", v["gpu"]);
+    assert_eq!(v["name"], "many");
+}
+
+#[test]
+fn a_fifo_for_flatpak_info_does_not_stall_the_walk() {
+    let s = bare_root("fifo");
+    let p = own_proc(&s.0, 9400, "sneaky");
+    std::fs::create_dir_all(p.join("root")).unwrap();
+    let st = std::process::Command::new("mkfifo")
+        .arg(p.join("root/.flatpak-info"))
+        .status()
+        .expect("mkfifo runs");
+    assert!(st.success());
+    let base = s.0.clone();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let root = Root::new(&base);
+        let mut a = Apps::with_pacman(base.join("pacman").to_string_lossy());
+        a.probe(&root).unwrap();
+        let d = data(a.sample(&root, Instant::now()));
+        let v = inspect(&mut a, &root, 9400);
+        tx.send((d, v)).unwrap();
+    });
+    let (d, v) = rx
+        .recv_timeout(Duration::from_secs(10))
+        .expect("the walk and the inspector finish");
+    let g = d.groups.iter().find(|g| g.pids.contains(&9400)).unwrap();
+    assert_ne!(g.kind, "flatpak");
+    assert!(v.get("flatpak").is_none(), "{v}");
+    // A symlink there is not followed either.
+    let q = own_proc(&s.0, 9401, "linked");
+    std::fs::create_dir_all(q.join("root")).unwrap();
+    std::fs::write(
+        s.0.join("real-info"),
+        "[Application]\nname=org.example.Fake\n",
+    )
+    .unwrap();
+    std::os::unix::fs::symlink(s.0.join("real-info"), q.join("root/.flatpak-info")).unwrap();
+    let root = Root::new(&s.0);
+    let mut a = Apps::with_pacman(s.0.join("pacman").to_string_lossy());
+    a.probe(&root).unwrap();
+    let d = data(a.sample(&root, Instant::now()));
+    let g = d.groups.iter().find(|g| g.pids.contains(&9401)).unwrap();
+    assert_ne!(g.kind, "flatpak");
+}
+
+fn cargo_cpu(v: Value) -> f64 {
+    by_id(&data(v), CARGO).cpu.expect("a rate")
+}
+
+#[test]
+fn each_get_is_served_its_own_primed_reading_oldest_first() {
+    // Review of PR #20, S1: two gets primed 300 ms apart each read their
+    // own first reading, half a second old, never one a millisecond old.
+    let s = scratch("prime");
+    let mut a = probed(&pacman(&s.0));
+    let (t0, t1) = (fixture("root-desktop"), fixture("root-desktop.t1"));
+    let gap = a
+        .prime(&t0, Instant::now())
+        .expect("no subscriber baseline: a wait");
+    assert_eq!(gap, Duration::from_millis(500));
+    std::thread::sleep(Duration::from_millis(300));
+    a.prime(&t0, Instant::now()).unwrap();
+    assert_eq!(a.primed(), 2);
+    std::thread::sleep(Duration::from_millis(200));
+    // The twin's ticks are two seconds' worth: 91 % over 2 s is 364 % over
+    // the half second between the readings.
+    let near = |c: f64| (c - 364.0).abs() < 364.0 * 0.2;
+    let first = cargo_cpu(a.snapshot(&t1, Instant::now()));
+    assert!(near(first), "{first}");
+    std::thread::sleep(Duration::from_millis(300));
+    let second = cargo_cpu(a.snapshot(&t1, Instant::now()));
+    assert!(near(second), "{second}");
+    assert_eq!(a.primed(), 0);
+    // A reading 2 ms old is too young: dropped, and the snapshot takes its
+    // own two readings half a second apart.
+    a.prime(&t0, Instant::now()).unwrap();
+    std::thread::sleep(Duration::from_millis(2));
+    let t = Instant::now();
+    a.snapshot(&t0, Instant::now());
+    assert!(
+        t.elapsed() >= Duration::from_millis(400),
+        "{:?}",
+        t.elapsed()
+    );
+    // idle clears the queue.
+    a.prime(&t0, Instant::now()).unwrap();
+    a.idle();
+    assert_eq!(a.primed(), 0);
+    // A young subscriber baseline needs no wait.
+    let now = Instant::now();
+    a.sample(&t0, now);
+    assert!(a.prime(&t0, now + Duration::from_secs(2)).is_none());
+}
+
+#[test]
+fn the_process_stream_serves_each_get_its_own_primed_reading() {
+    let mut p = process_probed();
+    let (t0, t1) = (fixture("root-desktop"), fixture("root-desktop.t1"));
+    let params = [json!({"pid": 2001})];
+    p.wants(&params);
+    p.prime(&t0, Instant::now()).expect("a wait");
+    std::thread::sleep(Duration::from_millis(300));
+    p.wants(&params);
+    p.prime(&t0, Instant::now()).expect("a wait");
+    std::thread::sleep(Duration::from_millis(200));
+    let cpu = |v: Value| {
+        process::view(&v, &params[0])["cpu"]
+            .as_f64()
+            .expect("a rate")
+    };
+    p.wants(&params);
+    let first = cpu(p.snapshot(&t1, Instant::now()));
+    std::thread::sleep(Duration::from_millis(300));
+    p.wants(&params);
+    let second = cpu(p.snapshot(&t1, Instant::now()));
+    // The browser's main process: its two-second delta over half a second.
+    let two_s = {
+        let mut q = process_probed();
+        q.wants(&params);
+        let t = Instant::now();
+        q.sample(&t0, t);
+        process::view(&q.sample(&t1, t + Duration::from_secs(2)), &params[0])["cpu"]
+            .as_f64()
+            .unwrap()
+    };
+    for c in [first, second] {
+        assert!(
+            (c - two_s * 4.0).abs() < two_s * 4.0 * 0.2,
+            "{c} vs {}",
+            two_s * 4.0
+        );
+    }
+    let t = Instant::now();
+    p.wants(&params);
+    p.snapshot(&t1, Instant::now());
+    assert!(
+        t.elapsed() >= Duration::from_millis(400),
+        "the queue is empty"
     );
 }
