@@ -14,7 +14,12 @@ fn v(ids: &[&str]) -> Vec<String> {
 fn a_first_run_is_seeded_once() {
     assert_eq!(
         home::seed(&[], false),
-        Some(v(&["system.overview", "system.cpu", "system.memory"]))
+        Some(v(&[
+            "system.overview",
+            "system.cpu",
+            "system.memory",
+            "apps.top"
+        ]))
     );
     assert_eq!(
         home::seed(&[], true),

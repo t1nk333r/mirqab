@@ -62,122 +62,17 @@ pub(crate) fn apps_lines(d: &AppsData, all: bool) -> Vec<String> {
 }
 
 /// `mirqab what`'s lines: the verdict, then one labelled line per field
-/// the daemon could read. `private` adds the command line and the working
-/// directory, which the MCP tool leaves out. Every value is made `plain`,
-/// as a process names itself.
+/// the daemon could read (`mirqab_view::tabs::apps::inspect_rows`, which
+/// the Apps inspector shows too). `private` adds the command line and the
+/// working directory, which the MCP tool leaves out. Every value is made
+/// `plain`, as a process names itself.
 pub(crate) fn what_lines(i: &Inspect, private: bool) -> Vec<String> {
     let mut out = vec![strings::plain(&i.verdict.text).into_owned()];
-    let mut line = |label: &str, value: String| out.push(strings::what_line(label, &value));
-    line(strings::WHAT_PROCESS, strings::proc_ref(&i.name, i.pid));
-    if !i.parents.is_empty() {
-        let chain: Vec<String> = i
-            .parents
-            .iter()
-            .map(|p| strings::proc_ref(&p.name, p.pid))
-            .collect();
-        line(strings::WHAT_PARENTS, chain.join(", "));
-    }
-    match (&i.user, i.uid) {
-        (Some(u), Some(uid)) => line(strings::WHAT_USER, strings::proc_ref(u, uid)),
-        (None, Some(uid)) => line(strings::WHAT_USER, uid.to_string()),
-        _ => {}
-    }
-    if let Some(age) = i.age_sec {
-        line(
-            strings::WHAT_STARTED,
-            strings::started_ago(&format::duration(age)),
-        );
-    }
-    if let Some(t) = i.cpu_time_sec {
-        line(strings::WHAT_CPU_TIME, format::duration(t as u64));
-    }
-    if let Some(t) = i.threads {
-        line(strings::WHAT_THREADS, t.to_string());
-    }
-    if let Some(s) = &i.state {
-        line(strings::WHAT_STATE, strings::state_word(s).to_string());
-    }
-    if let Some(e) = &i.exe {
-        let shown = if i.exe_deleted {
-            strings::exe_replaced(e)
-        } else {
-            e.clone()
-        };
-        line(strings::WHAT_EXE, shown);
-    }
-    if let Some(p) = &i.package {
-        line(
-            strings::WHAT_PACKAGE,
-            strings::package_line(&p.name, p.repo.as_deref()),
-        );
-    }
-    if let Some(a) = &i.arch {
-        line(
-            strings::WHAT_ARCH,
-            strings::arch_line(&a.machine, a.bits, a.foreign),
-        );
-    }
-    if let Some(u) = &i.unit {
-        line(strings::WHAT_UNIT, u.clone());
-    }
-    if let Some(g) = &i.group {
-        line(strings::WHAT_GROUP, g.name.clone());
-    }
-    if let Some(f) = &i.flatpak {
-        line(strings::WHAT_FLATPAK, f.clone());
-    }
-    if let Some(c) = &i.container {
-        line(strings::WHAT_CONTAINER, c.clone());
-    }
-    if let Some(s) = &i.sandbox {
-        line(
-            strings::WHAT_SANDBOX,
-            strings::sandbox_line(
-                s.seccomp.as_deref(),
-                s.no_new_privs,
-                &s.capabilities,
-                &s.namespaces,
-            ),
-        );
-    }
-    if let Some(m) = &i.memory {
-        let pss = m.pss_bytes.map(format::bytes);
-        let swap = m.swap_bytes.map(format::bytes);
-        line(
-            strings::WHAT_MEMORY,
-            strings::memory_line(&format::bytes(m.rss_bytes), pss.as_deref(), swap.as_deref()),
-        );
-    }
-    if let Some(f) = &i.files {
-        line(strings::WHAT_FILES, strings::files_line(f.count, f.sockets));
-    }
-    if let Some(g) = &i.gpu {
-        let (v, t, c) = (
-            g.vram_bytes.map(format::bytes),
-            g.gtt_bytes.map(format::bytes),
-            g.cpu_bytes.map(format::bytes),
-        );
-        line(
-            strings::WHAT_GPU,
-            strings::gpu_memory_line(v.as_deref(), t.as_deref(), c.as_deref()),
-        );
-    }
-    if private {
-        if let Some(d) = &i.cwd {
-            line(strings::WHAT_CWD, strings::plain(d).into_owned());
-        }
-        if !i.cmdline.is_empty() {
-            line(
-                strings::WHAT_COMMAND,
-                strings::plain(&i.cmdline.join(" ")).into_owned(),
-            );
-        }
-        if let Some(f) = &i.files {
-            for p in &f.paths {
-                line(strings::WHAT_OPEN, strings::plain(p).into_owned());
-            }
-        }
-    }
+    out.extend(
+        mirqab_view::tabs::apps::inspect_rows(i, private)
+            .into_iter()
+            .map(|(label, value)| strings::what_line(label, &value)),
+    );
     out
 }
 

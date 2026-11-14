@@ -5,9 +5,11 @@
 //!
 //! Subscriptions are handles. The daemon keeps one subscription per stream
 //! and client, so the handles of one stream are merged: the shortest
-//! interval any holds, and `live` while any live handle exists. Dropping
-//! the last handle unsubscribes. After a reconnect every stream with
-//! handles is subscribed again.
+//! interval any holds, and `live` while any live handle exists. Their other
+//! params are merged by the stream's rule when one is set (`set_merge`;
+//! the `apps` page and the `apps.top` card, plan 006), otherwise the first
+//! handle's win. Dropping the last handle unsubscribes. After a reconnect
+//! every stream with handles is subscribed again.
 
 use gtk::gio;
 use gtk::gio::prelude::*;
@@ -24,6 +26,10 @@ use std::time::Duration;
 type EventFn = Rc<dyn Fn(&Value)>;
 type ReplyFn = Box<dyn FnOnce(Result<Value, ErrorBody>)>;
 type StateFn = Rc<dyn Fn(&Client)>;
+/// What a request's reply is handed to, through `Source`.
+pub type Reply = Box<dyn FnOnce(Result<Value, ErrorBody>)>;
+/// A stream's rule for merging its handles' params into one subscription.
+pub type Merge = fn(&[Value]) -> Value;
 
 /// What a stream subscription asks the daemon for.
 #[derive(Debug, Clone, PartialEq)]
@@ -46,13 +52,21 @@ struct StreamSubs {
 }
 
 impl StreamSubs {
-    fn wanted(&self) -> Option<Params> {
+    fn wanted(&self, merge: Option<Merge>) -> Option<Params> {
         let mut it = self.handles.values();
         let first = it.next()?;
         let mut p = first.params.clone();
         for h in it {
             p.interval = p.interval.min(h.params.interval);
             p.live |= h.params.live;
+        }
+        if let Some(merge) = merge {
+            let extras: Vec<Value> = self
+                .handles
+                .values()
+                .map(|h| h.params.extra.clone())
+                .collect();
+            p.extra = merge(&extras);
         }
         Some(p)
     }
@@ -67,6 +81,7 @@ struct State {
     next_id: u64,
     pending: HashMap<u64, ReplyFn>,
     subs: BTreeMap<String, StreamSubs>,
+    merges: HashMap<String, Merge>,
     next_handle: u64,
     connected: bool,
     capabilities: Vec<String>,
@@ -119,17 +134,28 @@ impl Drop for Subscription {
 pub trait Source {
     /// A subscription without `live`: the 2 s floor applies (§5.3).
     fn subscribe(&self, stream: &str, interval_ms: u64, on_event: EventFn) -> Box<dyn Any>;
-    /// A live subscription. Only `widgets/graph.rs` calls this (lint).
-    fn subscribe_live(&self, stream: &str, on_event: EventFn) -> Box<dyn Any>;
+    /// A live subscription with the stream's `params` (the `process`
+    /// stream's pid and start). Only `widgets/graph.rs` calls this (lint).
+    fn subscribe_live(&self, stream: &str, params: Value, on_event: EventFn) -> Box<dyn Any>;
+    /// One request; `on_reply` gets the result or the error, with its data.
+    fn request(&self, method: &str, params: Value, on_reply: Reply);
+    /// One `get` of `stream` (or a query under it, `apps.inspect`).
+    fn get(&self, stream: &str, params: Value, on_reply: Reply);
 }
 
 impl Source for Client {
     fn subscribe(&self, stream: &str, interval_ms: u64, on_event: EventFn) -> Box<dyn Any> {
         Box::new(self.subscribe_with(stream, interval_ms, false, Value::Null, on_event))
     }
-    fn subscribe_live(&self, stream: &str, on_event: EventFn) -> Box<dyn Any> {
+    fn subscribe_live(&self, stream: &str, params: Value, on_event: EventFn) -> Box<dyn Any> {
         // The daemon raises 1000 to `live.intervalMs` (§5.3).
-        Box::new(self.subscribe_with(stream, 1000, true, Value::Null, on_event))
+        Box::new(self.subscribe_with(stream, 1000, true, params, on_event))
+    }
+    fn request(&self, method: &str, params: Value, on_reply: Reply) {
+        Client::request(self, method, params, on_reply);
+    }
+    fn get(&self, stream: &str, params: Value, on_reply: Reply) {
+        self.send(Request::new(0, "get").with_stream(stream), params, on_reply);
     }
 }
 
@@ -174,6 +200,18 @@ impl Client {
     /// Called on every connect and disconnect.
     pub fn on_state(&self, f: impl Fn(&Client) + 'static) {
         self.0.state.borrow_mut().listeners.push(Rc::new(f));
+    }
+
+    /// Merges the params of `stream`'s handles with `merge` instead of
+    /// taking the first handle's. Set once, at start-up, before anything
+    /// subscribes to the stream.
+    pub fn set_merge(&self, stream: &str, merge: Merge) {
+        self.0
+            .state
+            .borrow_mut()
+            .merges
+            .insert(stream.to_string(), merge);
+        self.sync(stream);
     }
 
     /// Stops reconnecting and drops the connection (the process is ending).
@@ -250,6 +288,16 @@ impl Client {
         params: Value,
         on_reply: impl FnOnce(Result<Value, ErrorBody>) + 'static,
     ) {
+        self.send(Request::new(0, method), params, on_reply);
+    }
+
+    /// `req` with its id and `params`; the reply goes to `on_reply`.
+    fn send(
+        &self,
+        req: Request,
+        params: Value,
+        on_reply: impl FnOnce(Result<Value, ErrorBody>) + 'static,
+    ) {
         let line = {
             let mut st = self.0.state.borrow_mut();
             if !st.connected {
@@ -264,7 +312,9 @@ impl Client {
             st.next_id += 1;
             let id = st.next_id;
             st.pending.insert(id, Box::new(on_reply));
-            frame::encode(&Request::new(id, method).with_params(params))
+            let mut req = req.with_params(params);
+            req.id = id;
+            frame::encode(&req)
         };
         self.write(line);
     }
@@ -277,10 +327,11 @@ impl Client {
             if !st.connected {
                 return;
             }
+            let merge = st.merges.get(stream).copied();
             let Some(subs) = st.subs.get_mut(stream) else {
                 return;
             };
-            let wanted = subs.wanted();
+            let wanted = subs.wanted(merge);
             if wanted == subs.sent {
                 return;
             }

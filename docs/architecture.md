@@ -391,7 +391,9 @@ Streams: `system`, `apps`, `process`, `ports`, `agents`, `awake`, `disk`,
   dropped when it has none). A pid past the eighth gets `{pid, capped:
   true}`. A `get` reads the process at the pid now and no pin. It is its
   own sampler with its own lock, so a 1 s reading never waits behind the
-  `apps` walk.
+  `apps` walk. It also reads a thread id's own `stat`, harmlessly; the
+  interface never sends a typed number, only the `pid` and `start` of a
+  process row of the `apps` frame.
 - **Live sampling is 1 s, and only while a live graph is on screen**
   (owner, 2026-11-13). A subscription with `live: true` may ask for
   **1000 ms**, the lowest interval anywhere. The interface sets `live`
@@ -681,6 +683,10 @@ Sizes are in em of the base font so the fractional-scale case works.
   class and named in `crates/mirqab-view/src/icons.rs` only. Rejected: a
   vendored symbolic SVG set (hundreds of files to keep in step), and the
   Adwaita icon theme alone (it has no icon for fans, ports or agents).
+  The Apps tab's rows show an app's own icon from the icon theme, by name
+  (the desktop entry's `Icon=` when the display's theme has it; a value
+  with a `/` in it is never loaded), and the glyph of the row's kind
+  otherwise (plan 006).
 - **Strings live in one place.** The first release is English only
   (owner, 2026-11-13). Every string a person reads, in the interface, the
   CLI and the daemon's stream data, is a function or constant in
@@ -806,6 +812,21 @@ Three layers, cheapest first:
    a fixture root, waits for the first event, prints the widget tree as
    JSON (type, style classes, text, accessible label) and exits.
    `tests/test-ui-<tab>.sh` asserts on that JSON with `jq`.
+   With `--do STEPS` (accepted only with `MIRQAB_TEST=1`) it first runs
+   scripted steps, separated by `;`, after the page's first data:
+   `type NAME TEXT` (an editable's text), `activate NAME` (a switch is
+   toggled; otherwise the widget or the nearest parent that can be
+   activated is, so a `ListView` row activates its position), `respond
+   ID` (the open dialog's response), `wait NAME` and `pause MS`. Every
+   step that names a widget waits up to 5 s for a mapped widget of that
+   name; NAME is the widget name the dump prints. A dialog presented on
+   the window (`adw::AlertDialog`) is in the window's tree, so the dump
+   shows its heading and body (checked under Broadway, plan 006). The
+   Apps page names `apps-search`, `apps-flatten`, `apps-group:<id>`,
+   `apps-process:<pid>`, `apps-inspector`, `apps-verdict`, `apps-quit`,
+   `apps-force-quit`, `apps-dialog` and `apps-result`; the `apps.top`
+   card's rows are `apps-top:<id>`. An action under test goes to a daemon
+   on a fixture root, whose recording sender signals nothing.
 
 Not covered headless: the layer-shell popover (Broadway is not Wayland).
 Plan 001 has an **[unverified]** step to run the popover tests under a

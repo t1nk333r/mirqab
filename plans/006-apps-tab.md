@@ -10,10 +10,11 @@
 - **Depends on**: 001, 005
 - **Category**: tab
 - **Planned at**: 2026-11-13, from the owner
-- **State**: IN PROGRESS (parts 1, 2 and 3a of 4: sampler, inspector, read
-  CLI and MCP; Quit and Force quit, `mirqab quit`; the daemon side of the
+- **State**: IN PROGRESS (parts 1–3 of 4: sampler, inspector, read CLI
+  and MCP; Quit and Force quit, `mirqab quit`; the daemon side of the
   page: the `process` stream, start times, the units a stop takes with
-  it, the session bus refused. Part 3b, the page, is next)
+  it, the session bus refused; the page, its inspector, the `apps.top`
+  card. Part 4, focus tracking and the cost benchmark, is next)
 
 ## Problem
 
@@ -997,7 +998,7 @@ times. A stub `pacman` answering `-Qo`.
    actions' tests come with part 2).
 5. [x] CLI `apps`, `what`, `quit`; MCP `top_apps`, `what_is_process`
    (part 1 did `apps`, `what` and both MCP tools; part 2 `quit`).
-6. [ ] The page (part 3; design in "Part 3: the page (design)").
+6. [x] The page (part 3; design in "Part 3: the page (design)").
    - Deferred from the review of PR #17 (D1): before the dialog offers
      Quit on a service row, list the units a stop takes with it
      (`systemctl --user show -p RequiredBy -p BoundBy -p ConsistsOf`, a
@@ -1022,7 +1023,7 @@ times. A stub `pacman` answering `-Qo`.
      refused, the sound server and portals warned about. (3a)
    - 6d. [x] Architecture §5.3 (the `process` row, the list of live
      streams) and §5.4 (dependents in the dialog). (3a)
-   - 6e. [ ] `crates/mirqab-view/src/tabs/apps.rs`: `AppsState`, `rows`,
+   - 6e. [x] `crates/mirqab-view/src/tabs/apps.rs`: `AppsState`, `rows`,
      keys, sort, search, flatten, `main_pid`, `top_five`,
      `merge_params`, `confirm_lines`, `result_line`, `CARDS`; `cards::all`
      chains it; `home::SEED` gains `apps.top`; `shell::TABS` marks `apps`
@@ -1033,17 +1034,17 @@ times. A stub `pacman` answering `-Qo`.
        depends on it" for it, and `mirqab quit`'s "also stops" line says
        the same. Walking deeper, with a depth bound, stays out until a
        real unit needs it.
-   - 6f. [ ] Client: `set_merge`, `Source::request`,
+   - 6f. [x] Client: `set_merge`, `Source::request`,
      `subscribe_live(stream, params, …)`, `graph::Live.params`. (3b)
      - Deferred from the review of PR #18 (nit): `process` accepts a
        thread id and reads that thread's own `stat`; harmless and read
        only. The client sends `pid` and `start` from a row, never a typed
        number; one sentence in architecture §5.3 when 3b touches it.
-   - 6g. [ ] `crates/mirqab-ui/src/tabs/apps/{mod,page,group_row,process_row,inspector,top_card}.rs`;
+   - 6g. [x] `crates/mirqab-ui/src/tabs/apps/{mod,page,group_row,process_row,inspector,top_card}.rs`;
      `tabs::build` and `tabs::card`; the pin control. (3b)
-   - 6h. [ ] `--selftest … --do`, `tests/test-ui-apps.sh`, the widget
+   - 6h. [x] `--selftest … --do`, `tests/test-ui-apps.sh`, the widget
      tests, `tests/test-ui-home.sh`. (3b)
-   - 6i. [ ] Architecture §7.2 (app icons), §7.5 (selftest steps);
+   - 6i. [x] Architecture §7.2 (app icons), §7.5 (selftest steps);
      `docs/user-guide/` Apps page; "As built (part 3)" with the measured
      costs. (3b)
 7. [ ] Focus tracking: `crates/mirqab-core/src/desktop/hyprland.rs` (event
@@ -1777,6 +1778,194 @@ with the page shown; the inspector's use of `process` with `start`; the
 three Unverified items about Broadway (the dialog in the dump, `ListView`
 activation, app icons there).
 
+## As built (part 3b)
+
+Part 3b (2026-11-14) is checklist steps 6e–6i: the interface side of
+"Part 3: the page (design)". What was built, with where it lives:
+
+- **The view model** (`crates/mirqab-view/src/tabs/apps.rs`). `CARDS`
+  (`:24`) holds `apps.top`, chained first into `cards::all()`;
+  `home::SEED` gains it; `shell::TABS` marks `apps` built, so the tile
+  hides where `apps` is not served. `Keys::assign` (`:144`) gives a group
+  the previous frame's key only while the two share a process
+  (`Members::share`: pid and start when both frames list processes, pid
+  otherwise); System keeps its key. `AppsState::take` (`:250`) assigns
+  keys, prunes open groups, resolves a pending group from the card, and
+  reports a lost selection. `sorted`/`sorted_processes` (`:314`, `:323`)
+  are the daemon's order with System last; `rows` (`:470`) searches
+  (group name, a member's name, a pid by its first digits; a group that
+  matches only by members is shown open with those members), expands and
+  flattens, and ends with `apps_more` or `APPS_EMPTY`. `main_pid`
+  (`:534`), `top_five` (`:559`), `merge_params` (`:583`), `selection`
+  (`:649`: what to inspect, the `args`, the live graph's pid and start,
+  the targets, "not yours", "holds the interface"), `confirm_lines`
+  (`:720`), `start_differs` (`:779`), `result_lines` (`:788`),
+  `not_recorded`, `deeper` (`:702`) and `inspect_rows` (`:829`). Glyphs:
+  `EXPAND`, `COLLAPSE`, `REFRESH` and one per kind in `icons.rs`; strings
+  in the "Apps page" section of `strings.rs`.
+- **6e's deferral (S3, second half).** A dependent that is no service,
+  scope or slice reads "and what depends on it", in the dialog
+  (`apps_confirm_also_stops`) and in `mirqab quit` (`quit_also_stops_line`
+  gains `deeper`; `crates/mirqab/src/quit.rs:43`, its test checks a
+  `.target`).
+- **The client** (`crates/mirqab-ui/src/client.rs`). `set_merge` (`:208`)
+  stores a `fn(&[Value]) -> Value` per stream and `wanted` (`:55`) calls
+  it over the handles' params; `app.rs:126` registers
+  `apps::merge_params` for `apps`. `Source` gains `request`, `get` (for
+  `get apps.inspect`, which carries a stream) and live params
+  (`subscribe_live(stream, params, …)`, `:139`–`:143`); `graph::Live`
+  gains `params`, and `widgets/graph.rs` stays the one caller (lint
+  unchanged). 6f's deferral: the inspector sends `{"pid", "start"}` from
+  the selected row (`inspector.rs`, `selected`), never a typed number;
+  architecture §5.3 says so.
+- **The page** (`crates/mirqab-ui/src/tabs/apps/`): `page.rs` (toolbar
+  with search, sort `DropDown`, "Show processes" switch and the pin
+  control; a `ListView` over a `gio::ListStore` of `BoxedAnyObject` rows
+  under `NoSelection` with single-click activate; each frame writes row
+  `i` into object `i`, redraws only bound items whose row changed, and
+  grows or shrinks the store at its end, `refresh` `:135`; the
+  `OverlaySplitView` in an `adw::BreakpointBin` that overlays the sheet
+  under 60 em, `:397`; `apps` subscribed on map with
+  `{"limit": 1000, "expand": true}` and dropped on unmap, `:415`);
+  `group_row.rs`, `process_row.rs` (one widget each, rebound per
+  position); `inspector.rs` (header, verdict, graph, stats, the
+  `apps.inspect` rows asked once per selection and on refresh, Quit and
+  Force quit: `act` `:408`, `confirm` `:439`, `redeem` `:475`);
+  `top_card.rs` (five flat buttons; a press sets
+  `ctx.apps.pending_group` and shows the tab); `mod.rs` (`set_app_icon`,
+  `:32`: `gtk::IconTheme::has_icon` by name, else the kind's glyph).
+  `Ctx.apps` keeps the `AppsState` (decision 13). `tabs::pin_button` is
+  the pin control for a card id, shared with System's cards
+  (`Card::set_pinnable` went).
+- **The selftest** (`crates/mirqab-ui/src/selftest.rs`). `--do STEPS`
+  (refused with exit 64 unless `MIRQAB_TEST=1`, `lib.rs`): `type`,
+  `activate`, `respond`, `wait`, `pause`, run by `step` (`:103`); each
+  step that names a widget waits up to 5 s for it, looking every 50 ms
+  with one-shot timers. Architecture §7.5 has the paragraph and the
+  widget names.
+- **Docs.** Architecture §5.3 (the client sends a row's pid and start),
+  §7.2 (app icons from the theme, by name), §7.5 (`--do`); README's
+  status list has the Apps tab and the four-card seed.
+
+Tests:
+
+- `crates/mirqab-view/tests/apps.rs`, 13 tests: each sort equals
+  `mirqab_core::samplers::apps::view` on the golden frame (groups and
+  processes; `mirqab-core` is a dev-dependency of the view crate, both
+  headless); search by group, member and pid; open and closed groups,
+  the expander, flatten with group names and System last; the "more"
+  line (`limit: 3`: 20 more, System outside the limit); `main_pid`;
+  `top_five` with and without a heavy System; `merge_params`; keys
+  across frames (a shared member keeps the key; the same `session:` id
+  with no shared member is a new, closed, unselected row; a frame with
+  no processes keeps the keys; a pid with a new start is a new row); the
+  pending group; `selection`; `confirm_lines` (signal, `via`, a stop
+  with pids, `alsoStops`, a `.target`, `alsoStopsUnknown`, Force quit's
+  `kill`, the left-alone block, warnings, control characters as U+FFFD);
+  `result_lines` and `not_recorded`; `icon_name` and `deeper`. The view
+  crate's tests: 55 in all; `crates/mirqab-view/tests/shell.rs` and
+  `home.rs` follow the built tab and the seed.
+- `crates/mirqab-ui/tests/widgets.rs`, 7 under Broadway (2 new): the
+  inspector with a fake `Source` (a process is graphed live with its pid
+  and start and inspected once; a group drops the live graph and feeds
+  it from frames; Quit's first call has no `confirm`; the dialog's body
+  lists all five pids; Go ahead sends `confirm` and the plan; a refusal
+  is the message and no second dialog; System shows no buttons; live
+  only while mapped; no blur), and a group row's name and its meter.
+- `tests/test-ui-apps.sh` (new), 52 checks: 24 groups, System last; the
+  browser row shows the glyph and no image; no inspector before a
+  selection; a search leaves one group; selecting it shows the inspector
+  with "Packaged by core/bash" (its main process, pid 2000); Quit's
+  dialog is in the dump and names pids 2000, 2001, 2010, 2011, 2012, and
+  the act log is empty; `respond confirm` writes the five TERM lines
+  (main process first) and "Done."; Quit on pid 1050 shows "pid 1050 is
+  the session's compositor…", no dialog, nothing sent; pid 410 shows no
+  Quit and `APPS_NOT_YOURS`; `--do` without `MIRQAB_TEST=1` exits 64; one
+  `process` subscriber while process 2001 is selected and none after;
+  none with a group selected; one `apps` subscriber with the tab open and
+  none after `close`; no GTK criticals.
+- `tests/test-ui-home.sh`, 54 checks: four seeded cards, the Top apps
+  card with five rows, a press on cargo's row opens Apps with cargo in
+  the inspector; the placeholder step moved from `apps` to `fans`.
+
+Measured (2026-11-14, release build, fixture daemon on `root-desktop`,
+Broadway with the Cairo renderer, 60 s after 10 s of settling; CPU from
+`utime + stime` of `/proc/<pid>/stat`, `VmRSS` from `status`):
+
+| Window shows | Interface CPU | Interface RSS | Daemon CPU | Subscribers |
+|--------------|---------------|---------------|------------|-------------|
+| Apps, nothing selected | 0.033 % of a core (2 ticks) | 61.3 MiB | 0.033 % | `apps` 1 |
+| Apps, process 2001 selected (live graph) | 2.2 % | 208 MiB | 0.033 % | `apps` 1, `process` 1 |
+| System alone (for comparison) | 2.0 % | 207 MiB | 0.033 % | `system` 1 |
+| Closed | — | — | — | none |
+
+The Apps list itself costs next to nothing between frames. A live graph,
+on either page, costs the same 2 % and some 150 MiB more under Broadway,
+which ships every redrawn surface to its client; on Wayland plan 001
+measured the open window at 50 MiB, so the Hyprland figures are an owner
+check. The `apps` frame sizes are 3a's.
+
+Deviations from the design, each with its reason:
+
+- **No `docs/user-guide/`** exists in the repository; the Apps page's
+  text went into README's status list, as plans 002 and 003 did for
+  System and Home.
+- **`Source::get`** beside `request`: `get apps.inspect` carries a
+  stream, which `request(method, params)` cannot.
+- **The 410 check.** The design's test row says "Quit on pid 410 shows
+  the refusal in words and no dialog", but 410 is another user's process,
+  and decision 11 hides the buttons there. The test checks that (no
+  Quit, `APPS_NOT_YOURS`) and checks the refusal in words on pid 1050,
+  the compositor.
+- **More steps and names**: `pause MS` (the subscriber checks need the
+  interface to stay up with a process selected), `apps-verdict`,
+  `apps-flatten`, `apps-dialog`, `apps-notice` and `apps-top:<id>`.
+- **`inspect_rows` moved into the view model** from `mirqab what`'s
+  `what_lines`, so the inspector and the CLI print the same lines. The
+  inspector passes `private: false` (no working directory, command line
+  or paths), as the design's list of rows has none of them.
+- **Home is ready once every stream has spoken**
+  (`tabs/home/page.rs`, `seen`): with `apps.top` seeded, Home has cards
+  on two streams, and the first `apps` event alone let the selftest dump
+  Home with the System cards still empty.
+- **Unexpanded frames.** A frame cut for the card can arrive while the
+  page's subscription replaces the card's; the page skips frames with no
+  processes (`apps::expanded`), and keys fall back to pids when a frame
+  lists none, so neither the open groups nor a process's selection is
+  lost to one (found by `tests/test-ui-home.sh`'s card press).
+- **The sheet is hidden when nothing is selected**, not only slid away:
+  an overlaid `OverlaySplitView` sidebar stays mapped, so the dump showed
+  it, and its graph would have stayed mapped.
+- **A lost selection** closes the sheet and says `APPS_ROW_GONE` on a
+  line above the list (`apps-notice`) until the next selection; the
+  closed sheet cannot hold it.
+- **Memory beside the graph** is the stats row under it, from the 2 s
+  frame; the live event's `rssBytes` is not shown.
+- **Sizes in em become px at build time** for the sheet's width (20 to
+  26 em) and the 60 em breakpoint: `adw::BreakpointCondition` takes px,
+  pt or sp, not em.
+- **Go ahead is destructive for Quit too**: `confirm_dialog` sets it for
+  every action, and the design's "as confirm_dialog already sets" was
+  kept rather than adding a second appearance.
+
+Known limits (part 3b):
+
+- `APPS_QUIT_SELF` matches `std::process::id()` against the frame; on a
+  fixture root that pid is meaningless (the test asserts nothing about
+  it).
+- The "still running" line follows the 2 s frames after a Quit, so it
+  shows some 4 s after the Quit at the earliest.
+- The measurements above are Broadway's.
+
+Left for the owner to check by eye on Hyprland (acceptance part 3, 1–6):
+icons from the real theme; sorting and search under a changing CPU
+order; the sheet overlaid at the default 58 em and beside the list in a
+wider window; the process graph moving each second and `mirqab status`
+showing no `process` subscriber after hiding; Quit on a `sleep 1000`, on
+a root process, on a `--user` service with a dependent, and on mirqab's
+own row; the dialog and sheet in a popover; Top apps on Home; and the
+interface's CPU and RSS with Apps open on Wayland.
+
 ## Unverified
 
 - Hyprland's event socket path and the `activewindow` event format:
@@ -1804,13 +1993,23 @@ activation, app icons there).
   names the group after the main process, not the launcher. The fixture
   carries a case of each; none of them falls to rule 5, which is left
   for processes outside the user manager (the session scope).
-- Whether an `adw::AlertDialog` presented on the `adw::ApplicationWindow`
-  is reached by `first_child` / `next_sibling` from the window, so the
-  selftest's dump shows its body. If not, the dump adds the window's
-  visible dialog explicitly. Check under Broadway before writing 6h.
-- Whether `gtk::Widget::activate` on a `ListView` item under
-  `NoSelection` emits `activate` for its position; otherwise the step
-  calls the list view's `list.activate-item` action.
+- ~~Whether an `adw::AlertDialog` presented on the
+  `adw::ApplicationWindow` is reached by `first_child` / `next_sibling`
+  from the window~~ Resolved 2026-11-14 under Broadway (GTK 4, libadwaita
+  1.6 bindings): it is. The dump of `--selftest apps --do "…; activate
+  apps-quit; wait apps-dialog"` holds a node named `apps-dialog` whose
+  labels are the heading `This will quit:` and the body naming pids 2000,
+  2001, 2010, 2011 and 2012 (`tests/test-ui-apps.sh`). Nothing is added
+  to the dump by hand; `respond` takes the dialog from the window's
+  `visible_dialog()`.
+- ~~Whether `gtk::Widget::activate` on a `ListView` item under
+  `NoSelection` emits `activate` for its position~~ Resolved 2026-11-14
+  under Broadway: the row's own box has no activate signal, so
+  `activate()` on it returns false, and its parent, the list item widget,
+  activates its position (`list.activate-item`), which the page's
+  `connect_activate` receives. The `activate` step walks up from the named
+  widget to the first that activates (`selftest.rs`, `step`). A
+  `gtk::Switch` animates its toggle, so the step sets it directly.
 - ~~`systemctl --user show -p RequiredBy -p BoundBy -p ConsistsOf --value`
   prints three lines in that order~~ Resolved 2026-11-14
   **[machine]**, systemd 262.1: the properties come in systemd's own
@@ -1822,7 +2021,13 @@ activation, app icons there).
   decision 1 stands. The interface's CPU with it is measured in 3b.
 - Whether the icon theme under Broadway in CI has any app icon; the
   selftest asserts the fallback glyph there, and the theme path is an
-  owner check.
+  owner check. 2026-11-14, under Broadway on the development machine (the
+  sandbox unsets `XDG_DATA_DIRS`, so GTK reads `/usr/share`): the
+  fixture's `example-browser` is in no theme and shows the glyph, which
+  the test asserts; the fixture's Foot entry (`Icon=foot`) showed the
+  theme's own `foot` icon, because the machine has foot installed. So the
+  theme is read under Broadway; CI's runner may have no such icon, and
+  the test asserts only the fallback.
 - The quoting of `systemctl show` list values on systemd 257 (checked on
   262.1 only; review of PR #18).
 - That a distribution shipping the reference bus (dbus-daemon) names its

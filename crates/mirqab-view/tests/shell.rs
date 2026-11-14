@@ -38,12 +38,13 @@ fn sixteen_tabs_in_the_documented_order() {
 
 #[test]
 fn unbuilt_tabs_show_whatever_the_daemon_serves() {
-    let tiles = shell::sidebar(TABS, &strings(&["system"]), &[]);
+    let tiles = shell::sidebar(TABS, &strings(&["system", "apps"]), &[]);
     assert_eq!(tiles.len(), 16);
-    // System is built (plan 002): without its stream it is hidden.
+    // System (plan 002) and Apps (plan 006) are built: without their
+    // streams they are hidden.
     let tiles = shell::sidebar(TABS, &[], &[]);
-    assert_eq!(tiles.len(), 15);
-    assert!(tiles.iter().all(|t| t.id != "system"));
+    assert_eq!(tiles.len(), 14);
+    assert!(tiles.iter().all(|t| t.id != "system" && t.id != "apps"));
 }
 
 #[test]
@@ -54,7 +55,7 @@ fn a_built_tab_hides_without_its_stream_and_hidden_tabs_hide() {
             t.built = true;
         }
     }
-    let caps = strings(&["system", "fans", "history"]);
+    let caps = strings(&["system", "apps", "fans", "history"]);
     let tiles = shell::sidebar(&tabs, &caps, &strings(&["weather", "home"]));
     let ids: HashSet<&str> = tiles.iter().map(|t| t.id).collect();
     assert!(!ids.contains("battery"), "built and not served");
@@ -66,7 +67,7 @@ fn a_built_tab_hides_without_its_stream_and_hidden_tabs_hide() {
 
 #[test]
 fn keyboard_moves_between_tiles() {
-    let tiles = shell::sidebar(TABS, &strings(&["system"]), &[]);
+    let tiles = shell::sidebar(TABS, &strings(&["system", "apps"]), &[]);
     assert_eq!(shell::tab_for_number(&tiles, 1), Some("home"));
     assert_eq!(shell::tab_for_number(&tiles, 3), Some("system"));
     assert_eq!(shell::tab_for_number(&tiles, 0), None);

@@ -34,6 +34,10 @@ pub fn run() -> glib::ExitCode {
         print!("{}", strings::UI_USAGE);
         return glib::ExitCode::SUCCESS;
     }
+    if opts.steps.is_some() && std::env::var("MIRQAB_TEST").as_deref() != Ok("1") {
+        eprintln!("{}", strings::UI_DO_TEST_ONLY);
+        return glib::ExitCode::from(64);
+    }
     let mut flags = gio::ApplicationFlags::HANDLES_COMMAND_LINE;
     if opts.selftest.is_some() || std::env::var("MIRQAB_TEST").as_deref() == Ok("1") {
         flags |= gio::ApplicationFlags::NON_UNIQUE;
@@ -66,7 +70,7 @@ pub fn run() -> glib::ExitCode {
             return glib::ExitCode::FAILURE;
         };
         if let Some(tab) = &opts.selftest {
-            selftest::run(&c, tab);
+            selftest::run(&c, tab, opts.steps.as_deref());
         } else if !(first && opts.background) {
             let mode = opts.window.then_some(mirqab_view::config::Mode::Window);
             c.show_when_ready(opts.tab.as_deref(), mode);

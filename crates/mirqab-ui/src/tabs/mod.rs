@@ -2,14 +2,19 @@
 //! shows the placeholder naming that plan. Pinnable cards are built from
 //! one table here, by id, both in their tab and on Home (plan 003).
 
+pub mod apps;
 pub mod home;
 pub mod placeholder;
 pub mod settings;
 pub mod system;
 
 use crate::app::Ctx;
-use crate::widgets::card::Card;
-use serde_json::Value;
+use crate::widgets::card::{Card, set_pin_state};
+use crate::widgets::icon::icon_button;
+use gtk::prelude::*;
+use mirqab_proto::strings;
+use mirqab_view::icons;
+use serde_json::{Value, json};
 use std::rc::Rc;
 
 /// A card that can stand alone: in its tab, or pinned on Home.
@@ -22,6 +27,7 @@ pub trait CardWidget {
 /// Every card id the table below builds. A test checks it against
 /// `mirqab_view::cards::all()`.
 pub const CARD_IDS: &[&str] = &[
+    "apps.top",
     "system.overview",
     "system.cpu",
     "system.memory",
@@ -36,6 +42,7 @@ pub const CARD_IDS: &[&str] = &[
 pub fn card(id: &str, ctx: &Rc<Ctx>, compact: bool) -> Option<Rc<dyn CardWidget>> {
     use system::*;
     Some(match id {
+        "apps.top" => Rc::new(apps::top_card::TopCard::new(ctx)),
         "system.overview" => Rc::new(overview_strip::OverviewStrip::new(ctx)),
         "system.cpu" => Rc::new(cpu_card::CpuCard::new(ctx, compact)),
         "system.memory" => Rc::new(memory_card::MemoryCard::new(ctx, compact)),
@@ -47,6 +54,32 @@ pub fn card(id: &str, ctx: &Rc<Ctx>, compact: bool) -> Option<Rc<dyn CardWidget>
     })
 }
 
+/// The pin control for `card_id`: it toggles the id in `home.pinned` as
+/// the config stands at the press, and follows later config changes
+/// (plan 003: the button showed the state of the page's first build).
+pub fn pin_button(ctx: &Rc<Ctx>, card_id: &'static str) -> gtk::Button {
+    let is_pinned = move |ctx: &Ctx| ctx.config.borrow().pinned.iter().any(|p| p == card_id);
+    let button = icon_button(icons::PIN_OUTLINE, strings::PIN_TO_HOME);
+    set_pin_state(&button, is_pinned(ctx));
+    let weak = Rc::downgrade(ctx);
+    button.connect_clicked(move |_| {
+        let Some(ctx) = weak.upgrade() else { return };
+        let on = !is_pinned(&ctx);
+        let list = mirqab_view::tabs::home::toggled(&ctx.config.borrow().pinned, card_id, on);
+        ctx.set_setting("home.pinned", json!(list));
+    });
+    let weak_ctx = Rc::downgrade(ctx);
+    let weak_button = button.downgrade();
+    ctx.on_config(move || {
+        let (Some(ctx), Some(b)) = (weak_ctx.upgrade(), weak_button.upgrade()) else {
+            return false;
+        };
+        set_pin_state(&b, is_pinned(&ctx));
+        true
+    });
+    button
+}
+
 /// Builds the page for `tab` (any id `pages::show` accepts). A page with a
 /// stream calls `ctx.page_ready` on its first data; the others are ready
 /// at once.
@@ -54,6 +87,7 @@ pub fn build(tab: &str, ctx: &Rc<Ctx>) -> gtk::Widget {
     match tab {
         "home" => home::page::build(ctx),
         "system" => system::page::build(ctx),
+        "apps" => apps::page::build(ctx),
         "settings" => {
             let w = settings::page::build(ctx);
             ctx.page_ready(tab);

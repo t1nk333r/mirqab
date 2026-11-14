@@ -1,5 +1,6 @@
 # tests/test-ui-home.sh — Home against a real daemon (plan 003, Tests): a
-# fresh config seeds three cards and stores them; a card pinned with
+# fresh config seeds four cards (plan 006 added `apps.top`, which shows
+# five rows) and stores them; a card pinned with
 # `config.set` (what the pin control sends) shows on Home and its control
 # on the System page reads "Unpin from Home"; an order survives restarting
 # the daemon and the interface; unpinning everything leaves the empty
@@ -9,6 +10,7 @@
 # mirqab:covers crates/mirqab-ui/src/tabs/home/** crates/mirqab-ui/src/tabs/mod.rs
 # mirqab:covers crates/mirqab-view/src/tabs/home.rs crates/mirqab-view/src/cards.rs
 # mirqab:covers crates/mirqab-ui/src/app.rs crates/mirqab-core/src/config.rs
+# mirqab:covers crates/mirqab-ui/src/tabs/apps/top_card.rs
 # mirqab:covers-shared
 
 sandbox
@@ -65,13 +67,25 @@ unpins() { q '[.. | objects | select(.visible and .tooltip == "Unpin from Home")
 
 selftest home
 is "only Home was built" '["home"]' "$(q '.pages | tojson')"
-is "three seeded cards" 3 "$(cards)"
+is "four seeded cards" 4 "$(cards)"
 like "the overview strip" "$(texts)" "Cool"
 like "the memory card" "$(texts)" "17 GB of 67 GB"
-SEED='["system.overview","system.cpu","system.memory"]'
+like "the top apps card" "$(texts)" "Top apps"
+is "it shows five apps" 5 "$(q '[.. | objects | select(.visible and ((.name // "") | startswith("apps-top:")))] | length')"
+SEED='["system.overview","system.cpu","system.memory","apps.top"]'
 is "the seed is stored" "$SEED" "$(stored .home.pinned "$SEED")"
 is "seeded once" true "$(stored .home.seeded true)"
 is "no range picker on Home" 0 "$(pickers)"
+
+# A top app opens the Apps tab with its group selected (plan 006,
+# decision 12). cargo is among the five whether the first frame has CPU
+# figures yet or not.
+capture timeout 30 "$BIN/mirqab-ui" --socket "$MIRQAB_SOCKET" --selftest home \
+    --do "activate apps-top:session:3030; wait apps-inspector; pause 300"
+status_is "activating a top app exits 0" 0 "$STATUS"
+tree="$(grep -m1 '^{' <<<"$OUTPUT" || true)"
+like "it opened Apps" "$(q '.pages | tojson')" '"apps"'
+is "with that group in the inspector" true "$(q '[.. | objects | select(.visible and .text? == "cargo" and ((.classes // []) | index("title-4")))] | length > 0')"
 
 set_config home.pinned '["system.overview","system.cpu","system.memory","system.gpu"]'
 selftest home
@@ -132,7 +146,7 @@ for _ in $(seq 100); do
 done
 "$BIN/mirqab" open --window >/dev/null
 is "Home on screen holds system" 1 "$(until_subs 1)"
-"$BIN/mirqab" open apps --window >/dev/null
+"$BIN/mirqab" open fans --window >/dev/null
 is "Home hidden behind a placeholder: no system subscriber" 0 "$(until_subs 0)"
 "$BIN/mirqab" open system --window >/dev/null
 sleep 1

@@ -12,5 +12,11 @@ mirqab-proto.workspace = true
 # Theme files and stream data are JSON; mirqab-proto links it already.
 serde_json.workspace = true
 
+[dev-dependencies]
+# The Apps view model sorts as the daemon's `apps` view does; its test
+# holds the two to the same answer (plan 006, part 3). Headless, as this
+# crate is.
+mirqab-core.workspace = true
+
 [lints]
 workspace = true

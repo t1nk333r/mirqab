@@ -40,9 +40,11 @@ pub(crate) fn plan_lines(data: &Value) -> Vec<String> {
             let procs = w["pids"].as_array().map_or(0, Vec::len);
             out.push(strings::quit_run_line(&argv.join(" "), procs));
             for d in w["alsoStops"].as_array().into_iter().flatten() {
+                let unit = d["unit"].as_str().unwrap_or("");
                 out.push(strings::quit_also_stops_line(
-                    d["unit"].as_str().unwrap_or(""),
+                    unit,
                     d["pids"].as_array().map_or(0, Vec::len),
+                    mirqab_view::tabs::apps::deeper(unit),
                 ));
             }
             if w["alsoStopsUnknown"] == Value::Bool(true) {
@@ -310,6 +312,9 @@ mod tests {
         assert_eq!(lines.len(), 6, "{lines:?}");
         assert_eq!(lines[1], "  also stops wireplumber.service (1 process)");
         assert!(lines[2].contains("(0 processes)"));
+        // A target takes its own dependents with it, unlisted (review of
+        // PR #18, S3).
+        assert!(lines[2].ends_with("and what depends on it"), "{}", lines[2]);
         assert_eq!(lines[4], strings::QUIT_ALSO_STOPS_UNKNOWN);
         assert!(lines[5].starts_with("warning: pipewire.service"));
         for l in &lines {

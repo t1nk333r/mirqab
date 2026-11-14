@@ -16,7 +16,8 @@ history, the view crate (`crates/mirqab-view`, with number formatting, the
 theme token table, the icon glyphs, graph geometry and the sidebar model;
 its tests need no display) and the window (`crates/mirqab-ui`). Plans 002
 and 003 are complete too, and milestone M1 (a running app with Home and
-System) is done.
+System) is done. Plan 006 (Apps) has its page; the focus tracking for
+"idle but heavy" and the cost benchmark remain.
 
 - Measured cost (2026-11-13, on the development machine, release build):
   idle, with no subscriber, 0.000 % of one core over 60 s and 5.0 MiB.
@@ -94,12 +95,29 @@ System) is done.
   minute. The numbers update every 2 s. Pressure has three small live
   graphs and no picker. Every card has "Pin to Home".
 - Home shows the pinned cards on two columns, compact and live. The first
-  run pins the overview, CPU and memory, once; an emptied Home stays empty
-  and offers a button that opens System. Reorder by dragging a card's
+  run pins the overview, CPU, memory and Top apps, once; an emptied Home
+  stays empty and offers a button that opens System. Reorder by dragging a card's
   handle, which shows on hover, or with Alt+Up and Alt+Down; a card's pin
   control unpins it. Home subscribes to its cards' streams only while it
   is on screen. The window opens on Home; `window.rememberTab` reopens the
   last tab instead.
+- The Apps tab lists one row per app: its icon (from your icon theme, or
+  a glyph for its kind), its name, a CPU bar and number (percent of one
+  core, which can pass 100), memory and its process count. Helper
+  processes are folded into their app, terminal jobs are named after what
+  runs in them, and other users' processes are one System group, last.
+  Search by name or pid, sort by CPU, memory or name, open a row to see
+  its processes, or turn on Show processes for one flat list; the list
+  updates every 2 s while the tab is on screen. Selecting a row opens the
+  inspector beside the list: what the process is in plain words (which
+  package provides it, Flatpak, replaced since it started), its parents,
+  user, executable, unit, sandbox and memory, and a graph of a process's
+  CPU that updates every second while it is on screen. Quit and Force
+  quit ask the daemon first and show what they will do: every process, a
+  service's stop with the services it takes with it, what is left alone
+  and why, and a warning before the sound server or a portal is stopped.
+  A refusal says why in words. The Top apps card (pinned on a first run)
+  shows the five apps using the most CPU and opens the tab on one.
 - The tray icon and `mirqab bar` for status bars (plan 004).
 - Not built yet: the content of the other tabs (each one is a placeholder
   until its plan lands) and the root helper.

@@ -28,6 +28,9 @@ pub struct Opts {
     pub tab: Option<String>,
     pub background: bool,
     pub selftest: Option<String>,
+    /// `--do STEPS` with `--selftest`: scripted steps, test runs only
+    /// (architecture §7.5).
+    pub steps: Option<String>,
     pub help: bool,
 }
 
@@ -47,6 +50,7 @@ impl Opts {
                 "--tab" => o.tab = Some(value("--tab")?),
                 "--background" => o.background = true,
                 "--selftest" => o.selftest = Some(value("--selftest")?),
+                "--do" => o.steps = Some(value("--do")?),
                 "--help" | "-h" => o.help = true,
                 other => return Err(strings::ui_unknown_option(other)),
             }
@@ -66,6 +70,10 @@ pub struct Ctx {
     pub config: RefCell<UiConfig>,
     /// The last `status` reply, for Settings' daemon section.
     pub status: RefCell<Value>,
+    /// The Apps page's sort, switch, open groups and selection (plan 006,
+    /// decision 13): kept while the interface runs, so a page dropped on
+    /// hide comes back as it was.
+    pub apps: RefCell<mirqab_view::tabs::apps::AppsState>,
     window: RefCell<Option<Rc<Window>>>,
     exit_timer: RefCell<Option<glib::SourceId>>,
     hold: RefCell<Option<gtk::gio::ApplicationHoldGuard>>,
@@ -102,6 +110,7 @@ impl Ctx {
             style,
             config: RefCell::new(UiConfig::default()),
             status: RefCell::new(Value::Null),
+            apps: RefCell::new(Default::default()),
             window: RefCell::new(None),
             exit_timer: RefCell::new(None),
             hold: RefCell::new(Some(app.hold())),
@@ -111,6 +120,10 @@ impl Ctx {
             ready: RefCell::new(Default::default()),
             ready_waiters: RefCell::new(Vec::new()),
         });
+        // The Apps page and the `apps.top` card share one subscription
+        // (plan 006, decision 2).
+        ctx.client
+            .set_merge(stream::APPS, mirqab_view::tabs::apps::merge_params);
         let weak = Rc::downgrade(&ctx);
         ctx.client.on_state(move |client| {
             let Some(ctx) = weak.upgrade() else { return };

@@ -25,7 +25,9 @@ pub struct Card {
 
 /// Every card of every tab, in tab order.
 pub fn all() -> impl Iterator<Item = &'static Card> {
-    crate::tabs::system::CARDS.iter()
+    crate::tabs::apps::CARDS
+        .iter()
+        .chain(crate::tabs::system::CARDS.iter())
 }
 
 pub fn find(id: &str) -> Option<&'static Card> {

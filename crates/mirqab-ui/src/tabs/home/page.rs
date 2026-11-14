@@ -23,6 +23,8 @@ struct Page {
     /// The streams of the current cards, subscribed while mapped.
     streams: RefCell<Vec<&'static str>>,
     subs: RefCell<Vec<Box<dyn Any>>>,
+    /// The streams that have sent an event since the page subscribed.
+    seen: RefCell<Vec<&'static str>>,
     mapped: Cell<bool>,
     first: Cell<bool>,
 }
@@ -133,6 +135,7 @@ impl Page {
         let Some(ctx) = self.ctx.upgrade() else {
             return;
         };
+        self.seen.borrow_mut().clear();
         let mut subs = Vec::new();
         for s in self.streams.borrow().iter().copied() {
             let weak: Weak<Page> = Rc::downgrade(self);
@@ -145,7 +148,19 @@ impl Page {
                     for c in page.cards.borrow().iter() {
                         c.widget.update(s, data);
                     }
-                    page.ready();
+                    // Ready once every stream has spoken: with cards on
+                    // two streams (plan 006 added `apps`), the first
+                    // event alone left the other cards empty.
+                    let all = {
+                        let mut seen = page.seen.borrow_mut();
+                        if !seen.contains(&s) {
+                            seen.push(s);
+                        }
+                        page.streams.borrow().iter().all(|x| seen.contains(x))
+                    };
+                    if all {
+                        page.ready();
+                    }
                 }),
             ));
         }
@@ -194,6 +209,7 @@ pub fn build(ctx: &Rc<Ctx>) -> gtk::Widget {
         cards: RefCell::new(Vec::new()),
         streams: RefCell::new(Vec::new()),
         subs: RefCell::new(Vec::new()),
+        seen: RefCell::new(Vec::new()),
         mapped: Cell::new(false),
         first: Cell::new(false),
     });
