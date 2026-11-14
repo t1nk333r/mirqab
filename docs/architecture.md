@@ -224,9 +224,11 @@ Four ways in, one daemon behind them.
    xdg-toplevel) that the compositor tiles or floats like any app. Its
    header row is a `GtkWindowHandle` that drags it and ends with
    `GtkWindowControls`, the desktop's buttons; close hides. Escape does
-   nothing (a window that vanished on Escape would surprise); Ctrl+W
-   hides. Its size is `widthEm` × `heightEm` at first, and GTK is expected
-   to keep the size across a hide (not yet checked on Hyprland). Its
+   nothing, except on the Apps page, which takes it first and clears a
+   selected row and its inspector (plan 006, part 4); a window that
+   vanished on Escape would surprise. Ctrl+W hides. Its size is
+   `widthEm` × `heightEm` at first, and GTK is expected to keep the size
+   across a hide (not yet checked on Hyprland). Its
    position is the compositor's, since GTK 4 has no call
    to place a toplevel. The `.desktop` entry asks for this mode with
    `--window`, which overrides a config that asks for the popover.
@@ -235,8 +237,10 @@ Four ways in, one daemon behind them.
    by `gtk4-layer-shell` before it is first shown: layer `top`, anchored
    to a screen corner or edge chosen in Settings (default: top right, with
    a margin that clears the bar), keyboard mode `on-demand`, namespace
-   `mirqab`. It closes on Escape, and when keyboard focus moves away: the
-   window's `is-active` property turns false and the window hides. With
+   `mirqab`. It closes on Escape (on the Apps page the first Escape clears
+   a selected row, and the next one closes the popover), and when keyboard
+   focus moves away: the window's `is-active` property turns false and the
+   window hides. With
    focus-follows-mouse (Hyprland's `follow_mouse = 1`) that is as soon as
    the pointer crosses another window, which is why the window is the
    default (owner, 2026-11-14). A "Keep open" toggle keeps it open and stops
