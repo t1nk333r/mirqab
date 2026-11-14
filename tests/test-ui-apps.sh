@@ -5,9 +5,11 @@
 # verdict; Quit shows the dialog naming its five pids, and Go ahead sends
 # five TERMs to the recording sender and says it is done; Quit on the
 # compositor shows the daemon's refusal in words and no dialog; another
-# user's process offers no buttons; and the `apps` and `process`
+# user's process offers no buttons; the `apps` and `process`
 # subscriptions last only while the page and a process's graph are on
-# screen.
+# screen; an act's outcome outlives the row it ended (review of PR #19,
+# B1); and without MIRQAB_TEST=1 a running interface takes no `--do` and
+# no `--selftest` over the session bus (review of PR #19, S1).
 # mirqab:covers crates/mirqab-ui/src/tabs/apps/** crates/mirqab-view/src/tabs/apps.rs
 # mirqab:covers crates/mirqab-ui/src/selftest.rs crates/mirqab-ui/src/client.rs
 # mirqab:covers crates/mirqab-ui/src/widgets/confirm_dialog.rs
@@ -23,7 +25,10 @@ export MIRQAB_ACT_LOG="$SANDBOX/act.log" MIRQAB_CALLER_PID=3060
 : >"$MIRQAB_ACT_LOG"
 build_bins
 start_broadway || not_ok "gtk4-broadwayd starts"
-start_daemon root-desktop
+# A copy of the fixture root, never the committed one: the last check
+# removes processes from it between frames.
+cp -a "$FIXTURES/root-desktop" "$SANDBOX/root"
+start_daemon "$SANDBOX/root"
 
 BROWSER='scope:app-Hyprland-browser.sh-5650fedc'
 
@@ -144,7 +149,101 @@ is "Apps shown: one apps subscriber" 1 "$(until_subs apps 1)"
 is "closed: no apps subscriber" 0 "$(until_subs apps 0)"
 kill "$ui" 2>/dev/null || true
 wait "$ui" 2>/dev/null || true
-for f in ui.out ui1.out ui2.out; do
+
+# Arguments forwarded to a running interface over the session bus (review
+# of PR #19, S1): without MIRQAB_TEST=1, `--do` and `--selftest` are
+# refused with 64 and nothing reaches the daemon; a plain `--tab` still
+# shows. The interface is unique on a private bus with no service
+# directories (so nothing is activated), and the call is built with
+# GLib's own variant API, the shape a second `mirqab-ui` sends.
+if command -v dbus-run-session >/dev/null 2>&1 &&
+    /usr/bin/python3 -I -c 'import gi; gi.require_version("Gio", "2.0"); from gi.repository import Gio' 2>/dev/null; then
+    cat >"$SANDBOX/bus.conf" <<CONF
+<!DOCTYPE busconfig PUBLIC "-//freedesktop//DTD D-Bus Bus Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/dbus/1.0/busconfig.dtd">
+<busconfig>
+  <type>session</type>
+  <listen>unix:dir=$MIRQAB_RUN_DIR</listen>
+  <auth>EXTERNAL</auth>
+  <policy context="default">
+    <allow send_destination="*" eavesdrop="true"/>
+    <allow eavesdrop="true"/>
+    <allow own="*"/>
+  </policy>
+</busconfig>
+CONF
+    cat >"$SANDBOX/fwd.py" <<'PY'
+# One org.gtk.Application.CommandLine call to the running interface.
+import sys
+import gi
+gi.require_version("Gio", "2.0")
+from gi.repository import Gio, GLib
+bus = Gio.bus_get_sync(Gio.BusType.SESSION, None)
+args = GLib.Variant("aay", [a.encode() + b"\0" for a in sys.argv[1:]])
+params = GLib.Variant.new_tuple(GLib.Variant("o", "/org/gtk/cl"), args, GLib.Variant("a{sv}", {}))
+r = bus.call_sync("io.github.t1nk333r.mirqab", "/io/github/t1nk333r/mirqab",
+                  "org.gtk.Application", "CommandLine", params, None,
+                  Gio.DBusCallFlags.NONE, 10000, None)
+print(r.unpack()[0])
+PY
+    : >"$MIRQAB_ACT_LOG"
+    ACTING="activate apps-flatten; type apps-search 2001; activate apps-process:2001; wait apps-verdict; activate apps-quit; wait apps-dialog; respond confirm; wait apps-result"
+    export ACTING SANDBOX BIN MIRQAB_SOCKET
+    env -u MIRQAB_TEST GTK_USE_PORTAL=0 dbus-run-session --config-file="$SANDBOX/bus.conf" -- bash -c '
+        fwd() { /usr/bin/python3 -I "$SANDBOX/fwd.py" "$@" 2>>"$SANDBOX/fwd.err" || echo failed; }
+        "$BIN/mirqab-ui" --socket "$MIRQAB_SOCKET" --window >"$SANDBOX/unique.out" 2>&1 &
+        ui=$!
+        # Up once it answers a plain forward.
+        for _ in $(seq 100); do
+            [[ $(fwd mirqab-ui --tab apps) == 0 ]] && break
+            sleep 0.1
+        done
+        echo "tab=$(fwd mirqab-ui --tab apps)"
+        echo "do=$(fwd mirqab-ui --selftest apps --do "$ACTING")"
+        echo "selftest=$(fwd mirqab-ui --selftest apps)"
+        sleep 1
+        kill -0 "$ui" 2>/dev/null && echo alive=yes || echo alive=no
+        kill "$ui" 2>/dev/null
+        wait "$ui" 2>/dev/null
+        true
+    ' >"$SANDBOX/fwd.out" 2>&1
+    fwd_out="$(<"$SANDBOX/fwd.out")"
+    like "a forwarded --tab is taken" "$fwd_out" "tab=0"
+    like "a forwarded --do is refused" "$fwd_out" "do=64"
+    like "a forwarded --selftest is refused" "$fwd_out" "selftest=64"
+    like "and the running interface is still there" "$fwd_out" "alive=yes"
+    is "nothing reached the daemon" "" "$(act_log)"
+    is "no widget tree was dumped" 0 "$(grep -c '^{' "$SANDBOX/unique.out" || true)"
+    unlike "no GTK criticals in the unique interface" "$(<"$SANDBOX/unique.out")" "CRITICAL"
+    like "the interface said why" "$(<"$SANDBOX/unique.out")" "only with MIRQAB_TEST=1"
+else
+    echo "# skipped the forwarding check: no dbus-run-session or python3-gobject" >&2
+fi
+
+# An act's outcome outlives the row it ended (review of PR #19, B1). The
+# recording sender ends nothing, so the processes are taken out of the
+# copied root by hand once the TERMs are recorded; the next frames lack
+# the row.
+: >"$MIRQAB_ACT_LOG"
+"$BIN/mirqab-ui" --socket "$MIRQAB_SOCKET" --selftest apps \
+    --do "$SELECT; activate apps-quit; wait apps-dialog; respond confirm; wait apps-result; pause 6000" \
+    >"$SANDBOX/ui3.out" 2>&1 &
+ui=$!
+for _ in $(seq 400); do
+    (($(wc -l <"$MIRQAB_ACT_LOG") >= 5)) && break
+    sleep 0.05
+done
+is "the five TERMs are recorded" 5 "$(wc -l <"$MIRQAB_ACT_LOG")"
+rm -r "$SANDBOX/root/proc/"{2000,2001,2010,2011,2012}
+wait "$ui" 2>/dev/null || true
+tree="$(grep -m1 '^{' "$SANDBOX/ui3.out" || true)"
+unlike "the ended app is no longer listed" "$(groups)" "apps-group:$BROWSER"
+is "its sheet closed" false "$(named apps-inspector | jq -r .visible)"
+is "the outcome is shown above the list" true "$(named apps-notice | jq -r .visible)"
+like "naming the app" "$(named apps-notice | jq -r .text)" "Example Browser: "
+like "and what came of it" "$(named apps-notice | jq -r .text)" "Done."
+
+for f in ui.out ui1.out ui2.out ui3.out; do
     unlike "no GTK criticals in $f" "$(<"$SANDBOX/$f")" "CRITICAL"
 done
 

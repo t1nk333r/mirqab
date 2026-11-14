@@ -21,7 +21,7 @@ use adw::prelude::*;
 use gtk::{gio, glib};
 use mirqab_proto::stream::{self, AppsData};
 use mirqab_proto::strings;
-use mirqab_view::tabs::apps::{self as model, Frame, Key, Row, Sort};
+use mirqab_view::tabs::apps::{self as model, Frame, Key, Outcome, Row, Sort};
 use serde_json::Value;
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -118,11 +118,26 @@ impl Page {
         let Some(ctx) = self.ctx.upgrade() else {
             return;
         };
+        let was = ctx.apps.borrow().selected;
         let (frame, lost) = ctx.apps.borrow_mut().take(d);
         *self.frame.borrow_mut() = frame;
         if lost {
-            self.notice.set_text(strings::APPS_ROW_GONE);
-            self.notice.set_visible(true);
+            // The outcome of an act on the row outlives it (review of
+            // PR #19, B1); a row that went with no act says only that.
+            let outcome = was.and_then(|k| {
+                self.inspector
+                    .borrow()
+                    .as_ref()
+                    .and_then(|i| i.take_outcome(k))
+            });
+            match outcome {
+                Some(o) => self.say_outcome(&o),
+                None => {
+                    self.notice.set_text(strings::APPS_ROW_GONE);
+                    self.notice.remove_css_class("warning");
+                    self.notice.set_visible(true);
+                }
+            }
         }
         self.refresh(true);
         if !self.first.replace(true) {
@@ -210,6 +225,18 @@ impl Page {
             ctx.apps.borrow_mut().toggle_open(key);
         }
         self.refresh(false);
+    }
+
+    /// An act's outcome on the line above the list, until the next
+    /// selection.
+    fn say_outcome(&self, o: &Outcome) {
+        self.notice.set_text(&model::outcome_notice(o));
+        if o.warn {
+            self.notice.add_css_class("warning");
+        } else {
+            self.notice.remove_css_class("warning");
+        }
+        self.notice.set_visible(true);
     }
 
     fn close_inspector(&self) {
@@ -337,6 +364,10 @@ pub fn build(ctx: &Rc<Ctx>) -> gtk::Widget {
     let split = adw::OverlaySplitView::new();
     split.set_sidebar_position(gtk::PackType::End);
     split.set_enable_show_gesture(false);
+    // A swipe would hide the sheet with its row still selected, its graph
+    // still live, and the next frame would show it again (review of
+    // PR #19, S7).
+    split.set_enable_hide_gesture(false);
     let notice = gtk::Label::new(None);
     notice.add_css_class("dim-label");
     notice.set_xalign(0.0);
@@ -355,6 +386,7 @@ pub fn build(ctx: &Rc<Ctx>) -> gtk::Widget {
         first: Cell::new(false),
     });
     let weak = Rc::downgrade(&page);
+    let weak_outcome = Rc::downgrade(&page);
     let weak_ctx = Rc::downgrade(ctx);
     let inspector = Inspector::new(
         Rc::new(ctx.client.clone()),
@@ -368,8 +400,26 @@ pub fn build(ctx: &Rc<Ctx>) -> gtk::Widget {
                 p.close_inspector();
             }
         }),
+        Rc::new(move |o: Outcome| {
+            if let Some(p) = weak_outcome.upgrade() {
+                p.say_outcome(&o);
+            }
+        }),
     );
     *page.inspector.borrow_mut() = Some(Rc::clone(&inspector));
+    // Whatever hides the sheet while a row is selected clears the
+    // selection, so the graph is dropped and the sheet stays shut.
+    let weak = Rc::downgrade(&page);
+    split.connect_show_sidebar_notify(move |split| {
+        let Some(p) = weak.upgrade() else { return };
+        let selected = p
+            .ctx
+            .upgrade()
+            .is_some_and(|c| c.apps.borrow().selected.is_some());
+        if !split.shows_sidebar() && selected {
+            p.close_inspector();
+        }
+    });
 
     let column = gtk::Box::new(gtk::Orientation::Vertical, 0);
     column.add_css_class("mirqab-apps");

@@ -812,7 +812,9 @@ Three layers, cheapest first:
    a fixture root, waits for the first event, prints the widget tree as
    JSON (type, style classes, text, accessible label) and exits.
    `tests/test-ui-<tab>.sh` asserts on that JSON with `jq`.
-   With `--do STEPS` (accepted only with `MIRQAB_TEST=1`) it first runs
+   With `--do STEPS` (accepted only with `MIRQAB_TEST=1`, also when the
+   arguments reach a running interface over the session bus, which never
+   takes a `--selftest` at all) it first runs
    scripted steps, separated by `;`, after the page's first data:
    `type NAME TEXT` (an editable's text), `activate NAME` (a switch is
    toggled; otherwise the widget or the nearest parent that can be

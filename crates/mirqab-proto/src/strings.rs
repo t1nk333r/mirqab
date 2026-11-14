@@ -1913,6 +1913,17 @@ pub fn apps_left_alone_line(pid: u32, name: &str, reason: &str) -> String {
     format!("  {} ({pid}): {}", plain(name), plain(reason))
 }
 
+/// What an act on a row came to, once its sheet has closed (review of
+/// PR #19): `Example Browser: Done.`
+pub fn apps_outcome(name: &str, text: &str) -> String {
+    format!("{}: {text}", plain(name))
+}
+
+/// `--selftest` reaching an interface that is already running (review
+/// of PR #19): a selftest never joins one.
+pub const UI_SELFTEST_NOT_FORWARDED: &str =
+    "mirqab-ui: --selftest is not passed to a running interface";
+
 /// A warning the daemon gave with the plan (the sound server, a portal).
 pub fn apps_warning(text: &str) -> String {
     format!("Warning: {}", plain(text))

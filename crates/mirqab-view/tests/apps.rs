@@ -458,3 +458,55 @@ fn an_icon_is_a_theme_name_never_a_path() {
     assert!(apps::deeper("sound.target"));
     assert!(!apps::deeper("a.service") && !apps::deeper("b.scope") && !apps::deeper("c.slice"));
 }
+
+#[test]
+fn an_entry_of_unknown_shape_is_shown_as_sent() {
+    let lines = apps::confirm_lines(&json!({"wouldDo": [{"foo": "bar"}]}));
+    assert_eq!(lines, ["foo bar"]);
+    assert!(!lines[0].contains("(0)"), "never a process with pid 0");
+}
+
+#[test]
+fn an_outcome_outlives_its_row_and_says_when_unrecorded() {
+    let key = Key::Group(7);
+    let reply = Ok(
+        json!({"done": [{"signal": "TERM", "pid": 1, "start": 2, "name": "a"}],
+                          "gone": [], "failed": [], "skipped": [], "recorded": false}),
+    );
+    let o = apps::outcome(key, "Example\nBrowser", &reply);
+    assert_eq!(o.key, key);
+    assert_eq!(o.lines, [s::APPS_DONE]);
+    assert!(o.warn);
+    assert_eq!(
+        apps::outcome_notice(&o),
+        format!("Example\u{fffd}Browser: Done. {}", s::APPS_NOT_RECORDED)
+    );
+    let err = Err(mirqab_proto::ErrorBody {
+        code: mirqab_proto::Code::Refused,
+        message: "pid 1 is never signalled".into(),
+        data: None,
+    });
+    let o = apps::outcome(key, "x", &err);
+    assert!(!o.warn);
+    assert_eq!(apps::outcome_notice(&o), "x: pid 1 is never signalled");
+}
+
+#[test]
+fn a_quit_watches_only_what_was_signalled() {
+    let reply = json!({
+        "done": [{"signal": "TERM", "pid": 2001, "start": 5010, "name": "browser"},
+                 {"signal": "TERM", "pid": 2010, "start": 5100, "name": "Web Content"}],
+        "gone": [{"pid": 2011, "start": 5200}],
+        "skipped": [{"pid": 2000, "name": "bash", "reason": "the program asking"}],
+        "failed": [],
+    });
+    let all = [(2000, 5000), (2001, 5010), (2010, 5100), (2011, 5200)];
+    assert_eq!(apps::watched(&reply, &all), [(2001, 5010), (2010, 5100)]);
+    // A service's stop names no processes: its targets, less the skipped.
+    let stop = json!({"done": [{"run": ["systemctl"], "unit": "a.service"}],
+                      "skipped": [{"pid": 2000, "name": "bash", "reason": "r"}]});
+    assert_eq!(
+        apps::watched(&stop, &all),
+        [(2001, 5010), (2010, 5100), (2011, 5200)]
+    );
+}

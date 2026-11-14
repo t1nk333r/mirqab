@@ -14,6 +14,7 @@
 use crate::cards::{Card, Size};
 use crate::format;
 use crate::icons::{self, Glyph};
+use mirqab_proto::ErrorBody;
 use mirqab_proto::stream::{AppGroup, AppProcess, AppsData, Inspect};
 use mirqab_proto::strings as s;
 use serde_json::{Map, Value, json};
@@ -743,12 +744,16 @@ pub fn confirm_lines(data: &Value) -> Vec<String> {
             if w["alsoStopsUnknown"] == Value::Bool(true) {
                 out.push(format!("  {}", s::APPS_ALSO_STOPS_UNKNOWN));
             }
-        } else {
+        } else if let Some(pid) = w["pid"].as_u64() {
             out.push(s::apps_confirm_signal(
                 w["name"].as_str().unwrap_or(""),
-                w["pid"].as_u64().unwrap_or(0) as u32,
+                pid as u32,
                 w["via"].as_u64().map(|v| v as u32),
             ));
+        } else {
+            // A shape this version does not know: shown as the daemon
+            // sent it, never as a process with pid 0 (review of PR #19).
+            out.push(s::plain(&crate::shell::would_do_line(w)).into_owned());
         }
     }
     out.extend(left_alone(&data["skipped"]));
@@ -819,6 +824,70 @@ pub fn result_lines(v: &Value) -> Vec<String> {
 /// The act ran but its row in the history could not be written.
 pub fn not_recorded(v: &Value) -> bool {
     v["recorded"] == Value::Bool(false)
+}
+
+/// What a confirmed act came to, kept past its row and its sheet (review
+/// of PR #19, B1): the row it was asked for, that row's name, the lines,
+/// and whether it went unrecorded.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Outcome {
+    pub key: Key,
+    pub name: String,
+    pub lines: Vec<String>,
+    pub warn: bool,
+}
+
+/// The outcome of a confirmed reply, or of its error.
+pub fn outcome(key: Key, name: &str, reply: &Result<Value, ErrorBody>) -> Outcome {
+    let (lines, warn) = match reply {
+        Ok(v) => (result_lines(v), not_recorded(v)),
+        Err(e) => (vec![s::plain(&e.message).into_owned()], false),
+    };
+    Outcome {
+        key,
+        name: s::plain(name).into_owned(),
+        lines,
+        warn,
+    }
+}
+
+/// The outcome as the one line the page shows above the list once its
+/// sheet has closed.
+pub fn outcome_notice(o: &Outcome) -> String {
+    let mut text = o.lines.join(" ");
+    if o.warn {
+        if !text.is_empty() {
+            text.push(' ');
+        }
+        text.push_str(s::APPS_NOT_RECORDED);
+    }
+    s::apps_outcome(&o.name, &text)
+}
+
+/// What a Quit is watched for, so "still running" names only what was
+/// asked to quit: the processes signalled (each `done` signal entry
+/// carries its pid and start), and for a service's stop, whose reply
+/// names no processes, the `unit` targets the daemon did not leave alone.
+pub fn watched(v: &Value, unit: &[(u32, u64)]) -> Vec<(u32, u64)> {
+    let done = v["done"].as_array().map_or(&[][..], Vec::as_slice);
+    let mut out: Vec<(u32, u64)> = done
+        .iter()
+        .filter_map(|d| Some((d["pid"].as_u64()? as u32, d["start"].as_u64()?)))
+        .collect();
+    if done.iter().any(|d| d["run"].is_array()) {
+        let skipped: HashSet<u32> = v["skipped"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|e| e["pid"].as_u64().map(|p| p as u32))
+            .collect();
+        for t in unit {
+            if !skipped.contains(&t.0) && !out.iter().any(|(q, _)| *q == t.0) {
+                out.push(*t);
+            }
+        }
+    }
+    out
 }
 
 /// The inspector's labelled lines, each only when the daemon could read

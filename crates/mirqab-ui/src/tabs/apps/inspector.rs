@@ -27,7 +27,7 @@ use mirqab_proto::{Code, strings};
 use mirqab_view::format;
 use mirqab_view::graph::Scale;
 use mirqab_view::icons;
-use mirqab_view::tabs::apps::{self as model, Frame, Key, Selection};
+use mirqab_view::tabs::apps::{self as model, Frame, Key, Outcome, Selection};
 use serde_json::{Value, json};
 use std::cell::{Cell, RefCell};
 use std::rc::{Rc, Weak};
@@ -59,14 +59,34 @@ pub struct Inspector {
     still: gtk::Label,
     pub result: gtk::Label,
     warn: gtk::Label,
+    quit: gtk::Button,
+    force: gtk::Button,
     sel: RefCell<Option<Selection>>,
     /// `apps.inspect` said the process is another user's.
     limited: Cell<bool>,
     watch: RefCell<Watch>,
     /// Bumped per selection, so a late reply for an earlier one is dropped.
     asked: Cell<u64>,
-    /// The dialog last presented (the widget tests answer it).
+    /// The dialog open now, if any (the widget tests answer it).
     dialog: RefCell<Option<adw::AlertDialog>>,
+    /// An act's first call is out: one act in flight (review of PR #19).
+    busy: Cell<bool>,
+    /// The outcome of the last act on the selected row, for the page to
+    /// take when the row goes (review of PR #19, B1).
+    outcome: RefCell<Option<Outcome>>,
+    /// Where an outcome goes whose row is no longer the selection.
+    on_outcome: Rc<dyn Fn(Outcome)>,
+}
+
+/// What Go ahead redeems: captured when the dialog opened, so it sends
+/// what the dialog showed (review of PR #19, S2).
+struct Pending {
+    force: bool,
+    plan: String,
+    key: Key,
+    args: Value,
+    name: String,
+    targets: Vec<(u32, u64)>,
 }
 
 fn label(classes: &[&str]) -> gtk::Label {
@@ -87,11 +107,13 @@ fn now() -> i64 {
 impl Inspector {
     /// Requests go to `source`; `served` says whether the daemon serves
     /// the `process` stream; `on_close` runs when the sheet's close button
-    /// is pressed.
+    /// is pressed; `on_outcome` gets an act's outcome when its row is no
+    /// longer the selection by the time the reply comes.
     pub fn new(
         source: Rc<dyn Source>,
         served: Rc<dyn Fn() -> bool>,
         on_close: Rc<dyn Fn()>,
+        on_outcome: Rc<dyn Fn(Outcome)>,
     ) -> Rc<Inspector> {
         let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
         root.add_css_class("mirqab-apps-inspector");
@@ -213,11 +235,16 @@ impl Inspector {
             still,
             result,
             warn,
+            quit: quit.clone(),
+            force: force.clone(),
             sel: RefCell::new(None),
             limited: Cell::new(false),
             watch: RefCell::new(None),
             asked: Cell::new(0),
             dialog: RefCell::new(None),
+            busy: Cell::new(false),
+            outcome: RefCell::new(None),
+            on_outcome,
         });
         i.clear_messages();
         let weak = Rc::downgrade(&i);
@@ -261,6 +288,9 @@ impl Inspector {
         let Some(sel) = sel else {
             *self.sel.borrow_mut() = None;
             self.graph.set_live(None);
+            // A dialog for a row that is gone would redeem nothing the
+            // user can see (review of PR #19, S2).
+            self.close_dialog();
             return;
         };
         let changed = self.sel.borrow().as_ref().map(|s| s.key) != Some(sel.key);
@@ -302,13 +332,54 @@ impl Inspector {
         (self.served)()
     }
 
-    /// The confirmation last presented, if any.
+    /// The confirmation open now, if any.
     pub fn dialog(&self) -> Option<adw::AlertDialog> {
         self.dialog.borrow().clone()
     }
 
+    /// Whether the "not recorded" warning shows.
+    pub fn warned(&self) -> bool {
+        self.warn.is_visible()
+    }
+
+    /// What a Quit's "still running" line watches.
+    pub fn watching(&self) -> Vec<(u32, u64)> {
+        self.watch
+            .borrow()
+            .as_ref()
+            .map(|(t, _)| t.clone())
+            .unwrap_or_default()
+    }
+
+    /// The last act's outcome if it was on `key`; taken once.
+    pub fn take_outcome(&self, key: Key) -> Option<Outcome> {
+        let mut o = self.outcome.borrow_mut();
+        if o.as_ref().is_some_and(|o| o.key == key) {
+            o.take()
+        } else {
+            None
+        }
+    }
+
+    /// Closes an open dialog; nothing is sent for it.
+    fn close_dialog(&self) {
+        let d = self.dialog.borrow_mut().take();
+        if let Some(d) = d {
+            d.force_close();
+        }
+        self.set_busy(false);
+    }
+
+    fn set_busy(&self, busy: bool) {
+        self.busy.set(busy);
+        self.quit.set_sensitive(!busy);
+        self.force.set_sensitive(!busy);
+    }
+
     /// A new row was selected: its graph, its messages, its inspection.
     fn selected(&self, sel: &Selection) {
+        self.close_dialog();
+        *self.outcome.borrow_mut() = None;
         self.clear_messages();
         self.limited.set(false);
         self.verdict.set_text("");
@@ -406,10 +477,17 @@ impl Inspector {
     /// Quit (`force` false) or Force quit: the first call, which only
     /// plans.
     fn act(&self, force: bool) {
+        // One act at a time: a second click, or a click with the dialog
+        // open, would stack a second plan under the first (review of
+        // PR #19, S3).
+        if self.busy.get() || self.dialog.borrow().is_some() {
+            return;
+        }
         let Some(sel) = self.sel.borrow().clone() else {
             return;
         };
         self.clear_messages();
+        self.set_busy(true);
         let name = if force {
             stream::APPS_KILL
         } else {
@@ -422,6 +500,7 @@ impl Inspector {
             if i.sel.borrow().as_ref().map(|s| s.key) != Some(key) {
                 return;
             }
+            i.set_busy(false);
             match r {
                 Err(e) if e.code == Code::NeedsConfirm => {
                     let data = e.data.unwrap_or(Value::Null);
@@ -456,54 +535,69 @@ impl Inspector {
         } else {
             strings::QUIT_WILL
         };
+        let pending = RefCell::new(Some(Pending {
+            force,
+            plan,
+            key: sel.key,
+            args: sel.args.clone(),
+            name: sel.name.clone(),
+            targets: sel.targets.clone(),
+        }));
         let d = confirm_dialog::confirm_dialog_lines(heading, &model::confirm_lines(data));
         d.set_widget_name("apps-dialog");
         let weak = self.weak();
-        d.connect_response(None, move |_, response| {
-            if response != confirm_dialog::CONFIRM {
+        d.connect_response(None, move |d, response| {
+            let Some(i) = weak.upgrade() else { return };
+            // Only the dialog open now answers: one closed for a row that
+            // went, or for another selection, sends nothing.
+            let mine = i.dialog.borrow().as_ref() == Some(d);
+            if mine {
+                *i.dialog.borrow_mut() = None;
+            }
+            if !mine || response != confirm_dialog::CONFIRM {
                 return;
             }
-            if let Some(i) = weak.upgrade() {
-                i.redeem(force, &plan);
+            if let Some(p) = pending.borrow_mut().take() {
+                i.redeem(p);
             }
         });
+        *self.dialog.borrow_mut() = Some(d.clone());
         d.present(Some(&self.root));
-        *self.dialog.borrow_mut() = Some(d);
     }
 
-    /// The second call: the same args, `confirm` and the plan.
-    fn redeem(&self, force: bool, plan: &str) {
-        let Some(sel) = self.sel.borrow().clone() else {
-            return;
-        };
-        let name = if force {
+    /// The second call: the args the dialog was opened for, `confirm`
+    /// and the plan. The outcome is shown in the sheet when its row is
+    /// still the selection, and kept for the page either way.
+    fn redeem(&self, p: Pending) {
+        let action = if p.force {
             stream::APPS_KILL
         } else {
             stream::APPS_QUIT
         };
         let weak = self.weak();
-        let key = sel.key;
-        let targets = sel.targets.clone();
+        let Pending {
+            force,
+            plan,
+            key,
+            args,
+            name,
+            targets,
+        } = p;
+        let request = json!({"name": action, "args": args, "confirm": true, "plan": plan});
         let reply: Reply = Box::new(move |r| {
             let Some(i) = weak.upgrade() else { return };
+            let o = model::outcome(key, &name, &r);
             if i.sel.borrow().as_ref().map(|s| s.key) != Some(key) {
+                (i.on_outcome)(o);
                 return;
             }
-            match r {
-                Ok(v) => {
-                    i.say(&model::result_lines(&v));
-                    i.warn.set_visible(model::not_recorded(&v));
-                    if !force {
-                        *i.watch.borrow_mut() = Some((targets, 0));
-                    }
-                }
-                Err(e) => i.say(&[strings::plain(&e.message).into_owned()]),
+            i.say(&o.lines);
+            i.warn.set_visible(o.warn);
+            if let (Ok(v), false) = (&r, force) {
+                *i.watch.borrow_mut() = Some((model::watched(v, &targets), 0));
             }
+            *i.outcome.borrow_mut() = Some(o);
         });
-        self.source.request(
-            "action",
-            json!({"name": name, "args": sel.args, "confirm": true, "plan": plan}),
-            reply,
-        );
+        self.source.request("action", request, reply);
     }
 }

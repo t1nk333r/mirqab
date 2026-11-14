@@ -57,6 +57,27 @@ impl Opts {
         }
         Ok(o)
     }
+
+    /// Why these options are refused, if they are (review of PR #19,
+    /// S1): `--do` outside a test run, and `--selftest` reaching an
+    /// interface that is already running (`first` false: the arguments
+    /// came over the session bus from a second `mirqab-ui`), which would
+    /// otherwise drive the running window and exit it. Checked where the
+    /// process starts and again where forwarded arguments arrive.
+    pub fn refusal(&self, first: bool, test_env: bool) -> Option<&'static str> {
+        if self.steps.is_some() && !test_env {
+            Some(strings::UI_DO_TEST_ONLY)
+        } else if self.selftest.is_some() && !first {
+            Some(strings::UI_SELFTEST_NOT_FORWARDED)
+        } else {
+            None
+        }
+    }
+}
+
+/// Whether this is a test run (`MIRQAB_TEST=1`).
+pub fn test_env() -> bool {
+    std::env::var("MIRQAB_TEST").as_deref() == Ok("1")
 }
 
 /// Something waiting for a page's first data.
@@ -459,5 +480,34 @@ impl Ctx {
                 }
             },
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Opts;
+    use mirqab_proto::strings;
+
+    fn opts(args: &[&str]) -> Opts {
+        let v: Vec<String> = args.iter().map(|a| a.to_string()).collect();
+        Opts::parse(&v).unwrap()
+    }
+
+    #[test]
+    fn steps_need_a_test_run_and_a_selftest_never_joins_a_running_interface() {
+        let steps = opts(&["--selftest", "apps", "--do", "pause 1"]);
+        assert_eq!(
+            steps.refusal(true, false),
+            Some(strings::UI_DO_TEST_ONLY),
+            "steps without MIRQAB_TEST=1"
+        );
+        assert_eq!(steps.refusal(true, true), None, "steps in a test run");
+        assert_eq!(
+            opts(&["--selftest", "apps"]).refusal(false, true),
+            Some(strings::UI_SELFTEST_NOT_FORWARDED),
+            "a selftest forwarded to a running interface"
+        );
+        assert_eq!(opts(&["--tab", "apps"]).refusal(false, false), None);
+        assert_eq!(opts(&["--selftest", "apps"]).refusal(true, false), None);
     }
 }

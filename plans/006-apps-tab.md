@@ -1058,6 +1058,34 @@ times. A stub `pacman` answering `-Qo`.
      connect is blocking; a frozen compositor with a full listen queue
      holds one client thread (no lock). Make it non-blocking, which needs
      a non-blocking connect std does not offer (new `unsafe` in `sys.rs`).
+   - Deferred from the review of PR #19 (S4): `start_differs` sees a
+     reused pid only in `signal` entries, so a pid recycled inside a
+     `--user` service passes to the dialog (which names the unit). The
+     fix is the daemon's: `Subject::parse` (`actions.rs:120-135`, one key
+     today) accepts `{"pid", "start"}` and refuses a mismatch, and the
+     interface sends the row's start.
+   - Deferred from the review of PR #19 (S5): `apps.inspect` is asked by
+     pid alone and `Inspect` has no `start`, so a reused pid shows the
+     new process's verdict under the row's name until the next frame
+     drops the row; the query should take `start` and answer `gone`.
+   - Deferred from the review of PR #19 (S8): rows can shift between a
+     press and its release under the CPU sort; the owner checks this on
+     Hyprland (acceptance part 3, item 1). If it shows, capture the row's
+     `Key` on the press (a `GestureClick` on the list, `pressed`) and
+     have `activate` use it when the store's row at the position
+     differs, or hold `refresh` while a press is down.
+   - Deferred from the review of PR #19 (N3): a frame kept from before
+     an unmap is shown again on re-map until the next one; clear
+     `Page.frame` on unmap with the focus work that touches map and
+     unmap.
+   - Deferred from the review of PR #19 (N8): `Property::Selected` sits
+     on the row's box; move it to the `ListItem` in an accessibility
+     pass.
+   - Deferred from the review of PR #19 (N6): `process_served()` is read
+     once per selection; revisit with reconnects.
+   - Owner question with part 4 (review of PR #19, under S7): an Escape
+     binding that closes the inspector. A new key is the owner's call;
+     the close button and the selection rule exist.
 8. [ ] Tests above (part 1 wrote the read side's).
    - Deferred from the review of PR #16 (D6): views on a re-subscribe
      with new params, their cleanup on unsubscribe, and two subscribers
@@ -1069,6 +1097,17 @@ times. A stub `pacman` answering `-Qo`.
      with no size cap or file-type check (a FIFO there would stall the
      walk); read it only when it is a regular file, through
      `read_prefix`, with a test.
+   - Deferred from the review of PR #19 (gap 5): a unit test of the
+     client's merge when one handle of a stream drops
+     (`tests/test-ui-home.sh`'s card press covers it end to end now).
+   - Deferred from the review of PR #19 (gap 6): the `process`
+     subscriber's params in the Broadway test (the widget test asserts
+     `{"pid": 2001, "start": 5010}`).
+   - Deferred from the review of PR #19 (gap 8): a view-model test of
+     `rows()`'s `selected` flags.
+   - Deferred from the review of PR #19 (N4, nit): the expander has no
+     visible effect during a search that shows a group's matching
+     members.
 9. [ ] Measure `--subscribe apps` and the top-apps minute cost; record both
    (part 4).
    - Deferred from the review of PR #16 (D1): `get apps` holds the sampler
@@ -1081,6 +1120,11 @@ times. A stub `pacman` answering `-Qo`.
    - Deferred from the review of PR #18 (nit): the `process` stream's
      eight-pid cap keeps the first eight in client order; decide with the
      other `process` costs whether the newest should win.
+   - Deferred from the review of PR #19 (N10): one `apps.inspect` per
+     click; a debounce is a timer in the interface and needs this
+     measurement first.
+   - Deferred from the review of PR #19 (N9): the contrast of a selected
+     row, an owner check on Hyprland (acceptance part 3, item 1).
 
 ## As built (part 1)
 
@@ -1905,7 +1949,7 @@ which ships every redrawn surface to its client; on Wayland plan 001
 measured the open window at 50 MiB, so the Hyprland figures are an owner
 check. The `apps` frame sizes are 3a's.
 
-Deviations from the design, each with its reason:
+Deviations from the design, twelve, each with its reason:
 
 - **No `docs/user-guide/`** exists in the repository; the Apps page's
   text went into README's status list, as plans 002 and 003 did for
@@ -1956,6 +2000,85 @@ Known limits (part 3b):
 - The "still running" line follows the 2 s frames after a Quit, so it
   shows some 4 s after the Quit at the earliest.
 - The measurements above are Broadway's.
+- `start_differs` sees a reused pid only in `signal` entries, so a pid
+  recycled inside a `--user` service passes to the dialog, which names
+  the unit (review of PR #19, S4, deferred to step 7).
+- `apps.inspect` is asked by pid alone, so a reused pid shows the new
+  process's verdict under the row's name until the next frame drops the
+  row (review of PR #19, S5, deferred to step 7).
+
+From the review of PR #19 (2026-11-14; the ruling kept 10 items, deferred
+13 and dropped 4):
+
+- **K1 (B1), an act's outcome outlives its row and its sheet.**
+  `apps::Outcome`, `outcome`, `outcome_notice` (`apps.rs:833`, `:841`,
+  `:856`; `strings::apps_outcome`). `redeem` (`inspector.rs:571`) always
+  builds the outcome: under its own row it shows in the sheet and is kept
+  for `take_outcome` (`:355`); when the selection moved on before the
+  reply it goes to `on_outcome` (`:591`). The page writes it into
+  `apps-notice` when the row goes (`page.rs:131`, `say_outcome` `:232`),
+  with the `warning` class when unrecorded; `APPS_ROW_GONE` is left for a
+  row that went with no act. Tests: `an_outcome_outlives_its_row_and_says_when_unrecorded`
+  (view); the widget tests `the_inspector_asks_before_it_quits_and_says_a_refusal_in_words`
+  (`warned()`, then a frame without the browser and `take_outcome` with
+  `warn`) and `one_act_one_dialog_and_go_ahead_sends_what_it_showed`
+  (a held reply after the selection moved: `on_outcome` once, with the
+  acted key); `tests/test-ui-apps.sh` on a copy of the fixture root,
+  whose five browser `proc/<pid>` directories are removed once the TERMs
+  are recorded: the row is gone, the sheet closed, and `apps-notice`
+  says "Example Browser: Done.".
+- **K2 (S1), no `--do` and no forwarded `--selftest` without a test
+  run.** `Opts::refusal(first, test_env)` (`app.rs:67`; `test_env`
+  `:79`; `strings::UI_SELFTEST_NOT_FORWARDED`) is checked in `run()`
+  (`lib.rs:37`), in the command-line handler before anything is built
+  (`lib.rs:63`), and in `selftest::run` (`selftest.rs:32`). Architecture
+  §7.5 says so. Tests: the unit test
+  `steps_need_a_test_run_and_a_selftest_never_joins_a_running_interface`;
+  `tests/test-ui-apps.sh` runs a unique interface without `MIRQAB_TEST`
+  on a private bus (`dbus-run-session` with a config that has no service
+  directories) and sends `org.gtk.Application.CommandLine` built with
+  GLib's variant API (`python3 -I` with `gi`, written by the test):
+  `--tab apps` is 0, `--selftest apps --do "<select 2001, quit,
+  respond confirm>"` and `--selftest apps` are 64, the interface stays
+  up, dumps no tree, and the act log stays empty. Skipped with a note
+  where `dbus-run-session` or `gi` is missing.
+- **K3 (S2), Go ahead sends what the dialog showed.** `confirm` captures
+  a `Pending` (`inspector.rs:83`: plan, key, args, name, targets) and
+  `redeem` sends it; only the dialog open now answers (`:553`), and
+  `show(None)` and a new selection close it (`close_dialog`, `:365`).
+  Test: the second widget test (the row goes, then another row is
+  selected, with a dialog open: closed, and its Go ahead sends nothing).
+- **K4 (S3), one act in flight, one dialog.** `busy` and the open dialog
+  stop `act` (`:483`); both buttons go insensitive while busy; any
+  response clears the dialog. Test: two Quits and a Force quit send one
+  request and keep the first dialog; cancel sends nothing and frees the
+  next act.
+- **K5 (S6), "still running" watches what was signalled.**
+  `apps::watched` (`apps.rs:871`): the `done` signal entries' pid and
+  start, and for a stop the targets the daemon did not leave alone;
+  `redeem` watches it (`inspector.rs:597`). Tests:
+  `a_quit_watches_only_what_was_signalled` (view) and `watching()` in
+  the first widget test.
+- **K6 (S7), no hide gesture.** `set_enable_hide_gesture(false)`
+  (`page.rs:370`), and anything else that hides the sheet while a row is
+  selected clears the selection (`connect_show_sidebar_notify`, `:413`).
+  Test: `hiding_the_sheet_clears_the_selection` (the page built on a
+  `Ctx` with a dead socket).
+- **K7 (gap 2), the dialog's safe defaults.** Test:
+  `the_confirm_dialog_defaults_to_cancel`, and the presented dialog's
+  default and close responses in the first widget test; cancel sends
+  nothing in the second.
+- **K8 (gap 3), `start_differs` through the interface.** Test: a plan
+  naming 2001 with start 9999 opens no dialog, sends nothing more, and
+  says `APPS_ROW_GONE`.
+- **K9 (N1), an entry of unknown shape is shown as sent**
+  (`apps.rs:756`, `shell::would_do_line`). Test:
+  `an_entry_of_unknown_shape_is_shown_as_sent`.
+- **K10, docs.** The deviation count (twelve), the two Known limits
+  above, and the deferred items at checklist steps 7, 8 and 9.
+- **Counts after the fixes.** `crates/mirqab-view/tests/apps.rs` 16;
+  widget tests 10 under Broadway; `mirqab-ui` unit tests 2;
+  `tests/test-ui-apps.sh` 67 checks.
 
 Left for the owner to check by eye on Hyprland (acceptance part 3, 1–6):
 icons from the real theme; sorting and search under a changing CPU

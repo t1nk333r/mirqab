@@ -26,6 +26,12 @@ use std::rc::Rc;
 use std::time::Duration;
 
 pub fn run(ctx: &Rc<Ctx>, tab: &str, steps: Option<&str>) {
+    // Where the steps are consumed too, not only where they are parsed
+    // (review of PR #19, S1).
+    if steps.is_some() && !crate::app::test_env() {
+        eprintln!("{}", strings::UI_DO_TEST_ONLY);
+        return;
+    }
     let steps: Rc<Vec<String>> = Rc::new(
         steps
             .unwrap_or_default()
