@@ -446,7 +446,7 @@ to a daemon:
   plan is bound to its action and subject, used once, expires after
   120 s on the boot-time clock, and at most 64 are alive. `confirm` that
   is not a boolean, or `false` with a plan, is `bad-request`. The
-  interface will show the list in a dialog; the CLI asks `[y/N]` unless
+  interface shows the list in a dialog; the CLI asks `[y/N]` unless
   `-y`; the MCP server has no acting tool (plan 006 keeps it read-only).
   Every redeemed plan is one `event` row of kind `action`
   (the action, the target, the caller's pid and name, each process's
@@ -485,7 +485,7 @@ to a daemon:
   as a dependent. Stopping the sound server (`pipewire`, `pipewire-pulse`,
   `wireplumber`) or a desktop portal (`xdg-desktop-portal*`) is allowed; the
   plan's `warnings` say what it breaks, the CLI prints them, and the
-  interface's dialog will show them in part 3b (owner, 2026-11-14). Quit
+  interface's dialog shows them (owner, 2026-11-14; plan 006, part 3b). Quit
   stays `stop`, which runs
   `ExecStop=` and ends in SIGKILL after `TimeoutStopSec` (plan 006,
   "Known limits (part 3a)"). Signals go through
@@ -826,7 +826,8 @@ Three layers, cheapest first:
    shows its heading and body (checked under Broadway, plan 006). The
    Apps page names `apps-search`, `apps-flatten`, `apps-group:<id>`,
    `apps-process:<pid>`, `apps-inspector`, `apps-verdict`, `apps-quit`,
-   `apps-force-quit`, `apps-dialog` and `apps-result`; the `apps.top`
+   `apps-force-quit`, `apps-dialog`, `apps-result`, `apps-sort` and
+   `apps-notice`; the `apps.top`
    card's rows are `apps-top:<id>`. An action under test goes to a daemon
    on a fixture root, whose recording sender signals nothing.
 

@@ -96,10 +96,12 @@ System) is done. Plan 006 (Apps) has its page; the focus tracking for
   graphs and no picker. Every card has "Pin to Home".
 - Home shows the pinned cards on two columns, compact and live. The first
   run pins the overview, CPU, memory and Top apps, once; an emptied Home
-  stays empty and offers a button that opens System. Reorder by dragging a card's
-  handle, which shows on hover, or with Alt+Up and Alt+Down; a card's pin
-  control unpins it. Home subscribes to its cards' streams only while it
-  is on screen. The window opens on Home; `window.rememberTab` reopens the
+  stays empty and offers a button that opens System. A Home that was set up
+  earlier keeps its cards and does not gain Top apps; pin it from the Apps
+  page. Reorder by dragging a card's handle, which shows on hover, or with
+  Alt+Up and Alt+Down; a card's pin control unpins it, except Top apps,
+  whose pin control is on the Apps page. Home subscribes to its cards'
+  streams only while it is on screen. The window opens on Home; `window.rememberTab` reopens the
   last tab instead.
 - The Apps tab lists one row per app: its icon (from your icon theme, or
   a glyph for its kind), its name, a CPU bar and number (percent of one
@@ -116,7 +118,9 @@ System) is done. Plan 006 (Apps) has its page; the focus tracking for
   quit ask the daemon first and show what they will do: every process, a
   service's stop with the services it takes with it, what is left alone
   and why, and a warning before the sound server or a portal is stopped.
-  A refusal says why in words. The Top apps card (pinned on a first run)
+  A refusal says why in words. The result of a Quit or Force quit stays in
+  a line above the list until you select another row, and warns when the
+  daemon could not record it. The Top apps card (pinned on a first run)
   shows the five apps using the most CPU and opens the tab on one.
 - The tray icon and `mirqab bar` for status bars (plan 004).
 - Not built yet: the content of the other tabs (each one is a placeholder
