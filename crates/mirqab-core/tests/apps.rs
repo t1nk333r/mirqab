@@ -1187,7 +1187,7 @@ fn drm_fdinfo(client: u32, vram_kib: u64) -> String {
 }
 
 #[test]
-fn gpu_memory_comes_only_from_drm_fds_and_not_past_the_cap() {
+fn gpu_memory_comes_only_from_drm_fds_and_not_past_64_of_them() {
     let s = bare_root("gpu");
     let p = own_proc(&s.0, 9300, "render");
     std::fs::create_dir_all(p.join("fd")).unwrap();
@@ -1206,17 +1206,51 @@ fn gpu_memory_comes_only_from_drm_fds_and_not_past_the_cap() {
     assert_eq!(v["gpu"]["vramBytes"], 1024 * 1024, "{v}");
     assert_eq!(v["files"]["count"], 3);
 
-    // Past 1024 fds the row is left out (and the rest still answers).
+    // 1 100 fds of which 8 are DRM, two clients: the row is there, each
+    // client counted once, and no other fdinfo read (review of PR #20,
+    // nit 3; the old cap on the listing left it out).
     let q = own_proc(&s.0, 9301, "many");
     std::fs::create_dir_all(q.join("fd")).unwrap();
     std::fs::create_dir_all(q.join("fdinfo")).unwrap();
-    for n in 0..1100 {
-        std::os::unix::fs::symlink("/dev/dri/renderD128", q.join(format!("fd/{n}"))).unwrap();
-        std::fs::write(q.join(format!("fdinfo/{n}")), drm_fdinfo(n, 1)).unwrap();
+    let drm_fds = [3u32, 140, 277, 414, 551, 688, 825, 962];
+    for n in 0..1100u32 {
+        if drm_fds.contains(&n) {
+            std::os::unix::fs::symlink("/dev/dri/renderD128", q.join(format!("fd/{n}"))).unwrap();
+            std::fs::write(q.join(format!("fdinfo/{n}")), drm_fdinfo(n % 2, 512)).unwrap();
+        } else {
+            std::os::unix::fs::symlink(format!("socket:[{n}]"), q.join(format!("fd/{n}"))).unwrap();
+            // It would parse, but its fd is no DRM node: never read.
+            std::fs::write(q.join(format!("fdinfo/{n}")), drm_fdinfo(100 + n, 4096)).unwrap();
+        }
     }
     let v = inspect(&mut a, &root, 9301);
+    assert_eq!(v["gpu"]["vramBytes"], 2 * 512 * 1024, "{v}");
+    assert_eq!(v["files"]["count"], 1100);
+
+    // Exactly 64 DRM fds: the row is there (the cap's boundary).
+    let e = own_proc(&s.0, 9303, "edge");
+    std::fs::create_dir_all(e.join("fd")).unwrap();
+    std::fs::create_dir_all(e.join("fdinfo")).unwrap();
+    let cap = mirqab_core::samplers::apps::inspect::MAX_DRM_FDINFO as u32;
+    for n in 0..cap {
+        std::os::unix::fs::symlink("/dev/dri/renderD128", e.join(format!("fd/{n}"))).unwrap();
+        std::fs::write(e.join(format!("fdinfo/{n}")), drm_fdinfo(n, 1)).unwrap();
+    }
+    let v = inspect(&mut a, &root, 9303);
+    assert_eq!(v["gpu"]["vramBytes"], u64::from(cap) * 1024, "{v}");
+    assert_eq!(v["files"]["count"], cap);
+
+    // Past 64 DRM fds the row is left out (and the rest still answers).
+    let r = own_proc(&s.0, 9302, "lots");
+    std::fs::create_dir_all(r.join("fd")).unwrap();
+    std::fs::create_dir_all(r.join("fdinfo")).unwrap();
+    for n in 0..=mirqab_core::samplers::apps::inspect::MAX_DRM_FDINFO as u32 {
+        std::os::unix::fs::symlink("/dev/dri/renderD128", r.join(format!("fd/{n}"))).unwrap();
+        std::fs::write(r.join(format!("fdinfo/{n}")), drm_fdinfo(n, 1)).unwrap();
+    }
+    let v = inspect(&mut a, &root, 9302);
     assert!(v.get("gpu").is_none(), "{}", v["gpu"]);
-    assert_eq!(v["name"], "many");
+    assert_eq!(v["name"], "lots");
 }
 
 #[test]

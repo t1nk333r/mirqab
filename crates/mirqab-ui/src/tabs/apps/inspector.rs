@@ -1,8 +1,12 @@
 //! The inspector (plan 006, decisions 4, 10 and 11): the side sheet of the
 //! selected row. Top to bottom: icon, name and kind; the verdict; the
-//! graph; CPU, memory, threads and processes from the row; then what
-//! `get apps.inspect {pid}` says, asked once per selection and on the
-//! refresh button, never on a timer; Quit and Force quit at the foot.
+//! graph; CPU, memory, threads and processes from the row; for a group
+//! tagged "idle but heavy", one line saying what that means; then what
+//! `get apps.inspect {pid, start}` says, asked once per selection and on
+//! the refresh button, never on a timer; Quit and Force quit at the foot.
+//! When the pid holds another process than the row's by the time it is
+//! asked, the sheet says the row is gone and forms no verdict (plan 006,
+//! part 4, decision 9).
 //!
 //! A process row's graph follows the `process` stream live, through the
 //! graph's own live rule (only while it is mapped). A group's graph is fed
@@ -53,6 +57,8 @@ pub struct Inspector {
     memory: gtk::Label,
     threads: gtk::Label,
     procs: gtk::Label,
+    /// `APPS_IDLE_HEAVY_LINE`, shown for a tagged group.
+    pub idle: gtk::Label,
     details: gtk::Grid,
     pub buttons: gtk::Box,
     note: gtk::Label,
@@ -163,6 +169,11 @@ impl Inspector {
         let threads = stat(2, strings::APPS_THREADS);
         let procs = stat(3, strings::APPS_PROCESSES);
 
+        let idle = label(&["dim-label"]);
+        idle.set_text(strings::APPS_IDLE_HEAVY_LINE);
+        idle.set_widget_name("apps-idle-heavy-line");
+        idle.set_visible(false);
+
         let details = gtk::Grid::new();
         details.add_css_class("mirqab-apps-details");
 
@@ -190,6 +201,7 @@ impl Inspector {
             verdict.upcast_ref::<gtk::Widget>(),
             graph.upcast_ref(),
             stats.upcast_ref(),
+            idle.upcast_ref(),
             details.upcast_ref(),
         ] {
             body.append(w);
@@ -229,6 +241,7 @@ impl Inspector {
             memory,
             threads,
             procs,
+            idle,
             details,
             buttons,
             note,
@@ -305,6 +318,7 @@ impl Inspector {
         self.memory.set_text(&sel.memory);
         self.threads.set_text(&sel.threads);
         self.procs.set_text(&sel.procs);
+        self.idle.set_visible(sel.idle_heavy);
         self.update_buttons();
         let live = sel.process.is_some() && self.process_served();
         if !live && (tick || changed) {
@@ -409,29 +423,47 @@ impl Inspector {
         self.inspect();
     }
 
-    /// `get apps.inspect` for the selection's pid, once.
+    /// `get apps.inspect` for the selection's pid and start time, once.
     fn inspect(&self) {
-        let Some(pid) = self.sel.borrow().as_ref().and_then(|s| s.inspect_pid) else {
+        let Some(params) = self
+            .sel
+            .borrow()
+            .as_ref()
+            .and_then(|s| s.inspect_params.clone())
+        else {
             return;
         };
         let n = self.asked.get() + 1;
         self.asked.set(n);
         let weak = self.weak();
+        let asked = params.clone();
         let reply: Reply = Box::new(move |r| {
             let Some(i) = weak.upgrade() else { return };
             if i.asked.get() != n {
                 return;
             }
-            match r
-                .ok()
-                .and_then(|v| serde_json::from_value::<Inspect>(v).ok())
-            {
-                Some(info) => i.inspected(&info),
-                None => i.verdict.set_text(""),
+            match r {
+                Err(e) if model::inspect_gone(&e, &asked) => i.gone(),
+                r => match r
+                    .ok()
+                    .and_then(|v| serde_json::from_value::<Inspect>(v).ok())
+                {
+                    Some(info) => i.inspected(&info),
+                    None => i.verdict.set_text(""),
+                },
             }
         });
-        self.source
-            .get(stream::APPS_INSPECT, json!({"pid": pid}), reply);
+        self.source.get(stream::APPS_INSPECT, params, reply);
+    }
+
+    /// The row's process is no longer at its pid: no verdict, no details,
+    /// and the sheet says so until the next frame drops the row.
+    fn gone(&self) {
+        self.verdict.set_text("");
+        while let Some(c) = self.details.first_child() {
+            self.details.remove(&c);
+        }
+        self.say(&[strings::APPS_ROW_GONE.to_string()]);
     }
 
     fn weak(&self) -> Weak<Inspector> {

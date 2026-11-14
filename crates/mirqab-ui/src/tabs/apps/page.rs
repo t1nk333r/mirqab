@@ -9,6 +9,13 @@
 //! `i` into the store's object `i` and redraws only the bound rows whose
 //! row changed; the store grows or shrinks at its end. Nothing is
 //! reordered under the list, so the scroll position holds.
+//!
+//! Part 4 (decision 16): a frame that arrives while a pointer is pressed on
+//! the list is written at the release, so the row under the press is the
+//! row selected (S8); Escape clears the selection, and with none it goes
+//! on to the window (a popover hides); unmapping forgets the frame and the
+//! rows, so a re-map shows nothing stale before its first frame (N3); the
+//! selected state for assistive technology is on the list item (N8).
 
 use crate::app::Ctx;
 use crate::client::Subscription;
@@ -35,6 +42,33 @@ struct Item {
     process: ProcessRow,
     note: gtk::Label,
     bound: RefCell<Option<glib::BoxedAnyObject>>,
+    /// Whether the bound row is the selection, for the list item's state.
+    selected: Rc<Cell<bool>>,
+    /// The value last written to the list item's `Selected` state; None
+    /// before the row was first on screen (the widget tests read it: GTK
+    /// gives no getter for a state's value).
+    applied: Rc<Cell<Option<bool>>>,
+}
+
+/// Writes `Selected` on `item` and gives back what it wrote.
+fn write_selected(item: &gtk::Widget, selected: bool) -> bool {
+    item.update_state(&[gtk::accessible::State::Selected(Some(selected))]);
+    selected
+}
+
+/// The selected state on the list item that holds `root`, which assistive
+/// technology reads as the row (review of PR #19, N8). GTK writes
+/// `Selected(false)` on every list item under `NoSelection`, so without
+/// this no row ever reads selected. Only once `root` is on screen: a list
+/// item being bound may not be parented yet, and taking a reference to it
+/// then would sink and drop it.
+fn mark_selected(root: &gtk::Box, selected: bool, applied: &Cell<Option<bool>>) {
+    if !root.is_mapped() {
+        return;
+    }
+    if let Some(item) = root.parent() {
+        applied.set(Some(write_selected(&item, selected)));
+    }
 }
 
 impl Item {
@@ -48,12 +82,18 @@ impl Item {
         root.append(&group.root);
         root.append(&process.root);
         root.append(&note);
+        let selected = Rc::new(Cell::new(false));
+        let applied = Rc::new(Cell::new(None));
+        let (s, a) = (Rc::clone(&selected), Rc::clone(&applied));
+        root.connect_map(move |root| mark_selected(root, s.get(), &a));
         Item {
             root,
             group,
             process,
             note,
             bound: RefCell::new(None),
+            selected,
+            applied,
         }
     }
 
@@ -82,17 +122,25 @@ impl Item {
         } else {
             self.root.remove_css_class("selected");
         }
-        self.root
-            .update_state(&[gtk::accessible::State::Selected(Some(selected))]);
+        // On the list item (N8); the box keeps only its style class.
+        self.selected.set(selected);
+        mark_selected(&self.root, selected, &self.applied);
     }
 
     fn show_bound(&self) {
-        let bound = self.bound.borrow();
-        if let Some(obj) = bound.as_ref() {
-            self.show(&obj.borrow::<Row>());
+        let row = self
+            .bound
+            .borrow()
+            .as_ref()
+            .map(|o| o.borrow::<Row>().clone());
+        if let Some(row) = row {
+            self.show(&row);
         }
     }
 }
+
+/// Frames a press may hold back before it is taken as lost (S8).
+const HOLD_FRAMES: u8 = 2;
 
 struct Page {
     ctx: Weak<Ctx>,
@@ -105,6 +153,15 @@ struct Page {
     inspector: RefCell<Option<Rc<Inspector>>>,
     sub: RefCell<Option<Subscription>>,
     first: Cell<bool>,
+    /// A pointer is pressed on the list: a frame's rows wait for the
+    /// release (S8).
+    pressed: Cell<bool>,
+    /// A frame came while pressed; the release writes it.
+    deferred: Cell<bool>,
+    /// Frames held during this press.
+    held: Cell<u8>,
+    /// The page itself is hiding the sheet (on unmap): the selection stays.
+    quiet: Cell<bool>,
 }
 
 impl Page {
@@ -146,8 +203,26 @@ impl Page {
     }
 
     /// Writes the rows into the store and the inspector; `tick` for a new
-    /// frame.
+    /// frame. A frame that comes while a pointer is pressed on the list
+    /// waits for the release: the press's row must still be at its position
+    /// when the release activates it (review of PR #19, S8). The release
+    /// writes the latest frame, so none is lost.
     fn refresh(&self, tick: bool) {
+        if tick && self.pressed.get() {
+            // A press on a single-click list lasts well under the two
+            // frames (some 4 s) this holds; a longer one is a release the
+            // list never saw (a keyboard workspace switch mid-press on
+            // Wayland sends a leave, no release), and the third frame is
+            // written with the press taken as lost (review of PR #21).
+            if self.held.get() < HOLD_FRAMES {
+                self.held.set(self.held.get() + 1);
+                self.deferred.set(true);
+                return;
+            }
+            self.pressed.set(false);
+            self.held.set(0);
+            self.deferred.set(false);
+        }
         let Some(ctx) = self.ctx.upgrade() else {
             return;
         };
@@ -244,6 +319,108 @@ impl Page {
             ctx.apps.borrow_mut().selected = None;
         }
         self.refresh(false);
+    }
+
+    /// A pointer went down on the list (`true`) or came up (`false`); the
+    /// release writes a frame that waited for it.
+    fn press(&self, down: bool) {
+        self.pressed.set(down);
+        self.held.set(0);
+        if !down && self.deferred.replace(false) {
+            self.refresh(true);
+        }
+    }
+
+    /// Escape: clears the selection, which closes the sheet, and is then
+    /// spent; with nothing selected it goes on to the window, so a popover
+    /// still hides (owner, 2026-11-14, part 4 decision 2). A window never
+    /// closes on Escape (plan 022).
+    fn escape(&self) -> bool {
+        let selected = self
+            .ctx
+            .upgrade()
+            .is_some_and(|c| c.apps.borrow().selected.is_some());
+        if selected {
+            self.close_inspector();
+        }
+        selected
+    }
+
+    /// Off screen: the subscription goes, and the frame and the rows with
+    /// it, so a re-map shows nothing stale before its first frame (review
+    /// of PR #19, N3). The sheet is hidden without clearing the selection,
+    /// which the page keeps (decision 13).
+    fn unmapped(&self) {
+        *self.sub.borrow_mut() = None;
+        *self.frame.borrow_mut() = Frame::default();
+        self.store.remove_all();
+        self.pressed.set(false);
+        self.deferred.set(false);
+        self.held.set(0);
+        self.quiet.set(true);
+        self.split.set_show_sidebar(false);
+        self.quiet.set(false);
+        if let Some(i) = self.inspector.borrow().as_ref() {
+            i.root.set_visible(false);
+        }
+    }
+}
+
+/// The page, for the widget tests: frames fed by hand, a press held, the
+/// rows the store holds.
+pub struct Handle(Rc<Page>);
+
+impl Handle {
+    /// Takes `data` as an `apps` frame.
+    pub fn frame(&self, data: &Value) {
+        self.0.on_frame(data);
+    }
+
+    /// A pointer down on the list, or up.
+    pub fn press(&self, down: bool) {
+        self.0.press(down);
+    }
+
+    /// The rows the list shows now, in order.
+    pub fn rows(&self) -> Vec<Row> {
+        (0..self.0.store.n_items())
+            .filter_map(|i| self.0.store.item(i).and_downcast::<glib::BoxedAnyObject>())
+            .map(|o| o.borrow::<Row>().clone())
+            .collect()
+    }
+
+    /// Activates the row at `pos`, as a click does.
+    pub fn activate(&self, pos: u32) {
+        self.0.activate(pos);
+    }
+
+    /// Each bound row's widget name (`apps-group:<id>`, `apps-process:<pid>`)
+    /// with the `Selected` value the page last wrote on its list item; None
+    /// for a row not yet on screen.
+    pub fn marked(&self) -> Vec<(String, Option<bool>)> {
+        self.0
+            .items
+            .borrow()
+            .values()
+            .filter_map(|item| {
+                let row = item
+                    .bound
+                    .borrow()
+                    .as_ref()
+                    .map(|o| o.borrow::<Row>().clone())?;
+                let name = match row {
+                    Row::Group(g) => format!("apps-group:{}", g.id),
+                    Row::Process(p) => format!("apps-process:{}", p.pid),
+                    Row::Note(_) => return None,
+                };
+                Some((name, item.applied.get()))
+            })
+            .collect()
+    }
+
+    /// Escape, as the page's shortcut runs it: true when it was spent.
+    pub fn escape(&self) -> bool {
+        self.0.escape()
     }
 }
 
@@ -349,6 +526,34 @@ fn list(page: &Rc<Page>) -> gtk::ListView {
     let model = gtk::NoSelection::new(Some(page.store.clone()));
     let view = gtk::ListView::new(Some(model), Some(factory));
     view.set_single_click_activate(true);
+    // A press and its release as raw events, in the capture phase: a
+    // gesture here could be cancelled when a row's own gesture claims the
+    // press. The release is taken once its event is done, because the row
+    // activates on that same release (S8).
+    let legacy = gtk::EventControllerLegacy::new();
+    legacy.set_propagation_phase(gtk::PropagationPhase::Capture);
+    let weak = Rc::downgrade(page);
+    legacy.connect_event(move |_, ev| {
+        use gtk::gdk::EventType as T;
+        match ev.event_type() {
+            T::ButtonPress | T::TouchBegin => {
+                if let Some(p) = weak.upgrade() {
+                    p.press(true);
+                }
+            }
+            T::ButtonRelease | T::TouchEnd | T::TouchCancel | T::GrabBroken => {
+                let weak = weak.clone();
+                glib::idle_add_local_once(move || {
+                    if let Some(p) = weak.upgrade() {
+                        p.press(false);
+                    }
+                });
+            }
+            _ => {}
+        }
+        glib::Propagation::Proceed
+    });
+    view.add_controller(legacy);
     view.add_css_class("mirqab-apps-list");
     view.update_property(&[gtk::accessible::Property::Label(strings::APPS_LIST)]);
     let weak = Rc::downgrade(page);
@@ -361,9 +566,21 @@ fn list(page: &Rc<Page>) -> gtk::ListView {
 }
 
 pub fn build(ctx: &Rc<Ctx>) -> gtk::Widget {
+    build_page(ctx).0
+}
+
+/// The page and a handle on it (the widget tests feed it frames).
+pub fn build_page(ctx: &Rc<Ctx>) -> (gtk::Widget, Handle) {
     let split = adw::OverlaySplitView::new();
     split.set_sidebar_position(gtk::PackType::End);
     split.set_enable_show_gesture(false);
+    // The sheet's visibility is the selection's (`refresh` sets it every
+    // frame), so collapsing or uncollapsing must not change it on its own:
+    // unpinned, the 60 em breakpoint's collapse hides the sidebar, and the
+    // notify handler below took that for the user closing the sheet and
+    // cleared the selection (review of PR #21; the Home test's flake since
+    // part 3b, and a window shrunk under 60 em lost its selection).
+    split.set_pin_sidebar(true);
     // A swipe would hide the sheet with its row still selected, its graph
     // still live, and the next frame would show it again (review of
     // PR #19, S7).
@@ -384,6 +601,10 @@ pub fn build(ctx: &Rc<Ctx>) -> gtk::Widget {
         inspector: RefCell::new(None),
         sub: RefCell::new(None),
         first: Cell::new(false),
+        pressed: Cell::new(false),
+        deferred: Cell::new(false),
+        held: Cell::new(0),
+        quiet: Cell::new(false),
     });
     let weak = Rc::downgrade(&page);
     let weak_outcome = Rc::downgrade(&page);
@@ -412,6 +633,9 @@ pub fn build(ctx: &Rc<Ctx>) -> gtk::Widget {
     let weak = Rc::downgrade(&page);
     split.connect_show_sidebar_notify(move |split| {
         let Some(p) = weak.upgrade() else { return };
+        if p.quiet.get() {
+            return;
+        }
         let selected = p
             .ctx
             .upgrade()
@@ -454,6 +678,24 @@ pub fn build(ctx: &Rc<Ctx>) -> gtk::Widget {
     bin.set_child(Some(&split));
     bin.set_vexpand(true);
 
+    // Escape while focus is in the page (decision 16): local, so it is
+    // asked before the window's own Escape, which hides a popover; the
+    // modal dialog takes its own Escape (Cancel) before either.
+    let keys = gtk::ShortcutController::new();
+    keys.set_scope(gtk::ShortcutScope::Local);
+    let weak = Rc::downgrade(&page);
+    let clear = gtk::CallbackAction::new(move |_, _| {
+        if weak.upgrade().is_some_and(|p| p.escape()) {
+            glib::Propagation::Stop
+        } else {
+            glib::Propagation::Proceed
+        }
+    });
+    if let Some(t) = gtk::ShortcutTrigger::parse_string("Escape") {
+        keys.add_shortcut(gtk::Shortcut::new(Some(t), Some(clear)));
+    }
+    bin.add_controller(keys);
+
     // Subscribed while on screen, at 2 s (decision 14).
     let p = Rc::clone(&page);
     let weak_ctx = Rc::downgrade(ctx);
@@ -476,7 +718,7 @@ pub fn build(ctx: &Rc<Ctx>) -> gtk::Widget {
     });
     let p = Rc::clone(&page);
     bin.connect_unmap(move |_| {
-        *p.sub.borrow_mut() = None;
+        p.unmapped();
     });
-    bin.upcast()
+    (bin.upcast(), Handle(page))
 }

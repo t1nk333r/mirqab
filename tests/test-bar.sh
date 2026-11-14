@@ -64,6 +64,7 @@ status_until() {
 # counters move; an interval of 1 s is raised to the 2 s floor.
 "$BIN/mirqab" bar cpu --watch --interval 1 --format plain >"$SANDBOX/watch.out" &
 watcher=$!
+HELPER_PIDS+=("$watcher")
 is "the interval is raised to 2 s" 2000 "$(status_until '.streams.system.intervalMs' 2000)"
 sleep 4
 is "one line while unchanged" 1 "$(wc -l <"$SANDBOX/watch.out" | tr -d ' ')"

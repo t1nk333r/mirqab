@@ -241,7 +241,10 @@ fn namespaces(root: &Root, pid: u32) -> Vec<String> {
         .collect()
 }
 
-fn open_files(root: &Root, pid: u32) -> Option<OpenFiles> {
+/// Every fd of the process with its link's target, by fd number: `fd/`
+/// listed once and each link read once, for the open files and the GPU
+/// row alike (review of PR #21: each listed and read it on its own).
+fn fd_targets(root: &Root, pid: u32) -> Option<Vec<(u32, String)>> {
     let mut fds: Vec<u32> = root
         .read_dir(&format!("proc/{pid}/fd"))
         .ok()?
@@ -249,20 +252,27 @@ fn open_files(root: &Root, pid: u32) -> Option<OpenFiles> {
         .filter_map(|n| n.parse().ok())
         .collect();
     fds.sort_unstable();
+    Some(
+        fds.into_iter()
+            .filter_map(|fd| {
+                let target = root.readlink(&format!("proc/{pid}/fd/{fd}")).ok()?;
+                Some((fd, target.to_string_lossy().into_owned()))
+            })
+            .collect(),
+    )
+}
+
+fn open_files(fds: &[(u32, String)]) -> OpenFiles {
     let mut files = OpenFiles::default();
-    for fd in fds {
-        let Ok(target) = root.readlink(&format!("proc/{pid}/fd/{fd}")) else {
-            continue;
-        };
-        let target = target.to_string_lossy();
+    for (_, target) in fds {
         files.count += 1;
         if target.starts_with("socket:") {
             files.sockets += 1;
         } else if target.starts_with('/') && files.paths.len() < MAX_PATHS {
-            files.paths.push(target.into_owned());
+            files.paths.push(target.clone());
         }
     }
-    Some(files)
+    files
 }
 
 /// A size in an fdinfo line: `512 KiB`, `2 MiB` or plain bytes.
@@ -277,37 +287,31 @@ fn fdinfo_bytes(v: &str) -> Option<u64> {
     })
 }
 
-/// File descriptors listed at most for GPU memory: a process with more is
-/// left without the row (plan 006, part 4, decision 13).
-pub const MAX_GPU_FDS: usize = 1024;
+/// DRM fds whose `fdinfo` is read at most for GPU memory: a process with
+/// more is left without the row (review of PR #20, nit 3: the cap was on
+/// the `fd/` listing, 1024 entries, which left the row out for browsers and
+/// Electron apps, the processes that hold the most fds and the most VRAM).
+pub const MAX_DRM_FDINFO: usize = 64;
 
 /// GPU memory from the `fdinfo` of the fds that are DRM device nodes
-/// (https://docs.kernel.org/gpu/drm-usage-stats.html). `fd/` is listed
-/// once, at most `MAX_GPU_FDS` entries (more leaves the row out), and
-/// only an fd whose link names a path under `/dev/dri/` has its `fdinfo`
-/// read (D2 of PR #16: every `fdinfo` was read). A process holds several
-/// fds of one DRM client, and each reports the client's memory, so a
-/// client is counted once by `drm-client-id`.
-fn gpu(root: &Root, pid: u32) -> Option<GpuMemory> {
-    let dir = root.path(&format!("proc/{pid}/fd")).ok()?;
-    let mut fds: Vec<u32> = Vec::new();
-    for e in std::fs::read_dir(dir).ok()?.take(MAX_GPU_FDS + 1) {
-        if let Some(n) = e.ok().and_then(|e| e.file_name().to_str()?.parse().ok()) {
-            fds.push(n);
-        }
-    }
-    if fds.len() > MAX_GPU_FDS {
+/// (https://docs.kernel.org/gpu/drm-usage-stats.html), from the fd list
+/// the open files are counted from (`fd_targets`): only an fd whose
+/// link names a path under `/dev/dri/` has its `fdinfo` read (D2 of
+/// PR #16: every `fdinfo` was read), at most `MAX_DRM_FDINFO` of them
+/// (more leaves the row out rather than count some clients). A process
+/// holds several fds of one DRM client, and each reports the client's
+/// memory, so a client is counted once by `drm-client-id`.
+fn gpu(root: &Root, pid: u32, fds: &[(u32, String)]) -> Option<GpuMemory> {
+    let drm: Vec<u32> = fds
+        .iter()
+        .filter(|(_, t)| t.starts_with(crate::root::DRM_DIR))
+        .map(|(n, _)| *n)
+        .collect();
+    if drm.len() > MAX_DRM_FDINFO {
         return None;
     }
-    fds.sort_unstable();
     let mut clients: HashMap<String, [Option<u64>; 3]> = HashMap::new();
-    for n in fds {
-        let is_drm = root
-            .readlink(&format!("proc/{pid}/fd/{n}"))
-            .is_ok_and(|t| t.to_string_lossy().starts_with(crate::root::DRM_DIR));
-        if !is_drm {
-            continue;
-        }
+    for n in drm {
         let Ok(text) = root.read(&format!("proc/{pid}/fdinfo/{n}")) else {
             continue;
         };
@@ -543,8 +547,9 @@ pub fn read(root: &Root, pid: u32, ctx: &Ctx) -> Result<Read, (Code, String)> {
         m.pss_bytes = pss;
         m.swap_bytes = swap;
     }
-    out.files = open_files(root, pid);
-    out.gpu = gpu(root, pid);
+    let fds = fd_targets(root, pid);
+    out.files = fds.as_deref().map(open_files);
+    out.gpu = fds.as_deref().and_then(|f| gpu(root, pid, f));
 
     // A path inside a sandbox or a container names a file of its own
     // tree, which the host's package database knows nothing about.

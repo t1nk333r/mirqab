@@ -3,6 +3,10 @@
 //! sort matches the daemon's own, search, flatten, open and closed groups,
 //! the "more" line, the main process, the card's five, the merge rule, row
 //! keys across frames (D5), and the confirmation's and the result's lines.
+//! Part 4b: the "idle but heavy" caption and sheet line, no expander for a
+//! group opened by a search (N4), the rows' selected flags (gap 8), and the
+//! start time in a process's args and in the inspect params (decisions 8
+//! and 9).
 
 use mirqab_core::samplers::apps::view;
 use mirqab_proto::stream::{AppGroup, AppProcess, AppsData};
@@ -325,6 +329,11 @@ fn a_selection_says_what_to_inspect_and_whether_to_offer_quit() {
         .0;
     let sel = apps::selection(&frame, Key::Group(browser), 2011).unwrap();
     assert_eq!(sel.inspect_pid, Some(2000));
+    // The main process is inspected by pid and start (decision 9).
+    assert_eq!(
+        sel.inspect_params,
+        Some(json!({"pid": 2000, "start": 5000}))
+    );
     assert_eq!(
         sel.args,
         json!({"group": "scope:app-Hyprland-browser.sh-5650fedc"})
@@ -342,7 +351,9 @@ fn a_selection_says_what_to_inspect_and_whether_to_offer_quit() {
         1,
     )
     .unwrap();
-    assert_eq!(p.args, json!({"pid": 2001}));
+    // A process row's act and inspection name its start (decisions 8, 9).
+    assert_eq!(p.args, json!({"pid": 2001, "start": 5010}));
+    assert_eq!(p.inspect_params, Some(json!({"pid": 2001, "start": 5010})));
     assert_eq!(p.process, Some((2001, 5010)));
     assert!(!p.holds_self);
     assert!(
@@ -509,4 +520,158 @@ fn a_quit_watches_only_what_was_signalled() {
         apps::watched(&stop, &all),
         [(2001, 5010), (2010, 5100), (2011, 5200)]
     );
+}
+
+/// The golden frame with `ids` tagged "idle but heavy".
+fn tagged(ids: &[&str]) -> AppsData {
+    let mut d = data(&golden());
+    for g in &mut d.groups {
+        g.idle_heavy = ids.contains(&g.id.as_str());
+    }
+    d
+}
+
+#[test]
+fn a_tagged_group_says_so_in_its_row_its_label_and_the_sheet() {
+    let mut st = state();
+    let (frame, _) = st.take(tagged(&["session:3030"]));
+    let rows = apps::rows(&frame, &st, "");
+    let line = |id: &str| {
+        rows.iter()
+            .find_map(|r| match r {
+                Row::Group(g) if g.id == id => Some(g.clone()),
+                _ => None,
+            })
+            .unwrap()
+    };
+    let cargo = line("session:3030");
+    assert!(cargo.idle_heavy);
+    assert!(
+        cargo.label.ends_with(&format!(", {}", s::APPS_IDLE_HEAVY)),
+        "{}",
+        cargo.label
+    );
+    let browser = line("scope:app-Hyprland-browser.sh-5650fedc");
+    assert!(!browser.idle_heavy);
+    assert!(!browser.label.contains(s::APPS_IDLE_HEAVY));
+
+    let sel = apps::selection(&frame, Key::Group(cargo.key), 1).unwrap();
+    assert!(sel.idle_heavy, "the sheet's line");
+    let p = apps::selection(
+        &frame,
+        Key::Process {
+            pid: 3041,
+            start: frame
+                .group(cargo.key)
+                .unwrap()
+                .processes
+                .as_ref()
+                .unwrap()
+                .iter()
+                .find(|p| p.pid == 3041)
+                .unwrap()
+                .start,
+        },
+        1,
+    )
+    .unwrap();
+    assert!(!p.idle_heavy, "a process row is not tagged; its group is");
+}
+
+#[test]
+fn a_group_opened_by_a_search_has_no_expander() {
+    let mut st = state();
+    let (frame, _) = st.take(data(&golden()));
+    // "rustc" matches one member of cargo's session: shown open, with no
+    // expander, as closing it would hide the match (N4).
+    let rows = apps::rows(&frame, &st, "rustc");
+    let Row::Group(g) = &rows[0] else { panic!() };
+    assert!(g.open && !g.expandable, "{g:?}");
+    // Matched by its own name it keeps the expander, and opens on demand.
+    let rows = apps::rows(&frame, &st, "cargo");
+    let Row::Group(g) = rows
+        .iter()
+        .find(|r| matches!(r, Row::Group(g) if g.id == "session:3030"))
+        .unwrap()
+    else {
+        panic!()
+    };
+    assert!(g.expandable && !g.open, "{g:?}");
+}
+
+#[test]
+fn only_the_selected_row_is_flagged() {
+    let mut st = state();
+    let (frame, _) = st.take(data(&golden()));
+    let browser = frame
+        .groups
+        .iter()
+        .find(|(_, g)| g.name == "Example Browser")
+        .unwrap()
+        .0;
+    st.toggle_open(browser);
+    let flags = |st: &AppsState| -> Vec<String> {
+        apps::rows(&frame, st, "")
+            .iter()
+            .filter_map(|r| match r {
+                Row::Group(g) if g.selected => Some(g.id.clone()),
+                Row::Process(p) if p.selected => Some(p.pid.to_string()),
+                _ => None,
+            })
+            .collect()
+    };
+    assert!(flags(&st).is_empty(), "nothing selected");
+    st.selected = Some(Key::Group(browser));
+    assert_eq!(flags(&st), ["scope:app-Hyprland-browser.sh-5650fedc"]);
+    st.selected = Some(Key::Process {
+        pid: 2010,
+        start: 5100,
+    });
+    assert_eq!(flags(&st), ["2010"], "the process, not its group");
+    // In the flat list too.
+    st.flatten = true;
+    assert_eq!(flags(&st), ["2010"]);
+    // A pid with another start is another process: nothing flagged.
+    st.selected = Some(Key::Process {
+        pid: 2010,
+        start: 1,
+    });
+    assert!(flags(&st).is_empty());
+}
+
+#[test]
+fn an_inspect_error_for_a_reused_pid_means_the_row_is_gone() {
+    use mirqab_proto::{Code, ErrorBody};
+    let err = |code, message: String| ErrorBody {
+        code,
+        message,
+        data: None,
+    };
+    let with = json!({"pid": 2001, "start": 5010});
+    assert!(apps::inspect_gone(
+        &err(Code::Failed, s::apps_process_gone(2001)),
+        &with
+    ));
+    assert!(apps::inspect_gone(
+        &err(Code::Failed, s::apps_no_process(2001)),
+        &with
+    ));
+    // Another failure, another pid, or a question without a start: not
+    // the row's process gone.
+    assert!(!apps::inspect_gone(
+        &err(Code::Failed, "something else".into()),
+        &with
+    ));
+    assert!(!apps::inspect_gone(
+        &err(Code::Failed, s::apps_process_gone(7)),
+        &with
+    ));
+    assert!(!apps::inspect_gone(
+        &err(Code::Unavailable, s::apps_process_gone(2001)),
+        &with
+    ));
+    assert!(!apps::inspect_gone(
+        &err(Code::Failed, s::apps_process_gone(2001)),
+        &json!({"pid": 2001})
+    ));
 }

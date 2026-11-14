@@ -10,13 +10,32 @@
 - **Depends on**: 001, 005
 - **Category**: tab
 - **Planned at**: 2026-11-13, from the owner
-- **State**: IN PROGRESS (parts 1–3 and 4a of 4: sampler, inspector,
+- **State**: DONE (2026-11-15). Parts 1–4 of 4: sampler, inspector,
   read CLI and MCP; Quit and Force quit, `mirqab quit`; the daemon side
   of the page: the `process` stream, start times, the units a stop takes
   with it, the session bus refused; the page, its inspector, the
   `apps.top` card; the focus source, the "idle but heavy" tag, the
-  `top-apps` minute row and the 400-process benchmark. Part 4b, the
-  interface's share of part 4, is next)
+  `top-apps` minute row and the 400-process benchmark (4a); the tag on
+  the page, Escape, the press fix, start times from the page, the narrow
+  focus credit and the GPU row's cap (4b). Every headless check passes.
+  **Owner checks still open** (they need the real session): the look
+  and feel on Hyprland (acceptance part 3, 1–6: theme icons, sorting and
+  clicking under a moving CPU order, the sheet overlaid and beside the
+  list, the popover, Top apps on Home, the selected row's contrast); the
+  tag on a real busy app (`yes > /dev/null &` for five minutes, cleared
+  by a click on its terminal) and `focus: hyprland` with the page open,
+  none closed (acceptance part 4, 1–2); a Hyprland restart with the
+  daemon running (part 4, 3); `top-apps` rows after a busy ten minutes
+  (part 4, 4); Escape and the press on the real desktop (part 4, 6–7),
+  including Escape with focus in the search entry (the entry clears
+  itself first) and the press through GTK's real event dispatch, which
+  the tests drive only through the shortcut's action and `Handle::press`;
+  the row's selected state read back by a screen reader (Orca) after a
+  reordering frame (the tests check what the page wrote, "Review of
+  PR #21", item 2); the interface's CPU and RSS with Apps open on
+  Wayland (the Broadway numbers are in "As built (part 3b)"); and
+  whether a Flatpak app's window reports its host pid ("Unverified
+  (part 4)")
 
 ## Problem
 
@@ -1050,7 +1069,7 @@ times. A stub `pacman` answering `-Qo`.
    - 6i. [x] Architecture §7.2 (app icons), §7.5 (selftest steps);
      `docs/user-guide/` Apps page; "As built (part 3)" with the measured
      costs. (3b)
-7. [ ] Focus tracking: `crates/mirqab-core/src/desktop/hyprland.rs` (event
+7. [x] Focus tracking: `crates/mirqab-core/src/desktop/hyprland.rs` (event
    socket reader, active only while `apps` has a subscriber), "idle but
    heavy" (part 4; design in "Part 4: focus, 'idle but heavy', the cost
    (design)").
@@ -1088,14 +1107,19 @@ times. A stub `pacman` answering `-Qo`.
    - 7f. [x] The session bus by `comm` (owner, 2026-11-14: yes). (4a)
    - 7g. [x] CLI: the `idle` column in `mirqab apps`, the focus line in
      `mirqab status`; `top_apps` carries `idleHeavy`. (4a)
-   - 7h. [ ] 4b: the caption and the sheet line; Escape; S8; N3; N8; N4;
+   - 7h. [x] 4b: the caption and the sheet line; Escape; S8; N3; N8; N4;
      `start` in `args` and in the inspect params; `APPS_ROW_GONE` on the
      gone error. (4b)
-   - 7i. [ ] Architecture §5.2, §5.3, §5.4, §6.1, §7.2, §7.5, §9.1, §12;
+     - Deferred from the review of PR #20 (S4): the focus credit narrowed
+       (owner decision 6, 2026-11-15). (4b)
+     - Deferred from the review of PR #20 (nit 3): the GPU row's cap on
+       DRM `fdinfo` reads, not on the `fd/` listing. (4b)
+   - 7i. [x] Architecture §5.2, §5.3, §5.4, §6.1, §7.2, §7.5, §9.1, §12;
      "As built (part 4a)" and "(part 4b)"; the plan's state; the README
-     row. (4a, 4b; 4a's share done: §5.2, §5.3, §5.4, §6.1, §6.3, §9.1,
-     §12, "As built (part 4a)", the README row's state)
-8. [ ] Tests above (part 1 wrote the read side's; part 4's table is in
+     row. (4a: §5.2, §5.3, §5.4, §6.1, §6.3, §9.1, §12, "As built (part
+     4a)"; 4b: §5.3's focus rule, §7.2, §7.5, "As built (part 4b)", the
+     state, the README row)
+8. [x] Tests above (part 1 wrote the read side's; part 4's table is in
    "Part 4 … Tests").
    - D6: [x] `crates/mirqab-core/tests/protocol.rs` (3a).
    - Deferred from the review of PR #16 (D7): `.flatpak-info` → 7e, its
@@ -1114,9 +1138,9 @@ times. A stub `pacman` answering `-Qo`.
    - 8b. [x] `tests/test-bench.sh` (`--procs`), `tests/test-fixtures.sh`
      (`--clones`), `tests/test-cli.sh` (`idle` column, `config set`,
      a bare pid still sent). (4a)
-   - 8c. [ ] `crates/mirqab-view/tests/apps.rs`, `crates/mirqab-ui/tests/widgets.rs`,
+   - 8c. [x] `crates/mirqab-view/tests/apps.rs`, `crates/mirqab-ui/tests/widgets.rs`,
      `tests/test-ui-apps.sh` with the fake Hyprland. (4b)
-9. [ ] Measure `--subscribe apps` and the top-apps minute cost; record
+9. [x] Measure `--subscribe apps` and the top-apps minute cost; record
    both (part 4; decision 12).
    - Deferred from the review of PR #16 (D1): measured (the late frame),
      then fixed → 7e.
@@ -2697,6 +2721,21 @@ Two, in this order:
    the 30-day fill measured 49.2 MB against the 40 MiB budget). Every other
    series keeps 30 days; the history budget does not grow.
 
+Confirmed for 4b (owner, 2026-11-15): Escape closes the inspector when a
+row is selected (it clears the selection, closing the sheet) and
+otherwise goes on, so in popover mode a second Escape still hides the
+popover; a real window still never closes on Escape (plan 022). "Idle
+but heavy" stays a tag only: the caption and the sheet's line, no
+notification.
+
+6. **Narrow focus credit** (owner, 2026-11-15, answering "Owner question
+   for 4b", S4 of the review of PR #20). A focused window credits its own
+   group, and its siblings only within its own `app-*.scope` unit (a
+   terminal and the `session:` groups carved from it) and within one
+   terminal `session:` split; apps that merely share the compositor's
+   service, another service, or the session scope get no credit from each
+   other's windows. As built: "As built (part 4b)", the first item.
+
 ## As built (part 4a)
 
 Part 4a (2026-11-14) is the daemon side of part 4: checklist steps 7a–7g,
@@ -2943,20 +2982,18 @@ Known limits (part 4a):
   (`PR_SET_NAME` changes `comm`), so a bus named otherwise is not
   refused, and a process naming itself `dbus-daemon` cannot be quit from
   mirqab (review of PR #20, nit 9).
-- Deferred from the review of PR #20 (S4): a focus credits every group
-  with a member in the focused pid's host unit. Under uwsm every app has
-  its own `app-*.scope`, but apps a compositor `exec`s without `uwsm
-  app` share its service or the session scope, and one focused window
-  then credits every group in that unit, so nothing in it is ever
-  tagged. Decision 5 chose "same host unit" for a terminal's jobs;
-  narrowing it is an owner question for 4b (below), with a fixture of
-  two apps in one service.
-- Deferred from the review of PR #20 (nit 3): the 1024-fd cap on the
+- ~~Deferred from the review of PR #20 (S4): a focus credits every group
+  with a member in the focused pid's host unit.~~ Narrowed in 4b (owner
+  decision 6): see "As built (part 4b)" and its Known limits. Under uwsm
+  every app has its own `app-*.scope`, but apps a compositor `exec`s
+  without `uwsm app` share its service or the session scope; in 4a one
+  focused window there credited every group in that unit (and in the
+  session scope every group of the login session), so nothing in it was
+  ever tagged.
+- ~~Deferred from the review of PR #20 (nit 3): the 1024-fd cap on the
   `fd/` listing leaves the GPU row out for the processes that matter
-  most (browsers and Electron apps often hold more fds). Capping the
-  `fdinfo` reads (DRM fds only, say 64) instead of the listing is the
-  better rule; 4b fixes it with the inspector sheet work, with a
-  1100-fd fixture of which 8 are DRM asserting a row.
+  most.~~ Fixed in 4b: the cap is on DRM `fdinfo` reads (64), and an
+  1100-fd fixture of which 8 are DRM has its row.
 
 Left for the owner (acceptance part 4, 1–5): the tag on a real
 `yes > /dev/null &` after five minutes and its clearing on a click;
@@ -2978,7 +3015,8 @@ PR #20, nit 3).
 Owner question for 4b (review of PR #20, S4): credit a focused window's
 siblings only through `app-*.scope` units and the `session:` splits of
 a terminal, so that apps sharing a compositor's service or the session
-scope are not all credited by one window?
+scope are not all credited by one window? **Owner, 2026-11-15: yes**
+(owner decision 6 of part 4).
 
 ### Review of PR #20 (part 4a), 2026-11-14
 
@@ -3067,6 +3105,294 @@ build, `--runs 3`, 60 s each): `--subscribe apps --max-cpu 1.5 --procs 400`
 0.000 % ×3, 7.4–7.6 MiB, within the 15 MiB budget. The debug build's
 tray run 15.2 MiB and `--procs 400` run 17.1 MiB, the base of the test's
 ceilings.
+
+
+## As built (part 4b)
+
+Part 4b (2026-11-15) is the interface side of part 4, checklist steps 7h,
+8c and 4b's share of 7i, with the two items the review of PR #20 deferred
+to it (S4 and nit 3). It closes plan 006. What was built, with where it
+lives:
+
+- **Narrow focus credit** (owner decision 6;
+  `crates/mirqab-core/src/samplers/apps/focus.rs:68`, `credited`). A
+  focused pid credits the group that holds it; when that group is a
+  `session:` split, nothing more; otherwise, when the pid's unit is an
+  `app-*.scope` (`app_scope`, `:46`), every group with a member in that
+  scope; otherwise, when the pid is a terminal, the `session:` groups
+  carved from its unit (a terminal server in a service, such as foot's
+  `foot-server.service`); nothing else. The sid fallback outside the
+  user manager is gone. Tests: the fixture test
+  `a_terminal_credits_its_jobs_and_a_browser_only_itself` keeps 3000
+  (foot) crediting `session:3030` (cargo), `session:3010` and its scope,
+  and now asserts that 6202 in the login session's scope credits only
+  `tree:6201`, no longer the compositor's tree (4a credited it through
+  session 6200), and that 3041 (rustc, inside `session:3030`) credits its
+  split alone; the new
+  `apps_sharing_a_service_or_the_session_scope_credit_only_themselves`
+  (`:259`, on a synthetic table, `table` `:229`) has two apps started by
+  a compositor through `sh -c` in the session scope (two `tree:` groups
+  in one session: each credits only itself), a non-app service holding a
+  terminal server with `viewer` in one tab and `build` in another
+  (`viewer`'s window credits `session:2010` and not `build`; the
+  terminal's own window credits the service and both tabs), and a
+  compositor's service whose apps form one group.
+- **The GPU row's cap on DRM reads** (review of PR #20, nit 3;
+  `inspect.rs:284`, `MAX_DRM_FDINFO` 64; `gpu` `:294`). `fd/` is listed
+  whole and each link read, as the open files are; `fdinfo` is read only
+  for DRM fds, at most 64, past which the row is left out. Test:
+  `gpu_memory_comes_only_from_drm_fds_and_not_past_64_of_them`
+  (`tests/apps.rs:1190`): 1 100 fds of which 8 are DRM (two clients) give
+  `vramBytes` 1 MiB and `files.count` 1 100, the 1 092 others' parseable
+  `fdinfo` never counted; exactly 64 DRM fds give the row (`:1230`, added
+  by the review of PR #21); 65 leave it out. After the review the open
+  files and the GPU row share one pass over `fd/` ("Review of PR #21",
+  item 4). DRM fds per process on the development machine (counted by
+  the reviewer, 2026-11-15): Hyprland 13; zen-bin, Xwayland and
+  Firefox's RDD 6; the GPU processes of helium, Discord and t3code 5;
+  nothing more than 13.
+- **The tag on the page** (decision 16). `GroupLine.idle_heavy` and the
+  label's last words (`crates/mirqab-view/src/tabs/apps.rs:381`, `:421`;
+  `strings::apps_group_label` gains the flag, `strings.rs:1906`);
+  `group_row.rs:64` adds `APPS_IDLE_HEAVY` ("busy while not in use",
+  `strings.rs:1844`) as a `dim-label caption` after the process count,
+  named `apps-idle-heavy`, shown only when set; `Selection.idle_heavy`
+  (`apps.rs:659`) shows `APPS_IDLE_HEAVY_LINE` under the stats
+  (`inspector.rs:172`, `apps-idle-heavy-line`). No colour, no icon.
+- **Start times from the page** (decisions 8 and 9). `Selection.args` for
+  a process row is `{"pid", "start"}` and `Selection.inspect_params` is
+  `{"pid", "start"}` for a process and for a group's main process
+  (`pid_params`, `apps.rs:663`); `inspect` sends them
+  (`inspector.rs:427`), and `model::inspect_gone` (`apps.rs:818`: a
+  `failed` reply naming the pid as another process now, or as no
+  process, to a question that carried a start) makes the sheet say
+  `APPS_ROW_GONE` with no verdict and no details (`gone`,
+  `inspector.rs:461`).
+- **Escape** (`page.rs:615`, `escape` `:307`). A `ShortcutController`
+  with scope `Local` on the page's root; with a row selected Escape
+  clears the selection (the sheet closes) and stops, with none it
+  proceeds to the window's own controller, which hides a popover; in a
+  window it then does nothing (plan 022). The modal dialog takes its own
+  Escape first.
+- **S8** (`page.rs:191`, `press` `:296`, the controller `:472`). A
+  frame that arrives while a pointer is down on the list keeps its rows
+  out of the store until the release, which writes the latest frame.
+- **N3** (`unmapped`, `page.rs:322`): unmapping drops the subscription,
+  the frame and the store's rows, and hides the sheet without clearing
+  the selection (a `quiet` flag keeps the sheet's hide from counting as
+  the user's).
+- **N8** (`mark_selected`, `page.rs:53`): the selected state is set on
+  the list item's widget once the row is mapped; the box keeps only its
+  `selected` style class.
+- **N4** (`apps.rs:518`): a group opened by a search (it matched only by
+  members) has no expander.
+- **Gap 5** (`client.rs:77`, `StreamSubs::next`, and `subscribe_params`
+  `:89`, split out of `sync` so the decision is testable): the unit test
+  `a_dropped_handle_leaves_the_others_params` (`:564`).
+- **Gap 6** in `tests/test-ui-apps.sh`: a logging proxy (`python3 -I`,
+  `:133`) in front of the daemon shows the graph's subscribe as
+  `{"interval":1000,"live":true,"pid":2001,"start":5010}` and the
+  inspector's `get` as `{"pid":2001,"start":5010}`.
+- **The fake Hyprland** (`tests/test-ui-apps.sh:313`): a second daemon on
+  a copy of the root under the short runtime directory, with
+  `run/user/1000/hypr/fake/hyprland.lock` naming pid 1050 and a
+  `python3 -I` fake (`:324`) whose event socket reports the browser's
+  window and whose request socket answers `j/activewindow` with pid
+  2001; the browser's and rustc's `stat` gain a core's worth of ticks a
+  second; `MIRQAB_HEAVY_WINDOW_MS=4000`.
+- **Docs**: architecture §5.3 (the narrowed focus rule), §7.2 (the
+  caption in words only), §7.5 (the widget tests' `test` accessibility
+  backend, the fake compositor in a fixture root, the two new widget
+  names).
+
+Tests (2026-11-15): `cargo test -p mirqab-core` library 69 → 70 (the
+synthetic-table credit test), `tests/apps.rs` 30 (the GPU test
+rewritten); `crates/mirqab-view/tests/apps.rs` 16 → 20
+(`a_tagged_group_says_so_in_its_row_its_label_and_the_sheet` `:535`,
+`a_group_opened_by_a_search_has_no_expander` `:582`, gap 8's
+`only_the_selected_row_is_flagged` `:603`,
+`an_inspect_error_for_a_reused_pid_means_the_row_is_gone` `:643`; the
+selection test now checks `start` in `args` and `inspect_params`);
+`mirqab-ui` unit tests 2 → 3 (gap 5); `crates/mirqab-ui/tests/widgets.rs`
+10 → 16 under Broadway (`a_reused_pid_is_not_explained_and_a_tagged_group_says_why`
+`:810`, `the_caption_shows_only_on_a_tagged_row` `:891`,
+`escape_clears_the_selection_and_otherwise_goes_on` `:948` through the
+page's real shortcut, `a_frame_during_a_press_waits_for_the_release`
+`:980`, `the_list_item_carries_the_selected_state` `:1033`,
+`a_remapped_page_shows_nothing_before_its_first_frame` `:1058`; the
+existing inspector tests now expect `start` in the inspect params and
+the redeem's args); `tests/test-ui-apps.sh` 67 → 78 checks (no tag and
+`status.focus` null without a source; the two proxied requests; with
+the fake: `status.focus` `hyprland` and one `focus-hyprland` thread while
+the page is open, cargo tagged, the focused browser not, then `focus`
+null and no reader thread once it closed).
+
+Deviations from the brief, each with its reason:
+
+- **S8 watches raw events, not a `GestureClick`.** An
+  `EventControllerLegacy` in the capture phase on the `ListView` sees
+  the press before the rows' own gesture and is not cancelled when that
+  gesture claims the sequence (a `GestureClick` on the list could be);
+  the release is handled in an idle callback after its event, because
+  the row activates on that same release, and must read the held rows.
+  A grab broken or a touch cancelled counts as a release; unmapping
+  clears the press.
+- **N8's state is on the list item's widget**, not on `gtk::ListItem`:
+  `ListItem` is no widget and has no state setter (only an accessible
+  label and description, GTK 4.12). It is set only once the row is
+  mapped: at bind time the list item's widget may not be parented yet,
+  and gtk-rs's `parent()` then sank its floating reference and dropped
+  it, which tore the item down inside the bind (found by the widget
+  test: "RefCell already borrowed" in `teardown`). A row bound off
+  screen gets its state when it maps.
+- **The widget tests run with `GTK_A11Y=test`** (`tests/test-ui-widgets.sh`),
+  not `none`: with `none` there is no accessible context and
+  `gtk::test_accessible_has_state` reads nothing. The test backend talks
+  to no bus. GTK gives no getter for a state's value, and GTK itself
+  writes `Selected(false)` on every list item under `NoSelection`, so
+  "the state is set" proves nothing. Since the review of PR #21 the page
+  records the value it wrote on each list item (`Item.applied`, through
+  `write_selected`, which returns what it wrote), and N8's test reads it
+  through `Handle::marked`: the selected row true, the others false,
+  also after a reordering frame rebinds the items, and none true once
+  cleared. Without the `mark_selected` calls the test fails; the
+  `update_state` call itself is covered only by the Orca owner check
+  (review of PR #21, delta). It proves the page's bookkeeping; what a screen reader reads is an owner check (Orca). A
+  test that reads GTK's value needs `gtk_test_accessible_check_state`,
+  variadic and unbound by gtk-rs, so `unsafe` in a test, which the
+  repository keeps to `sys.rs`.
+- **N3 is tested in the widget test**, not in `tests/test-ui-apps.sh`: on
+  a re-map the daemon samples at once, so the first frame races the
+  dump; the widget test hides and shows the page with no daemon and
+  finds no rows until it feeds a frame.
+- **The fixture for owner decision 6 is a synthetic table in
+  `focus.rs`'s tests**, not rows in `procs.tsv`: new rows change the
+  golden frame and the group counts five test files assert. And "two
+  apps in one non-app service" cannot be two groups by itself: rule 1
+  makes one group of a unit unless its main process is a terminal, so
+  the compositor's own service with the apps it `exec`s is one row (the
+  test asserts that). The fixture's two apps in one service are run
+  from a terminal server's shells (two `session:` splits), and the
+  session-scope pair is two `tree:` groups started through `sh -c`.
+- **A terminal in a service credits its tabs**, beside the decision's
+  `app-*.scope` clause: without it a footclient window's own jobs (a
+  build in a tab the user is reading) would be tagged while in view. Its
+  credit reaches only the `session:` splits of its own unit, never
+  another app in that service.
+- **`inspect_gone` also takes `no process N`** when a start was sent:
+  the row named a process that is no longer anywhere, which is the same
+  "that row is gone" for the person reading the sheet.
+- **A process row never carries the tag line**: the tag is a group's
+  (`AppGroup.idleHeavy`); a selected process inside a tagged group shows
+  the group's caption in the list, not a line in the sheet.
+- **Past 64 DRM fds the GPU row is left out**, not summed in part:
+  counting some clients would understate VRAM with no sign of it.
+- **`page::build_page` and `page::Handle`** are new public items for the
+  widget tests (frames fed by hand, a press held, the rows, the written
+  selected states and Escape read back); `build` is `build_page(..).0`.
+- **The sheet is pinned** (`split.set_pin_sidebar(true)`, `page.rs:583`,
+  review of PR #21): libadwaita's `set_collapsed` hides an unpinned
+  sidebar, and the page took that for the user closing the sheet and
+  cleared the selection. This was the Home test's flake since part 3b,
+  and a product bug: a window shrunk under 60 em lost its selection.
+
+Known limits (part 4b):
+
+- Escape is the page's only while focus is inside it (scope `Local`):
+  with focus in the sidebar it goes to the window, and a search entry
+  with text takes Escape to clear itself first (GTK's own binding).
+- A press held on the list freezes its rows until the release, or for
+  two frames (some 4 s), after which the press is taken as lost and the
+  third frame is written; frames are not lost, the latest is written.
+- `inspect_gone` matches the error's message text
+  (`strings::apps_process_gone`, `apps_no_process`). A `data.gone` flag or
+  an error code of its own belongs to the plan that next changes the
+  protocol (plan 007's `Ports` errors, or plan 018).
+- Outside the user manager (no app scopes) a terminal and its jobs are
+  `tree:` groups with different sessions; the terminal's window credits
+  only its own group, as in 4a.
+- N6 stays deferred to the plan that adds reconnects (decision 16).
+- The Broadway checks cannot show the popover or real pointer presses;
+  Escape in a popover and S8 under a moving CPU order are owner checks
+  (acceptance part 4, 6–7).
+
+Left for the owner, all on the development machine: acceptance part 3,
+1–6, and part 4, 1–4, 6 and 7 (listed in the State line above), the
+interface's cost with Apps open on Wayland, and the Flatpak window pid.
+
+### Review of PR #21 (part 4b), 2026-11-15
+
+The ruling (Fable 5.1, on Sonnet's review) kept 6 items, deferred 3 and
+dropped 3. What changed, with its test:
+
+1. **The Home flake was the collapse clearing the selection.**
+   `adw_overlay_split_view_set_collapsed` hides an unpinned sidebar; the
+   60 em breakpoint applied after the first frame showed the sheet, and
+   `connect_show_sidebar_notify` read the hide as the user's and cleared
+   the selection (the reviewer's instrumented failing run shows that
+   sequence; 3 failures in 8 runs on the PR head). Fix:
+   `split.set_pin_sidebar(true)` (`page.rs:583`). Test:
+   `collapsing_the_page_keeps_the_selection` (`widgets.rs:1141`): with a
+   row selected, `set_collapsed(true)` and then a 300 px window under
+   the breakpoint keep the selection and the sheet; an explicit hide
+   still clears it. Without the pin it fails ("still selected").
+   `tests/test-ui-home.sh` repeated: see the counts below.
+2. **N8's test now discriminates** (see the deviation above):
+   `Item.applied` and `write_selected` (`page.rs:54`, `mark_selected`
+   `:65`), `Handle::marked` (`:400`); `the_list_item_carries_the_selected_state`
+   (`widgets.rs:1033`) asserts true for the selected row, false for the
+   others, true again after a reordering frame, none once Escape
+   cleared it. With the `mark_selected` calls removed it fails (checked);
+   removing only the `update_state` line leaves it green, so that call
+   is covered by the Orca owner check alone.
+   The ruling's preferred test (GTK's value through a test-only
+   `#[allow(unsafe_code)]`) was not used: `unsafe` stays in `sys.rs`.
+3. **A lost release cannot hold the rows for long**: a press holds at
+   most two frames (`HOLD_FRAMES`, `page.rs:143`, `:217`); the third is
+   written and the press taken as lost; `press` and `unmapped` reset the
+   count. Test: `a_press_the_list_never_releases_lets_frames_through`
+   (`widgets.rs:1109`).
+4. **One pass over `fd/`**: `fd_targets` (`inspect.rs:247`) lists `fd/`
+   once and reads each link once; `open_files` (`:265`) and `gpu`
+   (`:304`) take its list (`:550`). The GPU test gains the exact-64 case
+   (`tests/apps.rs:1230`). Re-measured (2026-11-15, development machine,
+   release build, fixture daemon, `mirqab what --json`, 20 calls, three
+   runs, CLI start-up included): the 1 100-fd process with 8 DRM fds
+   1.43–1.44 ms a call, the fixture's browser 0.83–0.86 ms.
+5. **Test helpers die with the sandbox**: `tests/lib.sh` (shared harness)
+   gains `HELPER_PIDS`, killed by `_cleanup_scratch`; the fake
+   Hyprland, the proxy and the tick loop in `tests/test-ui-apps.sh`, the
+   `--watch` reader in `tests/test-bar.sh` and the `--background`
+   interfaces in `tests/test-ui-shell.sh` and `tests/test-ui-home.sh`
+   join it. Checked by hand: with a `false` put after the loop's start
+   in `tests/test-ui-apps.sh`, the file aborts and no `hypr.py`,
+   `proxy.py` or root-reading process is left (then removed).
+6. **README**: plan 006 is done in the status paragraph, and the
+   popover's Escape says the first Escape clears an Apps selection.
+
+Counts after the fixes (2026-11-15): `crates/mirqab-ui/tests/widgets.rs`
+16 → 18 under Broadway (two new, N8's rewritten); `tests/apps.rs` 30
+(the GPU test gains the 64 case); `tests/test-ui-home.sh` repeated 38
+times: 36 runs 55/55, and the "with that group in the inspector" check
+never failed; 2 runs aborted with every interface check failing from
+the first `--selftest` on (the interface never drew a page, so `mirqab
+open` then found no interface and tried the stubbed `systemctl`). That
+failure did not come back in 16 further runs of a copy that prints the
+selftest's output, nor in 6 rounds of a bare Broadway, daemon and
+`--selftest home` loop; its cause is not known (the machine was shared
+with other builds), and it is not the collapse. The same whole-file
+failure came once in `tests/test-ui-shell.sh` during a full
+`--affected` run (that file builds no Apps page), then passed in 12
+runs alone and in the next full run (699/699): a harness flake to find
+when it is caught with the selftest's output.
+
+Deferred: real key and pointer dispatch for Escape and S8 (owner checks,
+in the State line, with the search entry's Escape); `inspect_gone`'s
+text match (Known limits (part 4b), for the next protocol plan); an
+AT-SPI readback of the selected state (owner check, Orca). Dropped: a
+real-machine basis for the 64 cap (counted: 13 at most, recorded above),
+"freezes for good" (the next click or an unmap clears a press), and a
+longer wait in the Home test (the cause was item 1).
 
 
 ## Unverified

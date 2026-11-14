@@ -16,10 +16,10 @@ history, the view crate (`crates/mirqab-view`, with number formatting, the
 theme token table, the icon glyphs, graph geometry and the sidebar model;
 its tests need no display) and the window (`crates/mirqab-ui`). Plans 002
 and 003 are complete too, and milestone M1 (a running app with Home and
-System) is done. Plan 006 (Apps) has its page and its cost budget in CI.
-Its daemon side of "idle but heavy" is in (focus tracking, the tag in
-`mirqab apps`, `status` and the MCP server, and the top-apps history);
-the page does not show the tag yet.
+System) is done. Plan 006 (Apps) is done: the page and its inspector,
+Quit and Force quit, the "idle but heavy" tag on the page, in
+`mirqab apps` and in the MCP server, the top-apps history, and the cost
+budget in CI.
 
 - Measured cost (2026-11-13, on the development machine, release build):
   idle, with no subscriber, 0.000 % of one core over 60 s and 5.0 MiB.
@@ -58,8 +58,9 @@ the page does not show the tag yet.
   `apps [--sort cpu|mem|name] [--all] [--json]` (apps by CPU, memory or
   name; `--all` lists every process; with Hyprland and the Apps page open,
   an IDLE column marks apps that used 20 % of a core for five minutes with
-  no window focused), `what PID [--json]` (explains one
-  process), `quit PID|NAME [-y] [--force] [--dry-run] [--json]` (quits a
+  no window focused, and shows only when some app is marked), `what PID
+  [--json]` (explains one process), `quit PID|NAME [-y] [--force]
+  [--dry-run] [--json]` (quits a
   process or an app after asking; `--force` sends SIGKILL, and a user
   service is stopped through systemctl, and the list shows the other
   services that stop with it and warns before the sound server or a
@@ -88,8 +89,9 @@ the page does not show the tag yet.
   gets the size the compositor gives it).
 - Settings → Opens as → Popover (or `window.mode` set to `popover`)
   makes it a popover anchored to a screen corner, on compositors with
-  wlr-layer-shell such as Hyprland. Escape closes a popover, and so does
-  moving keyboard focus away. With focus-follows-mouse (Hyprland's
+  wlr-layer-shell such as Hyprland. Escape closes a popover (with a row
+  selected on Apps, the first Escape clears the selection and the second
+  closes the popover), and so does moving keyboard focus away. With focus-follows-mouse (Hyprland's
   `follow_mouse = 1`) that happens as soon as the pointer moves onto
   another window; turn on Keep open (the pin in its header) or use the
   window.
@@ -121,8 +123,13 @@ the page does not show the tag yet.
   inspector beside the list: what the process is in plain words (which
   package provides it, Flatpak, replaced since it started), its parents,
   user, executable, unit, sandbox and memory, and a graph of a process's
-  CPU that updates every second while it is on screen. Quit and Force
-  quit ask the daemon first and show what they will do: every process, a
+  CPU that updates every second while it is on screen. Escape clears the
+  selection and closes the inspector. A group that used 20 % of a core on
+  average for five minutes, with none of its windows in focus, shows "busy
+  while not in use" in dim text after its process count, and its inspector
+  says so in one line. That is a label only: nothing notifies you. It
+  needs Hyprland and the Apps page open. Quit and Force quit ask the
+  daemon first and show what they will do: every process, a
   service's stop with the services it takes with it, what is left alone
   and why, and a warning before the sound server or a portal is stopped.
   A refusal says why in words. The result of a Quit or Force quit stays in

@@ -224,9 +224,11 @@ Four ways in, one daemon behind them.
    xdg-toplevel) that the compositor tiles or floats like any app. Its
    header row is a `GtkWindowHandle` that drags it and ends with
    `GtkWindowControls`, the desktop's buttons; close hides. Escape does
-   nothing (a window that vanished on Escape would surprise); Ctrl+W
-   hides. Its size is `widthEm` × `heightEm` at first, and GTK is expected
-   to keep the size across a hide (not yet checked on Hyprland). Its
+   nothing, except on the Apps page, which takes it first and clears a
+   selected row and its inspector (plan 006, part 4); a window that
+   vanished on Escape would surprise. Ctrl+W hides. Its size is
+   `widthEm` × `heightEm` at first, and GTK is expected to keep the size
+   across a hide (not yet checked on Hyprland). Its
    position is the compositor's, since GTK 4 has no call
    to place a toplevel. The `.desktop` entry asks for this mode with
    `--window`, which overrides a config that asks for the popover.
@@ -235,8 +237,10 @@ Four ways in, one daemon behind them.
    by `gtk4-layer-shell` before it is first shown: layer `top`, anchored
    to a screen corner or edge chosen in Settings (default: top right, with
    a margin that clears the bar), keyboard mode `on-demand`, namespace
-   `mirqab`. It closes on Escape, and when keyboard focus moves away: the
-   window's `is-active` property turns false and the window hides. With
+   `mirqab`. It closes on Escape (on the Apps page the first Escape clears
+   a selected row, and the next one closes the popover), and when keyboard
+   focus moves away: the window's `is-active` property turns false and the
+   window hides. With
    focus-follows-mouse (Hyprland's `follow_mouse = 1`) that is as soon as
    the pointer crosses another window, which is why the window is the
    default (owner, 2026-11-14). A "Keep open" toggle keeps it open and stops
@@ -398,11 +402,16 @@ Streams: `system`, `apps`, `process`, `ports`, `agents`, `awake`, `disk`,
   Hyprland's event socket; started by the first sample, stopped by
   `Sampler::idle`, so the closed window keeps no reader thread or socket)
   and tags a group `idleHeavy` when it used at least 20 % of one core on
-  average over a full five minutes in which none of its processes, nor
-  any process in the same host unit (a terminal's jobs), had focus at
-  any moment: a tag needs five minutes since focus was lost (the source
-  keeps every change of focus, "no window" included); the
-  frame's `focus` names the source, and both are absent without one.
+  average over a full five minutes in which none of its processes had
+  focus at any moment, nor a process whose focus credits it: one in the
+  same `app-*.scope` (a terminal and the `session:` groups carved from
+  it), or a terminal whose `session:` groups it is. A window inside a
+  `session:` group credits that group alone, and apps that merely share
+  a service, the manager's `init.scope` or the login session's scope
+  credit nothing of each other (owner, 2026-11-15). A tag needs five
+  minutes since focus was lost (the source keeps every change of focus,
+  "no window" included); the frame's `focus` names the source, and both
+  are absent without one.
   Once a minute, subscribers or not, it may write a `top-apps` event
   (§6.1).
 - `process` (plan 006, part 3, the Apps inspector's single-process
@@ -732,7 +741,9 @@ Sizes are in em of the base font so the fractional-scale case works.
   The Apps tab's rows show an app's own icon from the icon theme, by name
   (the desktop entry's `Icon=` when the display's theme has it; a value
   with a `/` in it is never loaded), and the glyph of the row's kind
-  otherwise (plan 006).
+  otherwise (plan 006). A group tagged "idle but heavy" says so in words
+  only: a dim caption after its process count and one line in the
+  inspector, no colour and no icon (plan 006, part 4).
 - **Strings live in one place.** The first release is English only
   (owner, 2026-11-13). Every string a person reads, in the interface, the
   CLI and the daemon's stream data, is a function or constant in
@@ -849,7 +860,10 @@ Three layers, cheapest first:
    thread that owns it. `tests/lib.sh` starts `gtk4-broadwayd` (inside the
    `gtk4` package **[machine]**) on a private display number and exports
    `GDK_BACKEND=broadway`, `BROADWAY_DISPLAY`, `GSK_RENDERER=cairo` and
-   `GTK_A11Y=none`. A widget test builds the widget, hands it data, and
+   `GTK_A11Y=none`; the widget tests run with GTK's `test` accessibility
+   backend instead, which talks to no bus and lets a test read back an
+   accessible state (`gtk::test_accessible_has_state`). A widget test
+   builds the widget, hands it data, and
    inspects the widget tree or the render node tree (`gtk::Snapshot` to
    `gsk::RenderNode`): for example "the graph produced one stroke node"
    and "no blur node anywhere". No pixels are compared.
@@ -872,10 +886,20 @@ Three layers, cheapest first:
    shows its heading and body (checked under Broadway, plan 006). The
    Apps page names `apps-search`, `apps-flatten`, `apps-group:<id>`,
    `apps-process:<pid>`, `apps-inspector`, `apps-verdict`, `apps-quit`,
-   `apps-force-quit`, `apps-dialog`, `apps-result`, `apps-sort` and
-   `apps-notice`; the `apps.top`
+   `apps-force-quit`, `apps-dialog`, `apps-result`, `apps-sort`,
+   `apps-notice`, `apps-idle-heavy` (a row's caption) and
+   `apps-idle-heavy-line` (the inspector's line); the `apps.top`
    card's rows are `apps-top:<id>`. An action under test goes to a daemon
    on a fixture root, whose recording sender signals nothing.
+   A test that needs a compositor puts a fake one in the fixture root:
+   on a fixture root the daemon looks for Hyprland only under the tree's
+   `run/user/<uid>/hypr/`, never in the environment, so
+   `tests/test-ui-apps.sh` copies the root under the short runtime
+   directory (socket paths stay under 108 bytes), writes a
+   `hyprland.lock` naming the fixture's compositor pid, and serves
+   `.socket2.sock` and `.socket.sock` from a small `python3 -I` script
+   that reports a focused window by pid (plan 006, part 4b). The live
+   session's sockets are never touched.
 
 Not covered headless: the layer-shell popover (Broadway is not Wayland).
 Plan 001 has an **[unverified]** step to run the popover tests under a

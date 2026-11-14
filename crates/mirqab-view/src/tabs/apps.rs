@@ -369,10 +369,16 @@ pub struct GroupLine {
     pub fraction: f64,
     pub memory: String,
     pub procs: String,
-    /// More than one process: the expander shows.
+    /// More than one process, and not opened by a search: the expander
+    /// shows (review of PR #19, N4: a search that matches only some
+    /// members shows them under the group, and the expander would close
+    /// nothing).
     pub expandable: bool,
     pub open: bool,
     pub selected: bool,
+    /// "Idle but heavy" (plan 006, part 4): busy while none of its windows
+    /// had focus; the row says so in a dim caption.
+    pub idle_heavy: bool,
     /// For assistive technology.
     pub label: String,
 }
@@ -412,12 +418,13 @@ fn group_line(key: u64, g: &AppGroup, open: bool, selected: bool) -> GroupLine {
     GroupLine {
         key,
         id: g.id.clone(),
-        label: s::apps_group_label(&name, &cpu, &memory, g.procs),
+        label: s::apps_group_label(&name, &cpu, &memory, g.procs, g.idle_heavy),
         icon: icon_name(g.icon.as_deref()),
         glyph: glyph(&g.kind),
         fraction: fraction(g.cpu),
         procs: s::apps_procs(g.procs),
         expandable: g.procs > 1,
+        idle_heavy: g.idle_heavy,
         name,
         cpu,
         memory,
@@ -506,12 +513,10 @@ pub fn rows(frame: &Frame, state: &AppsState, search: &str) -> Vec<Row> {
                 continue;
             }
             let open = state.open.contains(k) || !group_hit;
-            out.push(Row::Group(group_line(
-                *k,
-                g,
-                open,
-                state.selected == Some(Key::Group(*k)),
-            )));
+            let mut line = group_line(*k, g, open, state.selected == Some(Key::Group(*k)));
+            // Opened by the search: the expander would close nothing (N4).
+            line.expandable &= group_hit;
+            out.push(Row::Group(line));
             if (open && g.procs > 1) || !group_hit {
                 out.extend(
                     procs
@@ -633,7 +638,12 @@ pub struct Selection {
     /// The pid `apps.inspect` explains: the process, or a group's main
     /// process.
     pub inspect_pid: Option<u32>,
-    /// The `args` of `apps.quit` and `apps.kill`.
+    /// The params of `get apps.inspect`: that pid with its start time when
+    /// the frame lists it, so a pid reused since the frame is not explained
+    /// in the row's name (plan 006, part 4, decision 9).
+    pub inspect_params: Option<Value>,
+    /// The `args` of `apps.quit` and `apps.kill`: a group's id, or a
+    /// process's pid with its start time (decision 8).
     pub args: Value,
     /// A process row's pid and start time: the live graph's params, and
     /// what a plan's entry must match (D5).
@@ -644,6 +654,17 @@ pub struct Selection {
     pub not_yours: bool,
     /// The interface itself is among the targets.
     pub holds_self: bool,
+    /// The group is tagged "idle but heavy": the sheet says what that means
+    /// under the stats. A process row is never tagged; its group is.
+    pub idle_heavy: bool,
+}
+
+/// `{"pid", "start"}`, or the pid alone when the start is not known.
+fn pid_params(pid: u32, start: Option<u64>) -> Value {
+    match start {
+        Some(start) => json!({"pid": pid, "start": start}),
+        None => json!({"pid": pid}),
+    }
 }
 
 /// The selection's view, or None when its row is gone.
@@ -655,6 +676,14 @@ pub fn selection(frame: &Frame, key: Key, own_pid: u32) -> Option<Selection> {
                 Some(ps) => ps.iter().map(|p| (p.pid, p.start)).collect(),
                 None => g.pids.iter().map(|&p| (p, 0)).collect(),
             };
+            let main = main_pid(g);
+            let main_start = main.and_then(|pid| {
+                g.processes
+                    .iter()
+                    .flatten()
+                    .find(|p| p.pid == pid)
+                    .map(|p| p.start)
+            });
             Some(Selection {
                 key,
                 name: s::plain(&g.name).into_owned(),
@@ -666,12 +695,14 @@ pub fn selection(frame: &Frame, key: Key, own_pid: u32) -> Option<Selection> {
                 memory: format::bytes(g.rss_bytes),
                 threads: g.threads.to_string(),
                 procs: s::apps_procs(g.procs),
-                inspect_pid: main_pid(g),
+                inspect_pid: main,
+                inspect_params: main.map(|pid| pid_params(pid, main_start)),
                 args: json!({"group": g.id}),
                 process: None,
                 holds_self: targets.iter().any(|&(p, _)| p == own_pid),
                 targets,
                 not_yours: g.id == SYSTEM_ID,
+                idle_heavy: g.idle_heavy,
             })
         }
         Key::Process { pid, start } => {
@@ -688,11 +719,13 @@ pub fn selection(frame: &Frame, key: Key, own_pid: u32) -> Option<Selection> {
                 threads: p.threads.to_string(),
                 procs: s::apps_procs(1),
                 inspect_pid: Some(pid),
-                args: json!({"pid": pid}),
+                inspect_params: Some(pid_params(pid, Some(start))),
+                args: pid_params(pid, Some(start)),
                 process: Some((pid, start)),
                 targets: vec![(pid, start)],
                 not_yours: g.id == SYSTEM_ID,
                 holds_self: pid == own_pid,
+                idle_heavy: false,
             })
         }
     }
@@ -777,6 +810,18 @@ fn left_alone(skipped: &Value) -> Vec<String> {
         )
     }));
     out
+}
+
+/// Whether an `apps.inspect` error says the row's process is no longer at
+/// its pid (decision 9): another process holds it now, or none does. The
+/// sheet then says `APPS_ROW_GONE` and forms no verdict.
+pub fn inspect_gone(e: &ErrorBody, params: &Value) -> bool {
+    let Some(pid) = params["pid"].as_u64().and_then(|p| u32::try_from(p).ok()) else {
+        return false;
+    };
+    e.code == mirqab_proto::Code::Failed
+        && params.get("start").is_some()
+        && (e.message == s::apps_process_gone(pid) || e.message == s::apps_no_process(pid))
 }
 
 /// Whether a plan names the row's pid with another start time: the row's

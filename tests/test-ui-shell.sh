@@ -55,6 +55,7 @@ unlike "window.mode window is accepted" "$reply" '"error"'
 # quits after its exit delay (5 s here, honoured only under MIRQAB_TEST).
 MIRQAB_UI_EXIT_MS=5000 "$BIN/mirqab-ui" --socket "$MIRQAB_SOCKET" --background >"$SANDBOX/ui.out" 2>&1 &
 ui=$!
+HELPER_PIDS+=("$ui")
 attached=""
 for ((i = 0; i < 100; i++)); do
     attached="$("$BIN/mirqab" status --json 2>/dev/null | jq -r '.ui.pid // empty')"
