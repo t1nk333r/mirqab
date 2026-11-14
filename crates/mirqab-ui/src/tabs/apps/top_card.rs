@@ -35,6 +35,9 @@ pub struct TopCard {
 impl TopCard {
     pub fn new(ctx: &Rc<Ctx>) -> TopCard {
         let card = Card::new(strings::APPS_TOP);
+        // The same pin control as every other pinnable card, so Top apps can
+        // be unpinned from Home itself (docs pass of PR #19).
+        card.add_header(&crate::tabs::pin_button(ctx, "apps.top"));
         let ids: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
         let mut lines = Vec::new();
         for i in 0..TOP {

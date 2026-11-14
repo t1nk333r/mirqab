@@ -76,6 +76,7 @@ SEED='["system.overview","system.cpu","system.memory","apps.top"]'
 is "the seed is stored" "$SEED" "$(stored .home.pinned "$SEED")"
 is "seeded once" true "$(stored .home.seeded true)"
 is "no range picker on Home" 0 "$(pickers)"
+is "every seeded card, Top apps too, can be unpinned from Home" 4 "$(unpins)"
 
 # A top app opens the Apps tab with its group selected (plan 006,
 # decision 12). cargo is among the five whether the first frame has CPU

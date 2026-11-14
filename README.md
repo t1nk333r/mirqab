@@ -99,8 +99,7 @@ System) is done. Plan 006 (Apps) has its page; the focus tracking for
   stays empty and offers a button that opens System. A Home that was set up
   earlier keeps its cards and does not gain Top apps; pin it from the Apps
   page. Reorder by dragging a card's handle, which shows on hover, or with
-  Alt+Up and Alt+Down; a card's pin control unpins it, except Top apps,
-  whose pin control is on the Apps page. Home subscribes to its cards'
+  Alt+Up and Alt+Down; a card's pin control unpins it. Home subscribes to its cards'
   streams only while it is on screen. The window opens on Home; `window.rememberTab` reopens the
   last tab instead.
 - The Apps tab lists one row per app: its icon (from your icon theme, or
