@@ -1,0 +1,19 @@
+Name:	tool
+Umask:	0022
+State:	S (sleeping)
+Tgid:	6000
+Ngid:	0
+Pid:	6000
+PPid:	1050
+TracerPid:	0
+Uid:	1000	1000	1000	1000
+Gid:	1000	1000	1000	1000
+FDSize:	64
+VmRSS:	20000 kB
+Threads:	2
+NoNewPrivs:	0
+Seccomp:	0
+CapInh:	0000000000000000
+CapPrm:	0000000000003000
+CapEff:	0000000000003000
+CapBnd:	000001ffffffffff

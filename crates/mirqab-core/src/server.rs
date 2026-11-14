@@ -20,7 +20,8 @@ use crate::history::{self, History};
 use crate::proto::stream::{self, Machine, ProcessCost, SelfData, UiCost, UiEvent};
 use crate::proto::{Code, Event, Hello, PROTOCOL, Reply, Request, ServerFrame, frame, strings};
 use crate::root::Root;
-use crate::sampler::Sampler;
+use crate::sampler::{Sampler, View};
+use crate::samplers::apps::Apps;
 use crate::samplers::system::System;
 use crate::selfcost::{self, Meter};
 use crate::sys;
@@ -72,6 +73,9 @@ struct Sub {
     /// What the client asked for, so a new floor can be applied later.
     asked_ms: u64,
     live: bool,
+    /// The subscription's params, for a stream whose sampler shapes each
+    /// subscriber's view (`Sampler::view`).
+    params: Value,
 }
 
 struct Client {
@@ -106,6 +110,9 @@ struct Slot {
     sampler: Mutex<Box<dyn Sampler>>,
     live: bool,
     default_ms: u64,
+    /// The sampler's view, copied out so shaping a sample for each
+    /// subscriber does not lock the sampler.
+    view: Option<View>,
     wake: Condvar,
 }
 
@@ -353,6 +360,7 @@ pub fn listen(opts: Options) -> Result<Server, ListenError> {
         cpu_model: None,
     })];
     samplers.push(Box::new(System::new()));
+    samplers.push(Box::new(Apps::new()));
     samplers.extend(opts.samplers);
 
     let mut slots = BTreeMap::new();
@@ -368,6 +376,7 @@ pub fn listen(opts: Options) -> Result<Server, ListenError> {
             Arc::new(Slot {
                 live: s.live(),
                 default_ms: s.default_interval().as_millis() as u64,
+                view: s.view(),
                 sampler: Mutex::new(s),
                 wake: Condvar::new(),
             }),
@@ -561,20 +570,59 @@ fn sampler_loop(inner: Arc<Inner>, name: String, slot: Arc<Slot>) {
         }
         run.now = false;
         run.last = Some(now);
+        // The params each subscriber shapes its view with, taken while the
+        // lock is held anyway; the views are made after it is released.
+        let mut wanted: Vec<Value> = Vec::new();
+        if slot.view.is_some() {
+            for s in state.clients.values().filter_map(|c| c.subs.get(&name)) {
+                if !wanted.contains(&s.params) {
+                    wanted.push(s.params.clone());
+                }
+            }
+        }
         drop(state);
 
-        let data = lock(&slot.sampler).sample(&inner.root, now);
-        let line = frame::encode(&ServerFrame::Event(Event {
-            stream: name.clone(),
-            data,
-        }));
+        // `now` keeps the schedule; the sample is stamped once the sampler
+        // is ours, as a `get` may have held it (apps sleeps 500 ms in one),
+        // and a rate over a stale stamp reads high (review of PR #16).
+        let data = {
+            let mut sampler = lock(&slot.sampler);
+            sampler.sample(&inner.root, Instant::now())
+        };
+        let event = |data: Value| {
+            frame::encode(&ServerFrame::Event(Event {
+                stream: name.clone(),
+                data,
+            }))
+        };
+        // Without a view every subscriber gets one line; with one, a line
+        // per distinct params, and the sample is kept for a subscriber
+        // whose params changed while it was taken.
+        let (plain, views, kept) = match slot.view {
+            None => (event(data), Vec::new(), None),
+            Some(view) => {
+                let views: Vec<(Value, Vec<u8>)> = wanted
+                    .into_iter()
+                    .map(|p| {
+                        let line = event(view(&data, &p));
+                        (p, line)
+                    })
+                    .collect();
+                (Vec::new(), views, Some((view, data)))
+            }
+        };
         state = lock(&inner.state);
-        for c in state
-            .clients
-            .values()
-            .filter(|c| c.subs.contains_key(&name))
-        {
-            c.send(&line);
+        for c in state.clients.values() {
+            let Some(sub) = c.subs.get(&name) else {
+                continue;
+            };
+            match &kept {
+                None => c.send(&plain),
+                Some((view, data)) => match views.iter().find(|(p, _)| *p == sub.params) {
+                    Some((_, line)) => c.send(line),
+                    None => c.send(&event(view(data, &sub.params))),
+                },
+            }
         }
     }
 }
@@ -824,6 +872,7 @@ impl Inner {
                         interval_ms: 0,
                         asked_ms: 0,
                         live: false,
+                        params: Value::Null,
                     },
                 );
                 if as_ui {
@@ -860,6 +909,11 @@ impl Inner {
             FLOOR_MS
         };
         let interval_ms = asked.max(floor);
+        let params = if slot.view.is_some() {
+            view_params(&req.params)
+        } else {
+            Value::Null
+        };
         let reply = frame::encode(&ServerFrame::Reply(Reply::ok(
             req.id,
             json!({"stream": name, "interval": interval_ms}),
@@ -878,6 +932,7 @@ impl Inner {
                         interval_ms,
                         asked_ms: asked,
                         live: live && slot.live,
+                        params,
                     },
                 );
                 c.send(&reply);
@@ -919,11 +974,33 @@ impl Inner {
         if name == stream::UI {
             return Reply::err(req.id, Code::BadRequest, "ui has events only");
         }
+        // `apps.inspect`: a query under the `apps` stream (plan 006). A
+        // stream's own name never holds a dot, so the split is unambiguous.
+        if let Some((stream_name, query)) = name.split_once('.') {
+            if let Some(r) = self.check_stream(req, stream_name) {
+                return r;
+            }
+            let answer =
+                lock(&self.slots[stream_name].sampler).query(&self.root, query, &req.params);
+            return match answer {
+                Some(Ok(v)) => Reply::ok(req.id, v),
+                Some(Err((code, message))) => Reply::err(req.id, code, message),
+                None => Reply::err(
+                    req.id,
+                    Code::UnknownStream,
+                    format!("unknown stream: {name}"),
+                ),
+            };
+        }
         if let Some(r) = self.check_stream(req, name) {
             return r;
         }
-        let data = lock(&self.slots[name].sampler).snapshot(&self.root, Instant::now());
-        Reply::ok(req.id, data)
+        let slot = &self.slots[name];
+        let data = lock(&slot.sampler).snapshot(&self.root, Instant::now());
+        match slot.view {
+            Some(view) => Reply::ok(req.id, view(&data, &view_params(&req.params))),
+            None => Reply::ok(req.id, data),
+        }
     }
 
     fn status(&self) -> Value {
@@ -1271,6 +1348,19 @@ fn ui_start_timeout() -> Duration {
 
 /// A handler already queued its reply.
 struct Replied;
+
+/// The params a view reads: the request's, without the ones the server
+/// itself takes, so two subscribers that differ only in interval share one
+/// shaped line.
+fn view_params(params: &Value) -> Value {
+    let mut p = params.clone();
+    if let Some(o) = p.as_object_mut() {
+        for k in ["interval", "live", "stream"] {
+            o.remove(k);
+        }
+    }
+    p
+}
 
 /// `dryRun`: absent is false, a boolean is itself, and anything else is a
 /// bad request. "true" or 1 must never fall through to the real action (the

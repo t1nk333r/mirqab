@@ -1,0 +1,3 @@
+[Application]
+name=org.example.Notes
+runtime=runtime/org.example.Platform/x86_64/1

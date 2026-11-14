@@ -321,9 +321,9 @@ DankMaterialShell (MIT); `NOTICE.md` carries both notices.
 
 | Method | Params | Result |
 |--------|--------|--------|
-| `subscribe` | `stream`, `params.interval` (ms, optional), `params.live` (bool, optional; §5.3). Subscribing again to the same stream replaces the params | The effective interval; then events |
+| `subscribe` | `stream`, `params.interval` (ms, optional), `params.live` (bool, optional; §5.3). Any other `params` key belongs to the stream (the `apps` stream's `sort`, `limit`, `expand`). One sample is taken per tick and each subscriber gets its own view of it, shaped by its own params. Subscribing again to the same stream replaces the params | The effective interval; then events |
 | `unsubscribe` | `stream` | — |
-| `get` | `stream`, `params` | One snapshot, no subscription |
+| `get` | `stream`, `params` | One snapshot, no subscription, shaped by `params` as a subscription's view is. `stream` may be `<stream>.<query>` (`apps.inspect` with `params.pid`), answered by that stream's sampler; an unknown query is `unknown-stream` |
 | `history.query` | `series[]`, `range` (`1h`, `24h`, `7d`, `30d`) or `from`/`to` (unix seconds) | Per series its `unit` and `points`, each `[unixSeconds, avg, max]` unscaled; empty buckets omitted |
 | `history.events` | `kind`, `from`, `to` | Event rows |
 | `history.list` | — | The series history keeps: key, unit, scale |
@@ -357,6 +357,17 @@ Streams: `system`, `apps`, `ports`, `agents`, `awake`, `disk`, `net`,
   subscriber the sampler's thread sleeps on a condition variable and reads
   nothing.
 - Several subscribers share one sampler at the shortest requested interval.
+- A sampler may shape what each subscriber receives (`Sampler::view`: the
+  sample and the subscriber's params in, its data out), so one reading
+  serves a page, a card and the CLI with their own order and length; and
+  may answer queries under its stream (`Sampler::query`, `get
+  <stream>.<query>`) about its subject that are not samples of it.
+- `apps` (plan 006, every 2 s, never `live`): `params.sort` (`cpu`,
+  `mem`, `name`), `params.limit` (groups, default 50; the System group
+  comes last, outside it, and `totals.groups` counts the groups before
+  the limit) and `params.expand` (group ids whose processes are listed,
+  or `true` for all). The query `apps.inspect {pid}` explains one
+  process.
 - **Live sampling is 1 s, and only while a live graph is on screen**
   (owner, 2026-11-13). A subscription with `live: true` may ask for
   **1000 ms**, the lowest interval anywhere. The interface sets `live`
@@ -878,7 +889,7 @@ acting unless `-y`.
 ```
 mirqab open [tab] [--window] | toggle [tab] | close
 mirqab status | load | sensors | battery
-mirqab apps [--sort cpu|mem] | what <pid>
+mirqab apps [--sort cpu|mem|name] [--all] | what <pid>
 mirqab ports [--system] | port <n> | kill <n> [-y] [--force]
 mirqab agents | cleanup <session> | orphans [--kill]
 mirqab awake <duration>|off [--display] | blockers

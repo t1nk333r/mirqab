@@ -70,6 +70,39 @@ impl Root {
     pub fn exists(&self, rel: &str) -> bool {
         self.path(rel).map(|p| p.exists()).unwrap_or(false)
     }
+
+    /// When `rel` last changed, or None when it cannot be read.
+    pub fn modified(&self, rel: &str) -> Option<std::time::SystemTime> {
+        std::fs::metadata(self.path(rel).ok()?)
+            .ok()?
+            .modified()
+            .ok()
+    }
+
+    /// At most the first `n` bytes of `rel` (an ELF header, plan 006),
+    /// following links only where they stay inside the tree. On the live
+    /// machine `proc/<pid>/exe` is the process's own executable; in a
+    /// fixture the same link names a path of the live machine, which must
+    /// never be read, so a link that leaves a fixture tree is refused.
+    pub fn read_prefix(&self, rel: &str, n: usize) -> io::Result<Vec<u8>> {
+        use std::io::Read;
+        let path = self.path(rel)?;
+        if self.base != Path::new("/") {
+            let real = std::fs::canonicalize(&path)?;
+            let base = std::fs::canonicalize(&self.base)?;
+            if !real.starts_with(&base) {
+                return Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    format!("link leaves the root: {rel}"),
+                ));
+            }
+        }
+        let mut buf = Vec::with_capacity(n);
+        std::fs::File::open(path)?
+            .take(n as u64)
+            .read_to_end(&mut buf)?;
+        Ok(buf)
+    }
 }
 
 #[cfg(test)]

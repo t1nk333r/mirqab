@@ -1,9 +1,19 @@
 //! The sampler trait: one per stream (architecture §5.3). A sampler runs only
 //! while something subscribes; the server owns its thread and its interval.
 
+use crate::proto::Code;
 use crate::root::Root;
 use serde_json::Value;
 use std::time::{Duration, Instant};
+
+/// One subscriber's view of a sample: `(sample, params) -> data`. The
+/// sampler measures once for everyone, and each subscriber (and each
+/// `get`) receives the sample shaped by its own params, such as the
+/// `apps` stream's `sort`, `limit` and `expand` (plan 006).
+pub type View = fn(&Value, &Value) -> Value;
+
+/// The answer to a query: the data, or an error code and message.
+pub type QueryResult = Result<Value, (Code, String)>;
 
 pub trait Sampler: Send {
     fn stream(&self) -> &'static str;
@@ -30,6 +40,19 @@ pub trait Sampler: Send {
     /// baseline (review of plan 001 phase B).
     fn snapshot(&mut self, root: &Root, now: Instant) -> Value {
         self.sample(root, now)
+    }
+
+    /// How a subscriber's params shape a sample; None sends every
+    /// subscriber the sample as it is.
+    fn view(&self) -> Option<View> {
+        None
+    }
+
+    /// `get <stream>.<name>`: a request about the stream's subject that is
+    /// not a sample of it (`get apps.inspect {pid}`, plan 006). None when
+    /// the sampler has no query by that name.
+    fn query(&mut self, _root: &Root, _name: &str, _params: &Value) -> Option<QueryResult> {
+        None
     }
 
     /// Called once a minute, subscribers or not (phase C). Returns (series

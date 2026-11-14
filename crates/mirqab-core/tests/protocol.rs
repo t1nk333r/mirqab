@@ -159,10 +159,66 @@ fn hello_comes_first_with_the_capabilities() {
     let d = start("hello");
     let mut c = Client::connect(&d);
     let caps = c.hello();
-    assert_eq!(caps, ["fake", "self", "system", "ui"]);
+    assert_eq!(caps, ["apps", "fake", "self", "system", "ui"]);
     assert_eq!(
         c.call("capabilities", None, Value::Null).unwrap(),
-        json!(["fake", "self", "system", "ui"])
+        json!(["apps", "fake", "self", "system", "ui"])
+    );
+}
+
+#[test]
+fn each_subscriber_gets_its_own_view_of_one_sample() {
+    // Plan 006: `apps` is measured once and shaped per subscriber by its
+    // params; `get` takes params too, and `apps.inspect` is a query.
+    let d = start("views");
+    let mut a = Client::connect(&d);
+    let mut b = Client::connect(&d);
+    a.hello();
+    b.hello();
+    a.call("subscribe", Some("apps"), json!({"limit": 1}))
+        .unwrap();
+    b.call(
+        "subscribe",
+        Some("apps"),
+        json!({"limit": 2, "sort": "name", "expand": ["system"]}),
+    )
+    .unwrap();
+    let one = a.event("apps").unwrap();
+    let two = b.event("apps").unwrap();
+    // The System group comes last, outside the limit.
+    assert_eq!(one["groups"].as_array().unwrap().len(), 2);
+    assert_eq!(one["groups"][1]["id"], "system");
+    assert!(one["groups"][1].get("processes").is_none());
+    assert_eq!(two["sort"], "name");
+    assert_eq!(two["groups"].as_array().unwrap().len(), 3);
+    assert_eq!(two["groups"][0]["name"], "Calculator");
+    assert_eq!(two["groups"][2]["processes"].as_array().unwrap().len(), 6);
+
+    let got = a
+        .call("get", Some("apps"), json!({"sort": "mem", "limit": 3}))
+        .unwrap();
+    assert_eq!(got["sort"], "mem");
+    assert_eq!(got["groups"].as_array().unwrap().len(), 4);
+    let other = a
+        .call("get", Some("apps.inspect"), json!({"pid": 410}))
+        .unwrap();
+    assert_eq!(other["verdict"]["code"], "other-user");
+    assert_eq!(other["limited"], true);
+    assert_eq!(
+        a.call("get", Some("apps.inspect"), json!({})),
+        Err("bad-request".into())
+    );
+    assert_eq!(
+        a.call("get", Some("apps.inspect"), json!({"pid": 99999})),
+        Err("failed".into())
+    );
+    assert_eq!(
+        a.call("get", Some("apps.nope"), Value::Null),
+        Err("unknown-stream".into())
+    );
+    assert_eq!(
+        a.call("get", Some("system.inspect"), Value::Null),
+        Err("unknown-stream".into())
     );
 }
 
@@ -602,6 +658,86 @@ fn the_subscribe_reply_comes_before_the_first_event() {
         match c.frame() {
             Some(ServerFrame::Reply(r)) => assert_eq!(r.id, id, "try {i}"),
             other => panic!("try {i}: an event or nothing before the reply: {other:?}"),
+        }
+    }
+}
+
+/// A live stream whose `snapshot` holds the sampler for 300 ms, and which
+/// logs, in the order it was given the sampler, each sample's stamp and the
+/// end of each snapshot.
+struct Clocked(std::sync::Arc<std::sync::Mutex<Vec<(&'static str, Instant)>>>);
+impl Sampler for Clocked {
+    fn stream(&self) -> &'static str {
+        "clocked"
+    }
+    fn live(&self) -> bool {
+        true
+    }
+    fn probe(&mut self, _root: &Root) -> Result<(), String> {
+        Ok(())
+    }
+    fn sample(&mut self, _root: &Root, now: Instant) -> Value {
+        self.0.lock().unwrap().push(("sample", now));
+        json!({})
+    }
+    fn snapshot(&mut self, _root: &Root, _now: Instant) -> Value {
+        std::thread::sleep(Duration::from_millis(300));
+        self.0
+            .lock()
+            .unwrap()
+            .push(("snapshot-end", Instant::now()));
+        json!({})
+    }
+}
+
+#[test]
+fn a_sample_is_stamped_after_it_got_the_sampler() {
+    // A tick that waited behind a `get` must not compute its rates over a
+    // stamp taken before the wait (review of PR #16: up to 25 % high).
+    let log = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let dir = PathBuf::from("/tmp").join(format!("mqp-clock-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let socket = dir.join("run/daemon.sock");
+    let server = server::listen(Options {
+        socket: socket.clone(),
+        root: Root::new(fixture("root-desktop")),
+        config_path: dir.join("config/mirqab/config.json"),
+        samplers: vec![Box::new(Clocked(std::sync::Arc::clone(&log)))],
+        history: None,
+    })
+    .expect("listens");
+    std::thread::spawn(move || server.serve());
+    let d = Daemon { socket, dir };
+    let mut sub = Client::connect(&d);
+    let mut getter = Client::connect(&d);
+    sub.hello();
+    getter.hello();
+    sub.call(
+        "subscribe",
+        Some("clocked"),
+        json!({"interval": 1000, "live": true}),
+    )
+    .unwrap();
+    // Back-to-back gets keep the sampler busy, so ticks wait for it.
+    let until = Instant::now() + Duration::from_millis(3500);
+    while Instant::now() < until {
+        getter.call("get", Some("clocked"), Value::Null).unwrap();
+    }
+    let log = log.lock().unwrap().clone();
+    assert!(
+        log.iter().filter(|(k, _)| *k == "sample").count() >= 3,
+        "{log:?}"
+    );
+    let mut last_end = None;
+    for (kind, at) in log {
+        match kind {
+            "snapshot-end" => last_end = Some(at),
+            _ => {
+                if let Some(end) = last_end {
+                    assert!(at >= end, "a sample stamped before the get it waited for");
+                }
+            }
         }
     }
 }

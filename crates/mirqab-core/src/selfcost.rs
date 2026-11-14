@@ -12,12 +12,15 @@ const DEFAULT_CLK_TCK: u64 = 100;
 /// AT_CLKTCK in the auxiliary vector (getauxval(3)).
 const AT_CLKTCK: u64 = 17;
 
-/// `sysconf(_SC_CLK_TCK)` without libc: glibc reads it from the auxiliary
-/// vector, and so do we, through Root.
-pub fn clk_tck(root: &Root) -> u64 {
-    let Ok(auxv) = root.read_bytes("proc/self/auxv") else {
-        return DEFAULT_CLK_TCK;
-    };
+/// The page size when the auxiliary vector does not say (plan 006 reads
+/// `statm`, which counts pages).
+const DEFAULT_PAGE_SIZE: u64 = 4096;
+/// AT_PAGESZ in the auxiliary vector.
+const AT_PAGESZ: u64 = 6;
+
+/// One entry of this process's auxiliary vector, read through Root.
+fn auxv(root: &Root, key: u64) -> Option<u64> {
+    let auxv = root.read_bytes("proc/self/auxv").ok()?;
     auxv.as_chunks::<16>()
         .0
         .iter()
@@ -28,10 +31,20 @@ pub fn clk_tck(root: &Root) -> u64 {
                 u64::from_ne_bytes(val.try_into().unwrap_or_default()),
             )
         })
-        .find(|&(k, _)| k == AT_CLKTCK)
+        .find(|&(k, _)| k == key)
         .map(|(_, v)| v)
         .filter(|&v| v > 0)
-        .unwrap_or(DEFAULT_CLK_TCK)
+}
+
+/// `sysconf(_SC_CLK_TCK)` without libc: glibc reads it from the auxiliary
+/// vector, and so do we, through Root.
+pub fn clk_tck(root: &Root) -> u64 {
+    auxv(root, AT_CLKTCK).unwrap_or(DEFAULT_CLK_TCK)
+}
+
+/// `sysconf(_SC_PAGESIZE)`, the same way.
+pub fn page_size(root: &Root) -> u64 {
+    auxv(root, AT_PAGESZ).unwrap_or(DEFAULT_PAGE_SIZE)
 }
 
 /// utime + stime in ticks, fields 14 and 15 of `stat`. The command name in

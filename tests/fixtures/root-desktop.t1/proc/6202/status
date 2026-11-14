@@ -1,0 +1,19 @@
+Name:	devserver-worke
+Umask:	0022
+State:	S (sleeping)
+Tgid:	6202
+Ngid:	0
+Pid:	6202
+PPid:	6201
+TracerPid:	0
+Uid:	1000	1000	1000	1000
+Gid:	1000	1000	1000	1000
+FDSize:	64
+VmRSS:	36000 kB
+Threads:	2
+NoNewPrivs:	0
+Seccomp:	0
+CapInh:	0000000000000000
+CapPrm:	0000000000000000
+CapEff:	0000000000000000
+CapBnd:	000001ffffffffff

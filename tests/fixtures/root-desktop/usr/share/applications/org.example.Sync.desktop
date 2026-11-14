@@ -1,0 +1,5 @@
+[Desktop Entry]
+Type=Application
+Name=Example Sync
+Exec=example-sync --no-browser
+Icon=org.example.Sync

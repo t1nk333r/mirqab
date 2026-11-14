@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=Open Link
+Exec=browser %u
+Icon=example-browser
+NoDisplay=true
+MimeType=x-scheme-handler/http;

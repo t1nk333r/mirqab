@@ -68,6 +68,22 @@ mirqab sensors [--json]
 
 Every temperature sensor, each GPU, and package and battery power.
 
+## apps
+
+```
+mirqab apps [--sort cpu|mem|name] [--all] [--json]
+```
+
+One row per app: CPU (percent of one core, over the last seconds), memory and how many processes, heaviest first. A browser's helpers count as the browser and a terminal's jobs as themselves; other users' processes are one System group, last. --sort orders by cpu (default), mem or name. --all lists every process under its app.
+
+## what
+
+```
+mirqab what PID [--json]
+```
+
+Explains one process: a verdict in plain words (which package and repository provide it, Flatpak, container, not owned by any package, replaced since it started), then its parents, user, executable, unit, sandbox, memory and open files. Another user's process shows its name, CPU and memory only.
+
 ## bar
 
 ```
@@ -84,7 +100,7 @@ mirqab mcp
 mirqab --mcp
 ```
 
-Serves the Model Context Protocol on stdin and stdout until stdin closes, for a coding agent: the tools read the daemon (system_load, explain_slowness). Register it with `mirqab mcp-config CLIENT`.
+Serves the Model Context Protocol on stdin and stdout until stdin closes, for a coding agent: the tools read the daemon (system_load, explain_slowness, top_apps, what_is_process). Register it with `mirqab mcp-config CLIENT`.
 
 ## mcp-config
 

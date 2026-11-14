@@ -1,0 +1,6 @@
+[Desktop Entry]
+Type=Application
+Name[fr]=Calculatrice
+Name=Calculator
+Exec=env GDK_BACKEND=wayland example-calculator
+Icon=org.example.Calculator

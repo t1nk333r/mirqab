@@ -79,6 +79,22 @@ pub const CLI_COMMANDS: &[CliCommand] = &[
         help: "Every temperature sensor, each GPU, and package and battery power.",
     },
     CliCommand {
+        name: "apps",
+        usage: &[(
+            "apps [--sort cpu|mem|name] [--all] [--json]",
+            "apps by CPU or memory, helpers folded in",
+        )],
+        help: "One row per app: CPU (percent of one core, over the last seconds), memory and how many processes, heaviest first. A browser's helpers count as the browser and a terminal's jobs as themselves; other users' processes are one System group, last. --sort orders by cpu (default), mem or name. --all lists every process under its app.",
+    },
+    CliCommand {
+        name: "what",
+        usage: &[(
+            "what PID [--json]",
+            "what a process is and where it came from",
+        )],
+        help: "Explains one process: a verdict in plain words (which package and repository provide it, Flatpak, container, not owned by any package, replaced since it started), then its parents, user, executable, unit, sandbox, memory and open files. Another user's process shows its name, CPU and memory only.",
+    },
+    CliCommand {
         name: "bar",
         usage: &[
             (
@@ -98,7 +114,7 @@ pub const CLI_COMMANDS: &[CliCommand] = &[
             ),
             ("--mcp", "the same"),
         ],
-        help: "Serves the Model Context Protocol on stdin and stdout until stdin closes, for a coding agent: the tools read the daemon (system_load, explain_slowness). Register it with `mirqab mcp-config CLIENT`.",
+        help: "Serves the Model Context Protocol on stdin and stdout until stdin closes, for a coding agent: the tools read the daemon (system_load, explain_slowness, top_apps, what_is_process). Register it with `mirqab mcp-config CLIENT`.",
     },
     CliCommand {
         name: "mcp-config",
@@ -522,7 +538,20 @@ pub fn cli_completions(shell: &str) -> Option<String> {
 
 // --- The MCP server (plan 005) -------------------------------------------------
 
-pub const MCP_INSTRUCTIONS: &str = "mirqab reports this Linux machine's state. Read tools only: system_load for CPU, load, memory, pressure and the thermal word; explain_slowness when the user says the machine is slow. Every tool reads the mirqab daemon; if it is not running, the result says how to start it.";
+pub const MCP_INSTRUCTIONS: &str = "mirqab reports this Linux machine's state. Read tools only: system_load for CPU, load, memory, pressure and the thermal word; explain_slowness when the user says the machine is slow; top_apps for the apps using the most CPU or memory; what_is_process to explain one process by pid. Every tool reads the mirqab daemon; if it is not running, the result says how to start it.";
+pub const MCP_TOP_APPS_TITLE: &str = "Top apps";
+pub const MCP_TOP_APPS: &str = "Reads only: the apps using the most CPU (or memory) now, from the mirqab daemon. Helper processes are folded into their app (a browser's content processes count as the browser, a terminal's jobs as themselves); other users' processes are one System group, listed last. CPU is percent of one core and may pass 100.";
+pub const MCP_WHAT_TITLE: &str = "What is this process";
+pub const MCP_WHAT: &str = "Reads only: explains one process by pid, from the mirqab daemon: a verdict in plain words (packaged by which repository, Flatpak, container, not owned by any package, replaced since it started), its parents, user, executable, unit, sandbox, memory and counts of open files. Command lines, the working directory and open files' paths are left out, as they can hold secrets.";
+pub const MCP_ARG_SORT: &str = "cpu (default), mem or name";
+pub const MCP_ARG_LIMIT: &str =
+    "how many apps, 1 to 50 (default 10); the System group comes on top of them";
+pub const MCP_ARG_PID: &str = "the process id";
+pub const MCP_PID_REQUIRED: &str = "pid is required: a process id (a positive whole number)";
+
+pub fn mcp_bad_argument(name: &str, expected: &str) -> String {
+    format!("invalid argument {name}: {expected}")
+}
 pub const MCP_SYSTEM_LOAD_TITLE: &str = "System load";
 pub const MCP_SYSTEM_LOAD: &str = "Reads only: the machine's CPU use (user, system, I/O wait), load averages, memory and swap, pressure stall percentages and the thermal word (cool, warm, hot, critical), from the mirqab daemon.";
 pub const MCP_SLOWNESS_TITLE: &str = "Explain slowness";
@@ -1222,6 +1251,223 @@ pub fn per_second(v: &str) -> String {
     format!("{v}/s")
 }
 
+// --- Apps and the process inspector (plan 006) ------------------------------
+
+/// The group every other user's processes fold into.
+pub const APPS_SYSTEM: &str = "System";
+
+/// A container's group: its main process and the short id `docker ps` shows.
+pub fn apps_container(name: &str, id: &str) -> String {
+    format!("{} (container {})", plain(name), plain(id))
+}
+
+/// `s` safe to print: every control character (C0, DEL, C1) and the
+/// bidirectional overrides and isolates (U+202A–202E, U+2066–2069) become
+/// U+FFFD. A process names itself, and an escape sequence or a newline in
+/// its name would rewrite the terminal or forge rows in `mirqab apps` and
+/// in the text an MCP client reads (review of PR #16). JSON needs none of
+/// this: serde escapes.
+pub fn plain(s: &str) -> std::borrow::Cow<'_, str> {
+    let bad =
+        |c: char| c.is_control() || matches!(c, '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}');
+    if !s.chars().any(bad) {
+        return std::borrow::Cow::Borrowed(s);
+    }
+    std::borrow::Cow::Owned(
+        s.chars()
+            .map(|c| if bad(c) { '\u{fffd}' } else { c })
+            .collect(),
+    )
+}
+
+pub const APPS_PID_REQUIRED: &str = "pid is required: a process id";
+
+pub fn apps_no_process(pid: u32) -> String {
+    format!("no process {pid}")
+}
+
+pub const VERDICT_KERNEL: &str = "A kernel thread: part of Linux itself";
+pub const VERDICT_REPLACED: &str =
+    "Executable was replaced since it started (an update); restart it";
+pub const VERDICT_FLATPAK: &str = "Flatpak app, sandboxed";
+pub const VERDICT_CONTAINER: &str = "Runs in a container";
+pub const VERDICT_HOME: &str = "Not owned by any package, running from your home directory";
+pub const VERDICT_UNOWNED: &str = "Not owned by any package";
+pub const VERDICT_UNKNOWN: &str =
+    "Package not checked: no package database to ask, or the executable cannot be read";
+
+pub fn verdict_other_user(user: &str) -> String {
+    format!("Belongs to {user}; only its name, CPU and memory are shown")
+}
+
+pub fn verdict_packaged(name: &str, repo: Option<&str>) -> String {
+    match repo {
+        Some(r) => format!("Packaged by {r}/{name}"),
+        None => format!(
+            "Packaged by {name}, which no sync repository provides (built locally or from the AUR)"
+        ),
+    }
+}
+
+/// `mirqab apps`: the header and one row per group; values already
+/// formatted.
+pub const APPS_HEADER: &str = "NAME                         CPU      MEMORY  PROCESSES";
+
+pub fn apps_row(name: &str, cpu: &str, memory: &str, procs: u32) -> String {
+    let name = fit(name, 28);
+    format!("{name:<28} {cpu:>6} {memory:>11}  {procs}")
+}
+
+/// `mirqab apps --all`: one process under its group.
+pub fn apps_process_row(pid: u32, name: &str, cpu: &str, memory: &str) -> String {
+    let name = fit(name, 18);
+    format!("  {pid:>7} {name:<18} {cpu:>6} {memory:>11}")
+}
+
+/// `text` made `plain` and cut to `width` characters, an ellipsis marking
+/// the cut, so a long name keeps the columns of a table.
+fn fit(text: &str, width: usize) -> String {
+    let text = plain(text);
+    if text.chars().count() <= width {
+        return text.to_string();
+    }
+    let mut s: String = text.chars().take(width - 1).collect();
+    s.push('\u{2026}');
+    s
+}
+
+/// `mirqab apps`' last line when the daemon's limit cut the list.
+pub fn apps_more(n: u32) -> String {
+    format!("and {n} more")
+}
+
+/// The daemon answered with data this mirqab cannot read: after an
+/// upgrade, the running daemon is often the old one.
+pub fn bad_daemon_answer(why: &str) -> String {
+    format!(
+        "mirqab: the daemon's answer could not be read ({why}); if mirqab was upgraded, restart the daemon: systemctl --user restart mirqab.service"
+    )
+}
+
+pub fn apps_bad_sort(v: &str) -> String {
+    format!("mirqab: --sort is cpu, mem or name, not {v}")
+}
+
+pub fn bad_pid(v: &str) -> String {
+    format!("mirqab: not a process id: {v}")
+}
+
+/// `mirqab what`: one labelled line.
+pub fn what_line(label: &str, value: &str) -> String {
+    format!("{label:<11} {}", plain(value))
+}
+
+pub const WHAT_PROCESS: &str = "process";
+pub const WHAT_PARENTS: &str = "parents";
+pub const WHAT_USER: &str = "user";
+pub const WHAT_STARTED: &str = "started";
+pub const WHAT_CPU_TIME: &str = "cpu time";
+pub const WHAT_THREADS: &str = "threads";
+pub const WHAT_STATE: &str = "state";
+pub const WHAT_EXE: &str = "executable";
+pub const WHAT_PACKAGE: &str = "package";
+pub const WHAT_ARCH: &str = "arch";
+pub const WHAT_UNIT: &str = "unit";
+pub const WHAT_GROUP: &str = "group";
+pub const WHAT_FLATPAK: &str = "flatpak";
+pub const WHAT_CONTAINER: &str = "container";
+pub const WHAT_SANDBOX: &str = "sandbox";
+pub const WHAT_MEMORY: &str = "memory";
+pub const WHAT_FILES: &str = "files";
+pub const WHAT_GPU: &str = "gpu";
+pub const WHAT_CWD: &str = "directory";
+pub const WHAT_COMMAND: &str = "command";
+pub const WHAT_OPEN: &str = "open";
+
+/// A process by name and pid: `browser (2001)`.
+pub fn proc_ref(name: &str, pid: u32) -> String {
+    format!("{} ({pid})", plain(name))
+}
+
+pub fn started_ago(duration: &str) -> String {
+    format!("{duration} ago")
+}
+
+pub fn exe_replaced(path: &str) -> String {
+    format!("{path} (replaced since it started)")
+}
+
+pub fn package_line(name: &str, repo: Option<&str>) -> String {
+    match repo {
+        Some(r) => format!("{r}/{name}"),
+        None => format!("{name} (in no sync repository)"),
+    }
+}
+
+pub fn arch_line(machine: &str, bits: u32, foreign: bool) -> String {
+    if foreign {
+        format!("{machine}, {bits}-bit, emulated (not this machine's type)")
+    } else {
+        format!("{machine}, {bits}-bit")
+    }
+}
+
+/// The inspector's sandbox line; each part only when it says something.
+pub fn sandbox_line(
+    seccomp: Option<&str>,
+    no_new_privs: bool,
+    caps: &[String],
+    ns: &[String],
+) -> String {
+    let mut parts = vec![format!("seccomp {}", seccomp.unwrap_or(NO_VALUE))];
+    if no_new_privs {
+        parts.push("no-new-privileges".into());
+    }
+    if !caps.is_empty() {
+        parts.push(format!("capabilities {}", caps.join(" ")));
+    }
+    if !ns.is_empty() {
+        parts.push(format!("own namespaces {}", ns.join(" ")));
+    }
+    parts.join(", ")
+}
+
+pub fn memory_line(rss: &str, pss: Option<&str>, swap: Option<&str>) -> String {
+    let mut s = format!("{rss} resident");
+    if let Some(p) = pss {
+        s.push_str(&format!(", {p} proportional"));
+    }
+    if let Some(w) = swap {
+        s.push_str(&format!(", {w} swapped"));
+    }
+    s
+}
+
+pub fn files_line(count: u32, sockets: u32) -> String {
+    format!("{count} open, {sockets} sockets")
+}
+
+pub fn gpu_memory_line(vram: Option<&str>, gtt: Option<&str>, cpu: Option<&str>) -> String {
+    let mut parts = Vec::new();
+    parts.extend(vram.map(|v| format!("{v} VRAM")));
+    parts.extend(gtt.map(|v| format!("{v} GTT")));
+    parts.extend(cpu.map(|v| format!("{v} system")));
+    parts.join(", ")
+}
+
+/// A process state letter as a word.
+pub fn state_word(state: &str) -> &str {
+    match state {
+        "R" => "running",
+        "S" => "sleeping",
+        "D" => "waiting on storage",
+        "Z" => "zombie (exited, not yet reaped)",
+        "T" | "t" => "stopped",
+        "I" => "idle",
+        other => other,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1333,6 +1579,21 @@ mod tests {
             assert!(command_help(c.name).is_some(), "{} has no help", c.name);
         }
         assert!(command_help("nope").is_none());
+    }
+
+    #[test]
+    fn plain_text_has_no_control_characters() {
+        let p = plain("a\x1b[2Jb\nc\u{9b}d\u{202e}e\u{7f}");
+        assert!(!p.chars().any(char::is_control), "{p:?}");
+        assert!(!p.contains('\u{202e}'));
+        assert_eq!(p, "a\u{fffd}[2Jb\u{fffd}c\u{fffd}d\u{fffd}e\u{fffd}");
+        assert!(matches!(
+            plain("Web Content"),
+            std::borrow::Cow::Borrowed(_)
+        ));
+        assert_eq!(apps_row("x\ny", "1%", "1 MB", 1).lines().count(), 1);
+        assert_eq!(what_line("command", "a\rb"), "command     a\u{fffd}b");
+        assert_eq!(proc_ref("a\x1bb", 1), "a\u{fffd}b (1)");
     }
 
     #[test]

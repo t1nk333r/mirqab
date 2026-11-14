@@ -1,0 +1,19 @@
+Name:	systemd-journal
+Umask:	0022
+State:	S (sleeping)
+Tgid:	410
+Ngid:	0
+Pid:	410
+PPid:	1
+TracerPid:	0
+Uid:	0	0	0	0
+Gid:	0	0	0	0
+FDSize:	64
+VmRSS:	48000 kB
+Threads:	1
+NoNewPrivs:	0
+Seccomp:	0
+CapInh:	0000000000000000
+CapPrm:	000001ffffffffff
+CapEff:	000001ffffffffff
+CapBnd:	000001ffffffffff

@@ -1,0 +1,274 @@
+[
+  {
+    "ageSec": 3550,
+    "cgroup": "/user.slice/user-1000.slice/user@1000.service/app.slice/app-Hyprland-browser.sh-5650fedc.scope",
+    "cmdline": [
+      "/usr/lib/example-browser/browser",
+      "--new-window"
+    ],
+    "cpuTimeSec": 600.0,
+    "cwd": "/users/user",
+    "exe": "/usr/lib/example-browser/browser",
+    "files": {
+      "count": 9,
+      "paths": [
+        "/dev/null",
+        "/users/user/.cache/example-browser/cache.db",
+        "/dev/dri/renderD128",
+        "/dev/dri/renderD128",
+        "/dev/dri/renderD128"
+      ],
+      "sockets": 2
+    },
+    "gpu": {
+      "cpuBytes": 4096,
+      "gttBytes": 83886080,
+      "vramBytes": 671088640
+    },
+    "group": {
+      "id": "scope:app-Hyprland-browser.sh-5650fedc",
+      "name": "Example Browser"
+    },
+    "limited": false,
+    "memory": {
+      "pssBytes": 665600000,
+      "rssBytes": 819200000,
+      "swapBytes": 2097152
+    },
+    "name": "browser",
+    "package": {
+      "name": "example-browser",
+      "repo": "extra"
+    },
+    "parents": [
+      {
+        "name": "bash",
+        "pid": 2000
+      },
+      {
+        "name": "Hyprland",
+        "pid": 1050
+      },
+      {
+        "name": "login",
+        "pid": 900
+      },
+      {
+        "name": "systemd",
+        "pid": 1
+      }
+    ],
+    "pid": 2001,
+    "ppid": 2000,
+    "sandbox": {
+      "capabilities": [],
+      "namespaces": [],
+      "noNewPrivs": false,
+      "seccomp": "none"
+    },
+    "startedAt": 1790000050,
+    "state": "S",
+    "threads": 120,
+    "uid": 1000,
+    "unit": "app-Hyprland-browser.sh-5650fedc.scope",
+    "user": "user",
+    "verdict": {
+      "code": "packaged",
+      "text": "Packaged by extra/example-browser"
+    }
+  },
+  {
+    "ageSec": 3480,
+    "cgroup": "/user.slice/user-1000.slice/user@1000.service/app.slice/app-flatpak-org.example.Notes-48213.scope",
+    "cmdline": [
+      "/app/bin/notes"
+    ],
+    "cpuTimeSec": 25.0,
+    "cwd": "/users/user",
+    "exe": "/app/bin/notes",
+    "flatpak": "org.example.Notes",
+    "group": {
+      "id": "flatpak:org.example.Notes",
+      "name": "Example Notes"
+    },
+    "limited": false,
+    "memory": {
+      "pssBytes": 215040000,
+      "rssBytes": 286720000,
+      "swapBytes": 0
+    },
+    "name": "notes",
+    "parents": [
+      {
+        "name": "bwrap",
+        "pid": 4000
+      },
+      {
+        "name": "systemd",
+        "pid": 1100
+      }
+    ],
+    "pid": 4001,
+    "ppid": 4000,
+    "sandbox": {
+      "capabilities": [],
+      "namespaces": [
+        "mnt",
+        "pid",
+        "user"
+      ],
+      "noNewPrivs": true,
+      "seccomp": "filter"
+    },
+    "startedAt": 1790000120,
+    "state": "S",
+    "threads": 14,
+    "uid": 1000,
+    "unit": "app-flatpak-org.example.Notes-48213.scope",
+    "user": "user",
+    "verdict": {
+      "code": "flatpak",
+      "text": "Flatpak app, sandboxed"
+    }
+  },
+  {
+    "ageSec": 3300,
+    "cgroup": "/user.slice/user-1000.slice/user@1000.service/app.slice/app-Hyprland-tool-9a8b7c6d.scope",
+    "cmdline": [
+      "/opt/example-tool/bin/tool",
+      "--watch"
+    ],
+    "cpuTimeSec": 1.2,
+    "cwd": "/users/user",
+    "exe": "/opt/example-tool/bin/tool",
+    "exeDeleted": true,
+    "group": {
+      "id": "scope:app-Hyprland-tool-9a8b7c6d",
+      "name": "tool"
+    },
+    "limited": false,
+    "memory": {
+      "rssBytes": 20480000
+    },
+    "name": "tool",
+    "package": {
+      "name": "example-tool",
+      "repo": null
+    },
+    "parents": [
+      {
+        "name": "Hyprland",
+        "pid": 1050
+      },
+      {
+        "name": "login",
+        "pid": 900
+      },
+      {
+        "name": "systemd",
+        "pid": 1
+      }
+    ],
+    "pid": 6000,
+    "ppid": 1050,
+    "sandbox": {
+      "capabilities": [
+        "net_admin",
+        "net_raw"
+      ],
+      "namespaces": [],
+      "noNewPrivs": false,
+      "seccomp": "none"
+    },
+    "startedAt": 1790000300,
+    "state": "S",
+    "threads": 2,
+    "uid": 1000,
+    "unit": "app-Hyprland-tool-9a8b7c6d.scope",
+    "user": "user",
+    "verdict": {
+      "code": "replaced",
+      "text": "Executable was replaced since it started (an update); restart it"
+    }
+  },
+  {
+    "ageSec": 3290,
+    "cgroup": "/user.slice/user-1000.slice/session-2.scope",
+    "cmdline": [
+      "/users/user/.local/bin/devserver",
+      "--listen",
+      "127.0.0.1:8080"
+    ],
+    "cpuTimeSec": 35.0,
+    "cwd": "/users/user/src/api",
+    "exe": "/users/user/.local/bin/devserver",
+    "group": {
+      "id": "tree:6201",
+      "name": "devserver"
+    },
+    "limited": false,
+    "memory": {
+      "rssBytes": 102400000
+    },
+    "name": "devserver",
+    "parents": [
+      {
+        "name": "bash",
+        "pid": 6200
+      },
+      {
+        "name": "Hyprland",
+        "pid": 1050
+      },
+      {
+        "name": "login",
+        "pid": 900
+      },
+      {
+        "name": "systemd",
+        "pid": 1
+      }
+    ],
+    "pid": 6201,
+    "ppid": 6200,
+    "sandbox": {
+      "capabilities": [],
+      "namespaces": [],
+      "noNewPrivs": false,
+      "seccomp": "none"
+    },
+    "startedAt": 1790000310,
+    "state": "S",
+    "threads": 6,
+    "uid": 1000,
+    "unit": "session-2.scope",
+    "user": "user",
+    "verdict": {
+      "code": "home",
+      "text": "Not owned by any package, running from your home directory"
+    }
+  },
+  {
+    "ageSec": 3597,
+    "cpuTimeSec": 30.0,
+    "group": {
+      "id": "system",
+      "name": "System"
+    },
+    "limited": true,
+    "memory": {
+      "rssBytes": 49152000
+    },
+    "name": "systemd-journald",
+    "pid": 410,
+    "startedAt": 1790000003,
+    "state": "S",
+    "threads": 1,
+    "uid": 0,
+    "user": "root",
+    "verdict": {
+      "code": "other-user",
+      "text": "Belongs to root; only its name, CPU and memory are shown"
+    }
+  }
+]
