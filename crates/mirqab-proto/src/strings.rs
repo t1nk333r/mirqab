@@ -90,6 +90,25 @@ pub const CLI_COMMANDS: &[CliCommand] = &[
         help: "Prints one reading of ITEM for a status bar and exits. With --watch it prints a line each time the reading changes, at most once per interval (default 5 s, from 2 s to an hour), until its output is closed. --format waybar (default) prints Waybar's JSON; plain the text only; json every field.",
     },
     CliCommand {
+        name: "mcp",
+        usage: &[
+            (
+                "mcp",
+                "the MCP server for coding agents, on stdin and stdout",
+            ),
+            ("--mcp", "the same"),
+        ],
+        help: "Serves the Model Context Protocol on stdin and stdout until stdin closes, for a coding agent: the tools read the daemon (system_load, explain_slowness). Register it with `mirqab mcp-config CLIENT`.",
+    },
+    CliCommand {
+        name: "mcp-config",
+        usage: &[(
+            "mcp-config claude|codex|gemini|opencode|cursor|json [--write [-y]] [--dry-run]",
+            "how to register the MCP server with an agent",
+        )],
+        help: "Prints how to register `mirqab mcp` with CLIENT: the client's own command, or for cursor and json the JSON to add. --write runs the client's command after showing it and asking, and refuses cursor and json; -y skips the question; without a terminal and without -y it does nothing and exits 3. --dry-run shows what --write would run.",
+    },
+    CliCommand {
         name: "completions",
         usage: &[("completions bash|zsh|fish", "a shell completion script")],
         help: "Prints a completion script for the shell. For bash: `mirqab completions bash > ~/.local/share/bash-completion/completions/mirqab`. For zsh, write it to a file named `_mirqab` in a directory on `$fpath`, such as `~/.zfunc/_mirqab` with `fpath+=(~/.zfunc)` before `compinit`. For fish: `mirqab completions fish > ~/.config/fish/completions/mirqab.fish`.",
@@ -115,7 +134,8 @@ pub const CLI_GLOBAL: &[(&str, &str)] = &[
 ];
 
 /// Exit codes, for the usage text and `docs/cli.md`.
-pub const CLI_EXITS: &str = "Exit codes: 0 done, 1 refused or failed, 2 no daemon, 64 usage error.";
+pub const CLI_EXITS: &str =
+    "Exit codes: 0 done, 1 refused or failed, 2 no daemon, 3 not confirmed, 64 usage error.";
 
 /// The column the usage list's summaries start at, and the widest a usage
 /// line may be and still share its row with its summary.
@@ -163,9 +183,10 @@ pub fn cli_flags(c: &CliCommand) -> Vec<CliFlag> {
     let mut out: Vec<CliFlag> = Vec::new();
     for (line, _) in c.usage {
         let words: Vec<&'static str> = line.split_whitespace().collect();
-        for (i, w) in words.iter().enumerate() {
+        // The first word is the command (or `--mcp`, its other spelling).
+        for (i, w) in words.iter().enumerate().skip(1) {
             let bare = w.trim_start_matches('[').trim_end_matches(']');
-            if !bare.starts_with("--") || out.iter().any(|f| f.name == bare) {
+            if !bare.starts_with('-') || out.iter().any(|f| f.name == bare) {
                 continue;
             }
             let arg = match words.get(i + 1) {
@@ -469,10 +490,14 @@ pub fn cli_completions(shell: &str) -> Option<String> {
                     ));
                 }
                 for f in cli_flags(c) {
+                    // `-y` is a short flag: fish names it with -s, not -l.
+                    let (kind, name) = match f.name.strip_prefix("--") {
+                        Some(long) => ("-l", long),
+                        None => ("-s", f.name.trim_start_matches('-')),
+                    };
                     out.push_str(&format!(
-                        "complete -c mirqab -n '__mirqab_on {}' -l {}{}\n",
+                        "complete -c mirqab -n '__mirqab_on {}' {kind} {name}{}\n",
                         c.name,
-                        f.name.trim_start_matches("--"),
                         fish_arg(f.arg)
                     ));
                 }
@@ -493,6 +518,73 @@ pub fn cli_completions(shell: &str) -> Option<String> {
         }
         _ => return None,
     })
+}
+
+// --- The MCP server (plan 005) -------------------------------------------------
+
+pub const MCP_INSTRUCTIONS: &str = "mirqab reports this Linux machine's state. Read tools only: system_load for CPU, load, memory, pressure and the thermal word; explain_slowness when the user says the machine is slow. Every tool reads the mirqab daemon; if it is not running, the result says how to start it.";
+pub const MCP_SYSTEM_LOAD_TITLE: &str = "System load";
+pub const MCP_SYSTEM_LOAD: &str = "Reads only: the machine's CPU use (user, system, I/O wait), load averages, memory and swap, pressure stall percentages and the thermal word (cool, warm, hot, critical), from the mirqab daemon.";
+pub const MCP_SLOWNESS_TITLE: &str = "Explain slowness";
+pub const MCP_SLOWNESS: &str = "Reads only: explains why the machine feels slow. For now it returns the current load with a note; the rules that name a cause arrive with mirqab's Trends tab.";
+pub const MCP_SLOWNESS_LATER: &str = "mirqab cannot name a cause yet: its rules for slowness arrive with the Trends tab (plan 018). The current load:";
+
+pub fn mcp_unknown_tool(name: &str) -> String {
+    format!("Unknown tool: {name}")
+}
+
+pub fn mcp_unsupported(version: &str) -> String {
+    format!("Unsupported protocol version: {version}")
+}
+
+pub const MCP_BAD_REQUEST: &str = "Invalid request";
+pub const MCP_PARSE_ERROR: &str = "Parse error";
+pub const MCP_TOO_LONG: &str = "Request too long";
+pub const MCP_NO_CAPABILITIES: &str =
+    "_meta must carry io.modelcontextprotocol/clientCapabilities as an object";
+
+pub fn mcp_unknown_method(method: &str) -> String {
+    format!("Method not found: {method}")
+}
+
+pub const MCP_ARGS_NOT_OBJECT: &str = "arguments must be an object";
+
+// --- mcp-config and confirmation (plan 005) ---------------------------------
+
+pub const MCP_CLIENTS: &[&str] = &["claude", "codex", "gemini", "opencode", "cursor", "json"];
+
+pub fn mcp_bad_client(client: &str) -> String {
+    format!(
+        "mirqab: mcp-config knows claude, codex, gemini, opencode, cursor and json, not {client}"
+    )
+}
+
+pub fn mcp_config_run(cmd: &str) -> String {
+    format!("Register mirqab's MCP server with:\n  {cmd}\n")
+}
+
+pub fn mcp_config_json(path: &str, json: &str) -> String {
+    format!("Add this to {path} (merge it with what is there):\n{json}\n")
+}
+
+/// Where a client configured by file keeps its MCP servers.
+pub fn mcp_config_path(client: &str) -> &'static str {
+    match client {
+        "cursor" => "~/.cursor/mcp.json",
+        _ => "your client's MCP configuration",
+    }
+}
+
+pub const MCP_CONFIG_PRINT_ONLY: &str = "mirqab: --write needs a client with its own command (claude, codex, gemini, opencode); edit the file yourself";
+
+pub const CONFIRM_WILL: &str = "This will run:";
+pub const CONFIRM_PROMPT: &str = "Go ahead? [y/N] ";
+pub const CONFIRM_DECLINED: &str = "Not done.";
+pub const CONFIRM_NEEDS_TERMINAL: &str =
+    "Not done: no terminal to ask in. Run it in a terminal, or pass -y.";
+
+pub fn mcp_config_failed(why: &str) -> String {
+    format!("mirqab: the client's command failed: {why}")
 }
 
 /// Text for a fish single-quoted string: a backslash first, then a quote.
@@ -1146,7 +1238,7 @@ mod tests {
                 assert!(script.contains(c.name), "{shell}: {}", c.name);
                 for f in cli_flags(c) {
                     assert!(
-                        script.contains(f.name.trim_start_matches("--")),
+                        script.contains(f.name.trim_start_matches('-')),
                         "{shell}: {}",
                         f.name
                     );

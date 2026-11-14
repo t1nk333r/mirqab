@@ -10,7 +10,7 @@ Read `docs/architecture.md` first: it is the contract the plans build to.
 | 002 | System tab | M1 | P1 | L | 001 | DONE |
 | 003 | Home tab and pinned cards | M1 | P1 | M | 001 002 | DONE |
 | 004 | Tray icon and bar items | M2 | P1 | M | 001 002 | DONE |
-| 005 | CLI and MCP server | M2 | P1 | M | 001 002 | IN PROGRESS |
+| 005 | CLI and MCP server | M2 | P1 | M | 001 002 | DONE |
 | 006 | Apps tab and process inspector | M3 | P1 | L | 001 005 | PLANNED |
 | 007 | Ports tab | M3 | P1 | L | 001 005 006 | PLANNED |
 | 008 | Agents tab | M3 | P1 | L | 001 005 006 007 | PLANNED |
@@ -45,7 +45,8 @@ moved" below).
 | **M7 Insight** | 018, 019 | Trends, spike rewind, alerts, "why is it slow", the health report |
 | **M8 Release** | 020 | A checked PKGBUILD, a tagged release, the AUR package (owner step) |
 
-M1 is complete (2026-11-13, plan 003).
+M1 is complete (2026-11-13, plan 003). M2 is complete (2026-11-14,
+plans 004 and 005).
 
 Order inside a milestone is the plan number. M3 to M6 do not depend on each
 other and can run in parallel by different agents once M2 is merged; M7

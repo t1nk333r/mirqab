@@ -83,7 +83,7 @@ System) is done.
   last tab instead.
 - The tray icon and `mirqab bar` for status bars (plan 004).
 - Not built yet: the content of the other tabs (each one is a placeholder
-  until its plan lands), the MCP server and the root helper.
+  until its plan lands) and the root helper.
   `mirqab-fand` only prints its version.
 
 The config is `~/.config/mirqab/config.json` (under `$XDG_CONFIG_HOME` when
@@ -267,6 +267,19 @@ bind = SUPER, M, exec, mirqab toggle
 bind = SUPER SHIFT, M, exec, mirqab toggle system
 ```
 
+Coding agents can ask mirqab through its MCP server, `mirqab mcp`. It
+speaks the Model Context Protocol on stdin and stdout. Its tools only
+read: `system_load` and `explain_slowness`.
+
+`mirqab mcp-config CLIENT` prints how to register it. CLIENT is `claude`,
+`codex`, `gemini`, `opencode`, `cursor` or `json`. With `--write`, mirqab
+runs the client's own command after asking. That works for `claude`,
+`codex`, `gemini` and `opencode`; `cursor` and `json` are edited by hand.
+
+```sh
+mirqab mcp-config claude
+```
+
 Every command is described in `docs/cli.md` (made from `mirqab help
 --markdown`). Shell completion: `mirqab completions bash|zsh|fish`
 prints a script. Install it where your shell looks:
@@ -277,7 +290,7 @@ mirqab completions zsh > ~/.zfunc/_mirqab    # with fpath+=(~/.zfunc) before com
 mirqab completions fish > ~/.config/fish/completions/mirqab.fish
 ```
 
-Exit codes: 0 done, 1 refused or failed, 2 no daemon, 64 usage error.
+Exit codes: 0 done, 1 refused or failed, 2 no daemon, 3 not confirmed (see `mcp-config --write`), 64 usage error.
 
 ## Planned usage
 

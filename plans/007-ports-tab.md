@@ -199,7 +199,26 @@ place of `getifaddrs` when under a fixture root).
    `crates/mirqab/src/elevate.rs`.
 4. `crates/mirqab-core/src/qr.rs`.
 5. `tests/golden/ports.json`; tests.
-6. CLI `ports`, `port`, `kill`; MCP tools; bar item.
+6. CLI `ports`, `port`, `kill`; MCP tools; bar item. `kill_port` is the
+   first MCP tool that acts, so it takes on what plan 005 deferred
+   (review of PR #13):
+   - plan 005's rules 2 and 5: with `confirm: true` the daemon re-computes
+     the targets before acting, and every act is written to the `event`
+     table;
+   - plan 005's acceptance 3: the end-to-end confirm-flow test with a
+     recording `act` and no real signal;
+   - a `Ctx` for tool handlers (plans, the ancestry, `Root`, a clock), a
+     per-tool `input_schema`, and strict arguments on acting tools,
+     `confirm` a boolean that must be `true`;
+   - targets are `{pid, starttime}` (field 22 of `proc/<pid>/stat`),
+     never a bare pid, and are compared again at redeem;
+   - a plan's expiry is measured on `CLOCK_BOOTTIME`, so a suspend does
+     not stretch it;
+   - the ancestry walk fails closed: a failed read, the depth cap or a
+     loop refuses the act (today's `ancestry(77) == [77]` stops);
+   - a cap on live plans;
+   - a unit test that every tool's description leads with its side
+     effect and every acting tool sets `destructiveHint`.
 7. `crates/mirqab-view/src/tabs/ports.rs` (the view model and the tab's cards); `crates/mirqab-ui/src/tabs/ports/{mod,page,port_row,port_detail,qr_sheet,system_section,list_card}.rs`;
    `crates/mirqab-ui/src/widgets/qr.rs`, `crates/mirqab-view/src/qr.rs`.
 8. Sidebar badge and tray attention.
