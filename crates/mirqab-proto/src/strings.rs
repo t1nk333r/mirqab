@@ -1844,7 +1844,7 @@ pub const APPS_STILL_RUNNING: &str = "Still running. Force quit ends it at once.
 pub const APPS_IDLE_HEAVY: &str = "busy while not in use";
 /// The inspector's line under the stats for a tagged group.
 pub const APPS_IDLE_HEAVY_LINE: &str =
-    "Over 20 % of a core for five minutes with none of its windows in focus";
+    "At least 20 % of a core for five minutes with none of its windows in focus";
 /// `QUIT_NOT_RECORDED` without the CLI's `mirqab:` prefix.
 pub const APPS_NOT_RECORDED: &str =
     "Done, but not recorded: the daemon could not write this action to its history";

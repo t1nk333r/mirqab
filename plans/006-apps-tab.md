@@ -3255,8 +3255,9 @@ Deviations from the brief, each with its reason:
   `write_selected`, which returns what it wrote), and N8's test reads it
   through `Handle::marked`: the selected row true, the others false,
   also after a reordering frame rebinds the items, and none true once
-  cleared. Without the `update_state` call the test fails. It proves the
-  page's write; what a screen reader reads is an owner check (Orca). A
+  cleared. Without the `mark_selected` calls the test fails; the
+  `update_state` call itself is covered only by the Orca owner check
+  (review of PR #21, delta). It proves the page's bookkeeping; what a screen reader reads is an owner check (Orca). A
   test that reads GTK's value needs `gtk_test_accessible_check_state`,
   variadic and unbound by gtk-rs, so `unsafe` in a test, which the
   repository keeps to `sys.rs`.
@@ -3341,7 +3342,9 @@ dropped 3. What changed, with its test:
    `:65`), `Handle::marked` (`:400`); `the_list_item_carries_the_selected_state`
    (`widgets.rs:1033`) asserts true for the selected row, false for the
    others, true again after a reordering frame, none once Escape
-   cleared it. With the `update_state` call removed it fails (checked).
+   cleared it. With the `mark_selected` calls removed it fails (checked);
+   removing only the `update_state` line leaves it green, so that call
+   is covered by the Orca owner check alone.
    The ruling's preferred test (GTK's value through a test-only
    `#[allow(unsafe_code)]`) was not used: `unsafe` stays in `sys.rs`.
 3. **A lost release cannot hold the rows for long**: a press holds at
