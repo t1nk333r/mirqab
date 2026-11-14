@@ -754,7 +754,8 @@ Deferred:
     event, deliver it when the interface subscribes (5 s timeout, then an
     error to the CLI). `dist/mirqab.desktop`
     (`Exec=mirqab open --window`, `StartupWMClass` and icon name equal to
-    the application id).
+    the application id). Plan 021 changed the icon name to `mirqab`, a file
+    that exists.
 31. `crates/mirqab-ui/tests/widgets.rs`, `tests/test-ui-widgets.sh`,
     `tests/test-ui-shell.sh`, `start_broadway` in `tests/lib.sh`. Then
     measure the open interface's RSS and CPU on the development machine

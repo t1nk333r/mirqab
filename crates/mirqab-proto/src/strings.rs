@@ -1125,8 +1125,10 @@ pub fn bar_tip_load(one: f64, five: f64, fifteen: f64) -> String {
 
 // --- The tray (plan 004) -----------------------------------------------------
 
-/// The tray's icon name in the icon theme (`dist/icons/`).
-pub const TRAY_ICON: &str = "mirqab-symbolic";
+/// The tray's icon name in the icon theme: `dist/icons/mirqab.svg`, two
+/// tones, because some bars draw tray icons without recolouring them
+/// (plan 021).
+pub const TRAY_ICON: &str = "mirqab";
 pub const TRAY_OPEN: &str = "Open";
 pub const TRAY_QUIT: &str = "Quit daemon";
 

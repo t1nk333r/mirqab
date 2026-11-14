@@ -9,6 +9,7 @@
 #[path = "support/watcher.rs"]
 mod watcher;
 
+use mirqab_view::proto::strings;
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixStream;
@@ -216,6 +217,16 @@ fn activate_toggles_and_the_tooltip_leaves_no_subscription() {
         item.get_property::<String>("Category").unwrap(),
         "SystemServices"
     );
+    // A name only: Quickshell never falls back to pixels when a name is
+    // set, and looks up a theme path without the file's extension (plan 021).
+    assert_eq!(item.get_property::<String>("IconName").unwrap(), "mirqab");
+    assert_eq!(
+        item.get_property::<String>("IconName").unwrap(),
+        strings::TRAY_ICON
+    );
+    assert_eq!(item.get_property::<String>("IconThemePath").unwrap(), "");
+    let pixmaps: Vec<(i32, i32, Vec<u8>)> = item.get_property("IconPixmap").unwrap();
+    assert!(pixmaps.is_empty());
     let status = request(&d, "{\"id\":2,\"method\":\"status\"}\n");
     assert_eq!(
         status["streams"]["system"]["subscribers"], 0,
