@@ -12,8 +12,9 @@
 - **Planned at**: 2026-11-13, from the owner
 - **State**: DONE (2026-11-14). Part 1 (`mirqab bar`, the haseen widget,
   the Waybar example; PR #10) and part 2 (the tray; PR #11). Two owner
-  checks stay open: the icon in the desktop's tray with a click toggling
-  the window (acceptance 1), and the haseen widget installed (acceptance
+  checks stay open: the tray menu opening each tab (the rest of acceptance
+  1; the icon shows on the owner's bar since plan 021, 2026-11-14, and a
+  click toggles the window), and the haseen widget installed (acceptance
   4).
 - **Owner decisions** (2026-11-13): the tray uses `ksni` with `zbus` held
   on 5.x; Unlicense goes on `cargo deny`'s allow-list for `ksni` only.
@@ -280,6 +281,9 @@ Part 2 (2026-11-14), where it differs from the plan:
   `dist/icons/mirqab-symbolic.svg`). GTK hosts recolour symbolic icons, but
   a Qt or Quickshell bar may show it dark on a dark bar; checking it on the
   owner's bar is part of Acceptance 1.
+- Owner's check, 2026-11-14: haseen's bar drew its missing-icon image. The
+  bar had started before the icon was copied, and does not recolour
+  symbolic icons. Plan 021 gives the tray a two-tone `mirqab` icon.
 - Tests: `crates/mirqab/tests/tray.rs` on a private `dbus-daemon` with a
   stand-in watcher (`tests/support/watcher.rs`, also
   `examples/sni_watcher.rs` for the bench). Fixture daemons in the other

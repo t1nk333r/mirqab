@@ -42,11 +42,18 @@ fi
 desktop="$(<"$REPO/dist/mirqab.desktop")"
 like "the launcher opens a window" "$desktop" "Exec=mirqab open --window"
 like "its window class is the application id" "$desktop" "StartupWMClass=io.github.t1nk333r.mirqab"
-like "its icon is the application id" "$desktop" "Icon=io.github.t1nk333r.mirqab"
+is "its icon is the two-tone mirqab icon" 1 "$(grep -cx 'Icon=mirqab' "$REPO/dist/mirqab.desktop")"
 like "the unit starts the window hidden" "$(<"$REPO/dist/mirqab-ui.service")" "mirqab-ui --background"
 
-# The tray's icon (plan 004): a 16-pixel symbolic SVG named as the tray
-# item asks for it.
-icon="$REPO/dist/icons/mirqab-symbolic.svg"
-like "the tray icon is a 16-pixel SVG" "$(<"$icon")" 'viewBox="0 0 16 16"'
-is "the tray asks for that name" 1 "$(grep -c 'TRAY_ICON: &str = "mirqab-symbolic"' "$REPO/crates/mirqab-proto/src/strings.rs")"
+# The symbolic icon (plan 004) stays a 16-pixel SVG for GTK.
+like "the symbolic icon is a 16-pixel SVG" "$(<"$REPO/dist/icons/mirqab-symbolic.svg")" 'viewBox="0 0 16 16"'
+
+# The tray's icon (plan 021): two tones in plain SVG, which every renderer
+# draws alike, named as the tray item asks for it.
+icon="$(<"$REPO/dist/icons/mirqab.svg")"
+like "the tray icon is a 16-pixel SVG" "$icon" 'viewBox="0 0 16 16"'
+is "it has exactly two fill colours" 2 "$(grep -o 'fill="#[0-9a-fA-F]*"' <<<"$icon" | sort -u | wc -l)"
+is "it is made of groups, paths and rects only" "g path rect svg" "$(grep -o '<[a-zA-Z][a-zA-Z0-9:-]*' <<<"$icon" | sort -u | tr -d '<' | xargs)"
+is "it uses no feature renderers draw differently" 0 \
+    "$(grep -c -E 'paint-order|filter|mask|clipPath|Gradient|<style|currentColor|stroke' <<<"$icon")"
+is "the tray asks for that name" 1 "$(grep -c 'TRAY_ICON: &str = "mirqab";' "$REPO/crates/mirqab-proto/src/strings.rs")"
