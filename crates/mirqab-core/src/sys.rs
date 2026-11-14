@@ -1,13 +1,15 @@
 //! The few system calls std does not wrap: the peer's uid and pid on a Unix
 //! socket, this process's uid, adopting a socket systemd passed in, polling
-//! stdout for a closed reader, the boot-time clock, and signalling a
-//! process through a pidfd (plan 006). Each `unsafe` block is one libc call
+//! stdout for a closed reader, the boot-time clock, signalling a process
+//! through a pidfd, and a Unix-socket connect that cannot hang (plan 006). Each `unsafe` block is one libc call
 //! with its contract stated; nothing else in the daemon uses `unsafe`
 //! (CLAUDE.md "Style").
 #![allow(unsafe_code)]
 
 use std::os::fd::{AsRawFd, BorrowedFd, FromRawFd, OwnedFd, RawFd};
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::net::{UnixListener, UnixStream};
+use std::path::Path;
 use std::time::Duration;
 
 /// The uid of the process at the other end of a connected Unix socket.
@@ -165,6 +167,66 @@ pub fn pidfd_signal(fd: BorrowedFd<'_>, signo: i32) -> std::io::Result<()> {
     Ok(())
 }
 
+/// A connected stream to the Unix socket at `path`, or an error within
+/// about `timeout` (plan 006, part 4, decision 11; D2 of PR #17).
+/// `UnixStream::connect` waits without bound when the listener's backlog
+/// is full, which a frozen compositor's would be. On Linux an `AF_UNIX`
+/// stream connect waits for a backlog slot for the socket's send timeout
+/// (`sock_sndtimeo` in `unix_stream_connect`, net/unix/af_unix.c) and then
+/// fails with EAGAIN; a non-blocking one fails with EAGAIN at once and
+/// never reports EINPROGRESS, so there is nothing to `poll`. The socket is
+/// made blocking with `SO_SNDTIMEO` set to `timeout`, connected, and its
+/// send timeout cleared; EAGAIN after the wait is returned as ETIMEDOUT.
+/// The descriptor is close-on-exec.
+pub fn connect_timeout(path: &Path, timeout: Duration) -> std::io::Result<UnixStream> {
+    let bytes = path.as_os_str().as_bytes();
+    let mut addr = libc::sockaddr_un {
+        sun_family: libc::AF_UNIX as libc::sa_family_t,
+        sun_path: [0; 108],
+    };
+    // One byte is kept for the terminating NUL.
+    if bytes.is_empty() || bytes.len() >= addr.sun_path.len() || bytes.contains(&0) {
+        return Err(std::io::Error::from_raw_os_error(libc::EINVAL));
+    }
+    for (d, s) in addr.sun_path.iter_mut().zip(bytes) {
+        *d = *s as libc::c_char;
+    }
+    if timeout.is_zero() {
+        return Err(std::io::Error::from_raw_os_error(libc::EINVAL));
+    }
+    // SAFETY: socket takes three integers by value and returns a new
+    // descriptor or -1; no memory is passed.
+    let fd = unsafe { libc::socket(libc::AF_UNIX, libc::SOCK_STREAM | libc::SOCK_CLOEXEC, 0) };
+    if fd < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    // SAFETY: the kernel just returned this descriptor; it is open and
+    // owned by nothing else in the process.
+    let stream = UnixStream::from(unsafe { OwnedFd::from_raw_fd(fd) });
+    // SO_SNDTIMEO, which bounds the connect's wait for a backlog slot.
+    stream.set_write_timeout(Some(timeout))?;
+    let len = (std::mem::size_of::<libc::sa_family_t>() + bytes.len() + 1) as libc::socklen_t;
+    // SAFETY: the descriptor is open for the call's duration (owned by
+    // `stream`); `addr` is a live, initialised sockaddr_un and `len` does
+    // not pass its size.
+    let rc = unsafe {
+        libc::connect(
+            stream.as_raw_fd(),
+            (&addr as *const libc::sockaddr_un).cast(),
+            len,
+        )
+    };
+    if rc != 0 {
+        let e = std::io::Error::last_os_error();
+        return Err(match e.raw_os_error() {
+            Some(libc::EAGAIN) => std::io::Error::from_raw_os_error(libc::ETIMEDOUT),
+            _ => e,
+        });
+    }
+    stream.set_write_timeout(None)?;
+    Ok(stream)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -196,5 +258,39 @@ mod tests {
         let (a, _b) = UnixStream::pair().unwrap();
         assert_eq!(peer_pid(&a).unwrap(), std::process::id());
         assert!(boottime().unwrap() > Duration::ZERO);
+    }
+
+    #[test]
+    fn a_connect_to_a_full_backlog_gives_up_in_time() {
+        // Under /tmp, not $TMPDIR: a socket path must stay under 108 bytes.
+        let d = std::path::PathBuf::from("/tmp").join(format!("mqs-{}", std::process::id()));
+        let _ = crate::act::remove_path(&d, false);
+        std::fs::create_dir_all(&d).unwrap();
+        let path = d.join("s.sock");
+        assert_eq!(
+            connect_timeout(&path, Duration::from_millis(200))
+                .unwrap_err()
+                .raw_os_error(),
+            Some(libc::ENOENT)
+        );
+        let listener = UnixListener::bind(&path).unwrap();
+        // SAFETY: listen on the open, bound socket `listener` owns, with a
+        // backlog of 0: one connection waits, the next finds it full.
+        assert_eq!(unsafe { libc::listen(listener.as_raw_fd(), 0) }, 0);
+        let first = connect_timeout(&path, Duration::from_millis(200)).expect("one slot");
+        assert_eq!(peer_pid(&first).unwrap(), std::process::id());
+        let t = std::time::Instant::now();
+        let second = connect_timeout(&path, Duration::from_millis(200));
+        let took = t.elapsed();
+        assert!(took < Duration::from_secs(1), "{took:?}");
+        let err = second.expect_err("the backlog is full");
+        assert_eq!(err.raw_os_error(), Some(libc::ETIMEDOUT), "{err:?}");
+        assert!(took >= Duration::from_millis(150), "it waited: {took:?}");
+        // A pending connection taken frees the slot.
+        let _ = listener.accept().unwrap();
+        assert!(connect_timeout(&path, Duration::from_millis(200)).is_ok());
+        assert!(connect_timeout(&path, Duration::ZERO).is_err());
+        drop(listener);
+        let _ = crate::act::remove_path(&d, false);
     }
 }

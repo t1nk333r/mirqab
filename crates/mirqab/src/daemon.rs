@@ -91,6 +91,7 @@ pub fn run(args: Args) -> ExitCode {
         config_path,
         samplers: Vec::new(),
         history: Some(history),
+        minute_period: None,
     }) {
         Ok(s) => s,
         Err(ListenError::AlreadyRunning) => {

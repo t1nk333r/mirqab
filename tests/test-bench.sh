@@ -1,8 +1,9 @@
 # tests/test-bench.sh — tools/bench-idle.sh measures and judges (architecture
 # §9.1): a short idle run is within budget and prints its numbers; a live
-# subscription is measured; the tray on is measured; a budget it cannot meet
-# fails with status 1; bad
-# options are usage errors. The real 60 s runs are CI's and the owner's.
+# subscription is measured; the tray on is measured; --procs measures a
+# scratch root of cloned processes; a budget it cannot meet fails with
+# status 1; bad options are usage errors. The real 60 s runs are CI's and
+# the owner's.
 # mirqab:covers tools/bench-idle.sh
 
 sandbox
@@ -26,7 +27,11 @@ fi
 
 # With the tray registered on a private bus (plan 004).
 if command -v dbus-daemon >/dev/null 2>&1; then
-    capture "$REPO/tools/bench-idle.sh" --bin "$BIN" --seconds 4 --runs 2 --tray
+    # $BIN is the debug build, whose RSS is about twice the release
+    # build's: it sat at 14.9-15.0 MiB here on main (7.4 MiB released,
+    # 2026-11-14), so a byte more of code failed the 15 MiB budget. The
+    # budget is the release build's, which CI's bench step measures.
+    capture "$REPO/tools/bench-idle.sh" --bin "$BIN" --seconds 4 --runs 2 --tray --max-rss 32
     status_is "the tray on, the window closed: within budget" 0 "$STATUS"
     like "it measured the idle row" "$OUTPUT" "within budget"
 else
@@ -37,6 +42,20 @@ capture "$REPO/tools/bench-idle.sh" --bin "$BIN" --seconds 1 --max-rss 0.5 --run
 status_is "an unmet budget fails" 1 "$STATUS"
 like "and says so" "$OUTPUT" "OVER BUDGET"
 like "after every run" "$OUTPUT" "run 2/2"
+
+# A scratch root of at least 400 processes (plan 006, part 4), with the
+# apps walk subscribed: measured against its own budget.
+if command -v socat >/dev/null 2>&1; then
+    # Debug build: the RSS budget is the release build's (above).
+    capture "$REPO/tools/bench-idle.sh" --bin "$BIN" --seconds 2 --subscribe apps --max-cpu 1.5 --max-rss 32 --procs 400
+    status_is "apps at 400 processes is measured" 0 "$STATUS"
+    like "on a cloned root it names" "$OUTPUT" "clones of 37 user processes"
+    like "against the 1.5 % budget" "$OUTPUT" "< 1.5%"
+    n=$(sed -n 's/^procs: \([0-9]*\) processes.*/\1/p' <<<"$OUTPUT")
+    ((${n:-0} >= 400)) && ok || not_ok "at least 400 processes (got ${n:-none})"
+fi
+capture "$REPO/tools/bench-idle.sh" --procs 0
+status_is "--procs 0 is a usage error" 64 "$STATUS"
 
 capture "$REPO/tools/bench-idle.sh" --seconds 0
 status_is "--seconds 0 is a usage error" 64 "$STATUS"

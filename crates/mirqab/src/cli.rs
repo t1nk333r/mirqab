@@ -78,6 +78,10 @@ fn print_status(v: &Value) {
     if let Some(why) = v["config"]["broken"].as_str() {
         notes.push(strings::config_broken(why));
     }
+    // The focus source (plan 006, part 4), when the daemon says.
+    if let Some(f) = v.get("focus") {
+        notes.push(strings::status_focus(f["source"].as_str()));
+    }
     if let Some(m) = v["unavailable"].as_object() {
         for (k, why) in m {
             notes.push(format!("unavailable {k}: {}", why.as_str().unwrap_or("")));

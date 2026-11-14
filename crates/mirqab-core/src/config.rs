@@ -20,7 +20,8 @@ pub fn defaults() -> Value {
         "home": {"pinned": [], "seeded": false},
         "tabs": {"hidden": []},
         "bar": {"combo": ["cpu", "mem", "temp"]},
-        "tray": {"enabled": true}
+        "tray": {"enabled": true},
+        "trends": {"topApps": true}
     })
 }
 
@@ -55,7 +56,7 @@ fn check(key: &str, v: &Value) -> Option<String> {
         "window.marginEm" => number(0.0, 10.0),
         "window.widthEm" => number(30.0, 120.0),
         "window.heightEm" => number(20.0, 80.0),
-        "window.rememberTab" | "home.seeded" | "tray.enabled" => match v {
+        "window.rememberTab" | "home.seeded" | "tray.enabled" | "trends.topApps" => match v {
             Value::Bool(_) => None,
             _ => Some(format!("{key} must be true or false")),
         },
@@ -434,6 +435,16 @@ mod tests {
             .collect();
         assert_eq!(names, ["config.json"]);
         act::remove_path(&d, false).unwrap();
+    }
+
+    #[test]
+    fn the_top_apps_row_is_on_by_default_and_a_boolean() {
+        // Plan 006, part 4: on unless the idle benchmark says otherwise.
+        assert_eq!(defaults()["trends"]["topApps"], true);
+        assert!(keys().contains(&"trends.topApps".to_string()));
+        assert_eq!(check("trends.topApps", &json!(false)), None);
+        assert!(check("trends.topApps", &json!("no")).is_some());
+        assert!(check("trends.topApps", &json!(0)).is_some());
     }
 
     #[test]

@@ -17,7 +17,7 @@ Serves the socket. --root reads system state from DIR instead of / (tests use fi
 mirqab status [--json]
 ```
 
-Prints the version, the socket, each stream's subscribers and interval, and what the daemon costs.
+Prints the version, the socket, each stream's subscribers and interval, what the daemon costs, and the focus source the Apps page's "idle but heavy" tag uses (Hyprland, only while the page is open).
 
 ## open
 
@@ -74,7 +74,7 @@ Every temperature sensor, each GPU, and package and battery power.
 mirqab apps [--sort cpu|mem|name] [--all] [--json]
 ```
 
-One row per app: CPU (percent of one core, over the last seconds), memory and how many processes, heaviest first. A browser's helpers count as the browser and a terminal's jobs as themselves; other users' processes are one System group, last. --sort orders by cpu (default), mem or name. --all lists every process under its app.
+One row per app: CPU (percent of one core, over the last seconds), memory and how many processes, heaviest first. A browser's helpers count as the browser and a terminal's jobs as themselves; other users' processes are one System group, last. --sort orders by cpu (default), mem or name. --all lists every process under its app. While the Apps page has been open five minutes on Hyprland, an IDLE column marks apps that used over 20 % of a core with none of their windows in focus.
 
 ## what
 

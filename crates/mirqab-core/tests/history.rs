@@ -1,6 +1,7 @@
 //! History (plan 001 phase C, architecture §6): the schema, counter
 //! differences between two fixture moments, gaps, the ranges' bucket counts,
-//! pruning, a broken file moved aside, and 30 days × 64 series under 40 MB.
+//! pruning, a broken file moved aside, and 30 days × 64 series under 40 MB,
+//! with a `top-apps` event every minute (plan 006, part 4: the worst case).
 
 use mirqab_core::history::{self, History};
 use mirqab_core::root::Root;
@@ -303,6 +304,16 @@ fn a_newer_schema_is_left_alone_and_refused() {
     assert!(names.iter().all(|n| !n.contains("broken")), "{names:?}");
 }
 
+/// A `top-apps` row as the `apps` sampler writes it: three names by CPU
+/// and three by memory, the process count (about 150 bytes).
+fn top_apps(m: i64) -> serde_json::Value {
+    serde_json::json!({
+        "cpu": [["Example Browser", 41.2 + (m % 7) as f64], ["cargo", 30.0], ["System", 4.1]],
+        "mem": [["Example Browser", 2_147_483_648_i64 + m], ["code", 1_073_741_824_i64], ["System", 536_870_912_i64]],
+        "procs": 412 + m % 9,
+    })
+}
+
 #[test]
 fn sixty_four_series_for_thirty_days_fit_in_forty_megabytes() {
     let d = scratch("size");
@@ -320,20 +331,59 @@ fn sixty_four_series_for_thirty_days_fit_in_forty_megabytes() {
     assert_eq!(ids.len(), history::MAX_SERIES);
     assert!(h.register("one.too.many", "bytes", 1).is_err());
     // The steady state: 29 days packed by the daily rewrite, then a day of
-    // minutes written since.
+    // minutes written since. Every minute also has a `top-apps` row at its
+    // real size, the worst case (a machine busy with changing leaders all
+    // the time; plan 006, part 4, decision 7); they are kept three days
+    // (`KEEP_TOP_APPS_SECS`), so two days of them are packed too.
     fill_range(&h, &ids, 29 * 1440, 1440);
+    for m in 0..29 * 1440 {
+        h.add_event(NOW - (29 * 1440 + 1440 - m) * 60, "top-apps", &top_apps(m))
+            .unwrap();
+    }
+    h.prune(NOW - 1440 * 60).unwrap();
     h.compact(NOW).unwrap();
     // The last day as the writer does it: one transaction a minute, so the
     // write-ahead log behaves as it does in a running daemon.
     for m in 0..1440 {
         fill_range(&h, &ids, 1, 1439 - m);
+        h.add_event(NOW - (1440 - m) * 60, "top-apps", &top_apps(m))
+            .unwrap();
     }
     // The file and its write-ahead log as they stand, no manual checkpoint:
     // what `status` reports and what the disk holds. The budget is 40 MiB
     // (owner, 2026-11-13).
     let size = h.size_bytes();
-    eprintln!("history: 64 series x 30 days = {size} bytes");
+    eprintln!("history: 64 series and a top-apps row a minute x 30 days = {size} bytes");
     assert!(size < 40 * 1024 * 1024, "{size} bytes");
+}
+
+#[test]
+fn top_apps_rows_are_kept_three_days_and_other_events_thirty() {
+    let d = scratch("topkeep");
+    let mut h = History::open(&d.0.join("history.db"), NOW).unwrap();
+    for (ago_days, kind) in [
+        (2, "top-apps"),
+        (4, "top-apps"),
+        (4, "action"),
+        (31, "action"),
+    ] {
+        h.add_event(NOW - ago_days * 86_400, kind, &serde_json::json!({}))
+            .unwrap();
+    }
+    assert_eq!(h.prune(NOW).unwrap(), 2);
+    let left = h.events(None, NOW - 40 * 86_400, NOW + 1).unwrap();
+    let kinds: Vec<(i64, &str)> = left
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| {
+            (
+                (NOW - e["ts"].as_i64().unwrap()) / 86_400,
+                e["kind"].as_str().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(kinds, [(4, "action"), (2, "top-apps")]);
 }
 
 #[test]

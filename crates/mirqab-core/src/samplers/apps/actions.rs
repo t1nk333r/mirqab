@@ -52,14 +52,16 @@ use crate::root::Root;
 use crate::sys;
 use serde_json::{Value, json};
 use std::os::unix::fs::FileTypeExt;
-use std::os::unix::net::UnixStream;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// How long one `systemctl` may take. `--no-block` returns once the job is
 /// queued, well inside the CLI's 10 s read timeout.
 const SYSTEMCTL_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// How long the compositor probe waits for one `wayland-*` socket.
+const PROBE_TIMEOUT: Duration = Duration::from_millis(500);
 
 /// Compositors by command name: what a fixture can show, and the fallback
 /// on a host where the socket probe finds nothing (decision 6).
@@ -110,21 +112,34 @@ impl Action {
 /// What an action is about.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Subject {
-    Pid(u32),
+    /// A process, and the start time the asker knows it by (field 22 of
+    /// its `stat`), when it says: a pid that names another process now is
+    /// refused (plan 006, part 4, decision 8; S4 of PR #19).
+    Pid(u32, Option<u64>),
     Group(String),
 }
 
 impl Subject {
-    /// `{"pid": N}` or `{"group": "<id>"}`, exactly one key; anything else
-    /// is a bad request.
+    /// `{"pid": N}`, `{"pid": N, "start": S}` or `{"group": "<id>"}`, and
+    /// no other key; anything else is a bad request.
     pub fn parse(args: &Value) -> Option<Subject> {
-        let o = args.as_object().filter(|o| o.len() == 1)?;
+        let o = args.as_object()?;
         if let Some(p) = o.get("pid") {
-            return p
+            if !o.keys().all(|k| k == "pid" || k == "start") {
+                return None;
+            }
+            let pid = p
                 .as_u64()
                 .and_then(|p| u32::try_from(p).ok())
-                .filter(|p| *p > 0)
-                .map(Subject::Pid);
+                .filter(|p| *p > 0)?;
+            let start = match o.get("start") {
+                None => None,
+                Some(s) => Some(s.as_u64()?),
+            };
+            return Some(Subject::Pid(pid, start));
+        }
+        if o.len() != 1 {
+            return None;
         }
         o.get("group")
             .and_then(Value::as_str)
@@ -134,7 +149,8 @@ impl Subject {
 
     pub fn to_value(&self) -> Value {
         match self {
-            Subject::Pid(p) => json!({ "pid": p }),
+            Subject::Pid(p, None) => json!({ "pid": p }),
+            Subject::Pid(p, Some(s)) => json!({ "pid": p, "start": s }),
             Subject::Group(g) => json!({ "group": g }),
         }
     }
@@ -172,7 +188,8 @@ impl Failure {
 }
 
 /// Parses an `action` request's params for `apps.quit` or `apps.kill`
-/// (decision 3): `args` exactly one of `pid` and `group`; `dryRun` and
+/// (decision 3): `args` a `pid` with an optional `start`, or a `group`;
+/// `dryRun` and
 /// `confirm` booleans or absent; `confirm: false` with a plan, or a plan
 /// that is not a string, is a bad request.
 pub fn parse(action: Action, params: &Value, caller: Option<u32>) -> Result<Ask, Failure> {
@@ -401,7 +418,10 @@ fn own_uid(root: &Root) -> u32 {
 /// (review of PR #17): a socket nobody listens on (ECONNREFUSED, left by a
 /// compositor that died) is skipped, but any other connect or `peer_pid`
 /// error, or a directory that cannot be read, is an error naming it. A
-/// directory that does not exist has no compositor (a tty, a server).
+/// directory that does not exist has no compositor (a tty, a server). The
+/// connect gives up after `PROBE_TIMEOUT` (D2 of PR #17): a frozen
+/// compositor whose backlog is full is one that cannot be told, and
+/// refuses the action like any other probe error.
 fn compositor_sockets(dir: &Path) -> Result<Vec<u32>, String> {
     let entries = match std::fs::read_dir(dir) {
         Ok(e) => e,
@@ -420,7 +440,7 @@ fn compositor_sockets(dir: &Path) -> Result<Vec<u32>, String> {
             continue;
         }
         let path = e.path();
-        let stream = match UnixStream::connect(&path) {
+        let stream = match sys::connect_timeout(&path, PROBE_TIMEOUT) {
             Ok(s) => s,
             Err(err) if err.kind() == std::io::ErrorKind::ConnectionRefused => continue,
             Err(err) => return Err(format!("{}: {err}", path.display())),
@@ -431,15 +451,6 @@ fn compositor_sockets(dir: &Path) -> Result<Vec<u32>, String> {
         }
     }
     Ok(out)
-}
-
-/// The runtime directory the compositor's sockets are in:
-/// `$XDG_RUNTIME_DIR`, else `run/user/<uid>` under the (live) root.
-fn runtime_dir(root: &Root, own_uid: u32) -> Option<PathBuf> {
-    std::env::var_os("XDG_RUNTIME_DIR")
-        .filter(|d| !d.is_empty())
-        .map(PathBuf::from)
-        .or_else(|| root.path(&format!("run/user/{own_uid}")).ok())
 }
 
 /// The guard for one resolution: the daemon, the compositor and its
@@ -466,7 +477,7 @@ fn make_guard(
         .map(Proc::pid)
         .collect();
     if root.is_host()
-        && let Some(dir) = runtime_dir(root, own_uid)
+        && let Some(dir) = crate::desktop::runtime_dir(root, own_uid)
     {
         let found = compositor_sockets(&dir)
             .map_err(|why| Failure::new(Code::Refused, strings::refuse_compositor_unknown(&why)))?;
@@ -640,7 +651,7 @@ fn resolve(
     caller: Option<u32>,
     sender: &dyn Sender,
 ) -> Result<Resolution, Failure> {
-    if let Subject::Pid(p) = subject
+    if let Subject::Pid(p, _) = subject
         && *p <= 1
     {
         return Err(Failure::new(Code::Refused, strings::refuse_init(*p)));
@@ -651,7 +662,7 @@ fn resolve(
     let mut steps = Vec::new();
     let mut skipped = Vec::new();
     match subject {
-        Subject::Pid(asked) => {
+        Subject::Pid(asked, start) => {
             let asked = *asked;
             let no_process = || Failure::new(Code::Failed, strings::apps_no_process(asked));
             // D3: a thread id stands for its thread group.
@@ -664,6 +675,16 @@ fn resolve(
                 .iter()
                 .find(|p| p.pid() == pid)
                 .ok_or_else(no_process)?;
+            // S4: the asker's start time against the leader's now, before
+            // anything else is decided, for a signal and a service alike.
+            if let Some(s) = start
+                && *s != p.stat.start
+            {
+                return Err(Failure::new(
+                    Code::Failed,
+                    strings::apps_process_gone(asked),
+                ));
+            }
             match service_of(p) {
                 Some(unit) => steps.push(unit_step(root, &guard, &procs, unit, sender)?),
                 None => {
@@ -1038,13 +1059,24 @@ impl Actions {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
 
     #[test]
     fn args_are_strict() {
         let p = |v: Value| parse(Action::Quit, &v, Some(1));
         assert_eq!(
             p(json!({"args": {"pid": 7}})).unwrap().subject,
-            Subject::Pid(7)
+            Subject::Pid(7, None)
+        );
+        assert_eq!(
+            p(json!({"args": {"pid": 7, "start": 500}}))
+                .unwrap()
+                .subject,
+            Subject::Pid(7, Some(500))
+        );
+        assert_eq!(
+            Subject::Pid(7, Some(500)).to_value(),
+            json!({"pid": 7, "start": 500})
         );
         assert_eq!(
             p(json!({"args": {"group": "scope:x"}})).unwrap().subject,
@@ -1056,6 +1088,11 @@ mod tests {
             json!({"args": {"pid": "7"}}),
             json!({"args": {"pid": 0}}),
             json!({"args": {"pid": 7, "force": true}}),
+            json!({"args": {"pid": 7, "start": "x"}}),
+            json!({"args": {"pid": 7, "start": -1}}),
+            json!({"args": {"pid": 7, "start": 5, "force": true}}),
+            json!({"args": {"start": 5}}),
+            json!({"args": {"group": "x", "start": 5}}),
             json!({"args": {"group": ""}}),
             json!({"args": {"pid": 7}, "confirm": "true"}),
             json!({"args": {"pid": 7}, "confirm": 1}),

@@ -3,6 +3,7 @@
 #
 #   tools/bench-idle.sh [--subscribe STREAM [--live]] [--tray] [--seconds N]
 #                       [--runs N] [--max-cpu PCT] [--max-rss MIB] [--bin DIR]
+#                       [--procs N]
 #
 # Starts `mirqab daemon --root tests/fixtures/root-desktop` on a private
 # socket with a temporary HOME, waits 5 s, reads utime and stime (fields 14
@@ -22,12 +23,17 @@
 # Exits 1 over budget, 2 when it cannot measure (no socat for --subscribe,
 # an interface attached to the socket, a daemon that does not start).
 #
+# --procs N measures against a scratch copy of root-desktop whose user
+# processes are cloned (tools/mkfixture.sh procs --clones K) until it
+# holds at least N processes, and prints how many (plan 006, part 4:
+# `--subscribe apps --max-cpu 1.5 --procs 400`). Nothing is committed.
+#
 # --bin DIR uses DIR/mirqab; otherwise it builds the release binary.
 set -Eeuo pipefail
 shopt -s inherit_errexit
 cd "$(dirname "$0")/.."
 
-stream="" live=0 tray=0 seconds=60 runs=1 max_cpu="" max_rss="" bin=""
+stream="" live=0 tray=0 seconds=60 runs=1 max_cpu="" max_rss="" bin="" procs=""
 while (($#)); do
     case $1 in
     --subscribe) stream=${2:?--subscribe needs a stream}; shift 2 ;;
@@ -38,13 +44,14 @@ while (($#)); do
     --max-cpu) max_cpu=${2:?}; shift 2 ;;
     --max-rss) max_rss=${2:?}; shift 2 ;;
     --bin) bin=${2:?}; shift 2 ;;
+    --procs) procs=${2:?--procs needs a number}; shift 2 ;;
     -h | --help) sed -n '2,/^set -E/p' "$0" | sed '$d; s/^# \{0,1\}//'; exit 0 ;;
     *) echo "bench-idle: unknown option $1" >&2; exit 64 ;;
     esac
 done
 ((live == 0)) || [[ -n $stream ]] || { echo "bench-idle: --live needs --subscribe" >&2; exit 64; }
-for v in "$seconds" "$runs"; do
-    [[ $v =~ ^[1-9][0-9]*$ ]] || { echo "bench-idle: --seconds and --runs take a whole number from 1" >&2; exit 64; }
+for v in "$seconds" "$runs" ${procs:+"$procs"}; do
+    [[ $v =~ ^[1-9][0-9]*$ ]] || { echo "bench-idle: --seconds, --runs and --procs take a whole number from 1" >&2; exit 64; }
 done
 if [[ -z $max_cpu ]]; then
     if ((live)); then max_cpu=1; else max_cpu=0.3; fi
@@ -88,6 +95,21 @@ cleanup() {
 trap cleanup EXIT
 trap 'exit 130' INT TERM
 
+# The root the daemon reads: the fixture, or with --procs a scratch copy
+# with the user's processes cloned until it holds at least N.
+root=tests/fixtures/root-desktop
+if [[ -n $procs ]]; then
+    read -r total user < <(awk -F'\t' '!/^#/ && NF > 3 && ($1 == "both" || $1 == "t0") { t++; if ($4 == 1000) u++ } END { print t, u }' tests/fixtures/procs.tsv)
+    clones=0
+    ((procs <= total)) || clones=$(((procs - total + user - 1) / user))
+    mkdir -p "$scratch/fixture"
+    cp -a tests/fixtures/root-desktop "$scratch/fixture/root-desktop"
+    tools/mkfixture.sh procs --out "$scratch/fixture" --clones "$clones"
+    root="$scratch/fixture/root-desktop"
+    n=$(find "$root/proc" -mindepth 1 -maxdepth 1 -name '[0-9]*' | wc -l)
+    printf 'procs: %d processes in a scratch root (%d clones of %d user processes)\n' "$n" "$clones" "$user"
+fi
+
 # ticks PID — utime + stime of the whole process.
 ticks() { awk '{ print $14 + $15 }' "/proc/$1/stat"; }
 # switches PID — voluntary + involuntary context switches of every thread
@@ -126,7 +148,7 @@ measure() {
     fi
     env -i PATH=/usr/bin:/bin HOME="$run" XDG_RUNTIME_DIR="$run/xdg" \
         XDG_CONFIG_HOME="$run/config" XDG_STATE_HOME="$run/state" "${busenv[@]}" \
-        "$bin/mirqab" daemon --root tests/fixtures/root-desktop >"$run/out" 2>"$run/err" &
+        "$bin/mirqab" daemon --root "$root" >"$run/out" 2>"$run/err" &
     daemon=$!
     for ((i = 0; i < 100; i++)); do
         [[ -S $sock ]] && break
@@ -192,7 +214,9 @@ for ((n = 1; n <= runs; n++)); do
     cpu="" rss_kib="" ctx=""
     measure "$n" || exit 2
     label="no subscriber"
-    [[ -z $stream ]] || label="subscribed to $stream$( ((live)) && echo ' (live)')"
+    # `|| true`: under inherit_errexit a false `((live))` failed the
+    # substitution, and every non-live --subscribe run exited 1 unsaid.
+    [[ -z $stream ]] || label="subscribed to $stream$( ((live)) && echo ' (live)' || true)"
     printf 'run %d/%d, %s: cpu %s%% of one core over %ss, rss %s MiB, %s context switches\n' \
         "$n" "$runs" "$label" "$cpu" "$seconds" "$(mib "$rss_kib")" "$ctx"
     if [[ -z $best_cpu ]] || awk -v a="$cpu" -v b="$best_cpu" 'BEGIN { exit !(a < b) }'; then

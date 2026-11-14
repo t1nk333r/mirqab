@@ -5,6 +5,7 @@ pub use mirqab_proto as proto;
 
 pub mod act;
 pub mod config;
+pub mod desktop;
 pub mod exec;
 pub mod guard;
 pub mod history;

@@ -5,6 +5,10 @@
 use std::io;
 use std::path::{Component, Path, PathBuf};
 
+/// Where the kernel's DRM device nodes live: an fd whose link names a
+/// path under it is a GPU client's (plan 006, part 4, decision 13).
+pub const DRM_DIR: &str = "/dev/dri/";
+
 #[derive(Debug, Clone)]
 pub struct Root {
     base: PathBuf,
@@ -108,6 +112,45 @@ impl Root {
         std::fs::File::open(path)?
             .take(n as u64)
             .read_to_end(&mut buf)?;
+        Ok(buf)
+    }
+
+    /// At most the first `n` bytes of `rel` when it is a regular file, and
+    /// an error for anything else: a FIFO, a socket, a device, a directory
+    /// or a symlink as the last component (plan 006, part 4, decision 14).
+    /// A process controls its own root, so a FIFO at `proc/<pid>/root/
+    /// .flatpak-info` would block a plain open, and the read with it. The
+    /// file is opened with O_NONBLOCK and O_NOFOLLOW and checked with
+    /// fstat on the open descriptor, so nothing can be swapped in between
+    /// a check and the read. Links before the last component stay inside a
+    /// fixture tree, as in `read_prefix`.
+    pub fn read_regular_prefix(&self, rel: &str, n: usize) -> io::Result<Vec<u8>> {
+        use std::io::Read;
+        use std::os::unix::fs::OpenOptionsExt;
+        let path = self.path(rel)?;
+        if !self.is_host() {
+            let parent = path.parent().unwrap_or(&self.base);
+            let real = std::fs::canonicalize(parent)?;
+            let base = std::fs::canonicalize(&self.base)?;
+            if !real.starts_with(&base) {
+                return Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    format!("link leaves the root: {rel}"),
+                ));
+            }
+        }
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NONBLOCK | libc::O_NOFOLLOW)
+            .open(&path)?;
+        if !file.metadata()?.is_file() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("not a regular file: {rel}"),
+            ));
+        }
+        let mut buf = Vec::with_capacity(n.min(64 * 1024));
+        file.take(n as u64).read_to_end(&mut buf)?;
         Ok(buf)
     }
 }

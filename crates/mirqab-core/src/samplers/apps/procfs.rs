@@ -149,6 +149,20 @@ pub fn flatpak_info(text: &str) -> Option<String> {
     None
 }
 
+/// The longest `.flatpak-info` read; Flatpak writes some hundreds of bytes.
+const FLATPAK_INFO_MAX: usize = 4096;
+
+/// The Flatpak app id of the process at `dir` (`proc/<pid>`), from its
+/// root's `.flatpak-info`, read only when that is a regular file (plan
+/// 006, part 4, decision 14; D7 of PR #16): the process controls its own
+/// root, and a FIFO there would stall the walk.
+pub fn read_flatpak_info(root: &Root, dir: &str) -> Option<String> {
+    let bytes = root
+        .read_regular_prefix(&format!("{dir}/root/.flatpak-info"), FLATPAK_INFO_MAX)
+        .ok()?;
+    flatpak_info(&String::from_utf8_lossy(&bytes))
+}
+
 /// One account of `etc/passwd`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct User {
@@ -331,10 +345,7 @@ fn read_info(root: &Root, dir: &str, own_uid: u32) -> Info {
         .as_deref()
         .is_none_or(|c| group::user_unit(c).is_none());
     let flatpak = if uid == Some(own_uid) && unclaimed {
-        root.read(&format!("{dir}/root/.flatpak-info"))
-            .ok()
-            .as_deref()
-            .and_then(flatpak_info)
+        read_flatpak_info(root, dir)
     } else {
         None
     };
