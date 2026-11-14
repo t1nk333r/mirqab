@@ -26,10 +26,16 @@
   by a click on its terminal) and `focus: hyprland` with the page open,
   none closed (acceptance part 4, 1–2); a Hyprland restart with the
   daemon running (part 4, 3); `top-apps` rows after a busy ten minutes
-  (part 4, 4); Escape and the press on the real desktop (part 4, 6–7);
-  the interface's CPU and RSS with Apps open on Wayland (the Broadway
-  numbers are in "As built (part 3b)"); and whether a Flatpak app's
-  window reports its host pid ("Unverified (part 4)")
+  (part 4, 4); Escape and the press on the real desktop (part 4, 6–7),
+  including Escape with focus in the search entry (the entry clears
+  itself first) and the press through GTK's real event dispatch, which
+  the tests drive only through the shortcut's action and `Handle::press`;
+  the row's selected state read back by a screen reader (Orca) after a
+  reordering frame (the tests check what the page wrote, "Review of
+  PR #21", item 2); the interface's CPU and RSS with Apps open on
+  Wayland (the Broadway numbers are in "As built (part 3b)"); and
+  whether a Flatpak app's window reports its host pid ("Unverified
+  (part 4)")
 
 ## Problem
 
@@ -3138,7 +3144,13 @@ lives:
   `gpu_memory_comes_only_from_drm_fds_and_not_past_64_of_them`
   (`tests/apps.rs:1190`): 1 100 fds of which 8 are DRM (two clients) give
   `vramBytes` 1 MiB and `files.count` 1 100, the 1 092 others' parseable
-  `fdinfo` never counted; 65 DRM fds leave the row out.
+  `fdinfo` never counted; exactly 64 DRM fds give the row (`:1230`, added
+  by the review of PR #21); 65 leave it out. After the review the open
+  files and the GPU row share one pass over `fd/` ("Review of PR #21",
+  item 4). DRM fds per process on the development machine (counted by
+  the reviewer, 2026-11-15): Hyprland 13; zen-bin, Xwayland and
+  Firefox's RDD 6; the GPU processes of helium, Discord and t3code 5;
+  nothing more than 13.
 - **The tag on the page** (decision 16). `GroupLine.idle_heavy` and the
   label's last words (`crates/mirqab-view/src/tabs/apps.rs:381`, `:421`;
   `strings::apps_group_label` gains the flag, `strings.rs:1906`);
@@ -3236,8 +3248,18 @@ Deviations from the brief, each with its reason:
 - **The widget tests run with `GTK_A11Y=test`** (`tests/test-ui-widgets.sh`),
   not `none`: with `none` there is no accessible context and
   `gtk::test_accessible_has_state` reads nothing. The test backend talks
-  to no bus. GTK gives no getter for a state's value, so N8's test
-  asserts that the state is on the list item and not on the box.
+  to no bus. GTK gives no getter for a state's value, and GTK itself
+  writes `Selected(false)` on every list item under `NoSelection`, so
+  "the state is set" proves nothing. Since the review of PR #21 the page
+  records the value it wrote on each list item (`Item.applied`, through
+  `write_selected`, which returns what it wrote), and N8's test reads it
+  through `Handle::marked`: the selected row true, the others false,
+  also after a reordering frame rebinds the items, and none true once
+  cleared. Without the `update_state` call the test fails. It proves the
+  page's write; what a screen reader reads is an owner check (Orca). A
+  test that reads GTK's value needs `gtk_test_accessible_check_state`,
+  variadic and unbound by gtk-rs, so `unsafe` in a test, which the
+  repository keeps to `sys.rs`.
 - **N3 is tested in the widget test**, not in `tests/test-ui-apps.sh`: on
   a re-map the daemon samples at once, so the first frame races the
   dump; the widget test hides and shows the page with no daemon and
@@ -3265,16 +3287,26 @@ Deviations from the brief, each with its reason:
 - **Past 64 DRM fds the GPU row is left out**, not summed in part:
   counting some clients would understate VRAM with no sign of it.
 - **`page::build_page` and `page::Handle`** are new public items for the
-  widget tests (frames fed by hand, a press held, the rows read back);
-  `build` is `build_page(..).0`.
+  widget tests (frames fed by hand, a press held, the rows, the written
+  selected states and Escape read back); `build` is `build_page(..).0`.
+- **The sheet is pinned** (`split.set_pin_sidebar(true)`, `page.rs:583`,
+  review of PR #21): libadwaita's `set_collapsed` hides an unpinned
+  sidebar, and the page took that for the user closing the sheet and
+  cleared the selection. This was the Home test's flake since part 3b,
+  and a product bug: a window shrunk under 60 em lost its selection.
 
 Known limits (part 4b):
 
 - Escape is the page's only while focus is inside it (scope `Local`):
   with focus in the sidebar it goes to the window, and a search entry
   with text takes Escape to clear itself first (GTK's own binding).
-- A press held on the list freezes its rows until the release; frames
-  are not lost, the latest is written then.
+- A press held on the list freezes its rows until the release, or for
+  two frames (some 4 s), after which the press is taken as lost and the
+  third frame is written; frames are not lost, the latest is written.
+- `inspect_gone` matches the error's message text
+  (`strings::apps_process_gone`, `apps_no_process`). A `data.gone` flag or
+  an error code of its own belongs to the plan that next changes the
+  protocol (plan 007's `Ports` errors, or plan 018).
 - Outside the user manager (no app scopes) a terminal and its jobs are
   `tree:` groups with different sessions; the terminal's window credits
   only its own group, as in 4a.
@@ -3286,6 +3318,78 @@ Known limits (part 4b):
 Left for the owner, all on the development machine: acceptance part 3,
 1–6, and part 4, 1–4, 6 and 7 (listed in the State line above), the
 interface's cost with Apps open on Wayland, and the Flatpak window pid.
+
+### Review of PR #21 (part 4b), 2026-11-15
+
+The ruling (Fable 5.1, on Sonnet's review) kept 6 items, deferred 3 and
+dropped 3. What changed, with its test:
+
+1. **The Home flake was the collapse clearing the selection.**
+   `adw_overlay_split_view_set_collapsed` hides an unpinned sidebar; the
+   60 em breakpoint applied after the first frame showed the sheet, and
+   `connect_show_sidebar_notify` read the hide as the user's and cleared
+   the selection (the reviewer's instrumented failing run shows that
+   sequence; 3 failures in 8 runs on the PR head). Fix:
+   `split.set_pin_sidebar(true)` (`page.rs:583`). Test:
+   `collapsing_the_page_keeps_the_selection` (`widgets.rs:1141`): with a
+   row selected, `set_collapsed(true)` and then a 300 px window under
+   the breakpoint keep the selection and the sheet; an explicit hide
+   still clears it. Without the pin it fails ("still selected").
+   `tests/test-ui-home.sh` repeated: see the counts below.
+2. **N8's test now discriminates** (see the deviation above):
+   `Item.applied` and `write_selected` (`page.rs:54`, `mark_selected`
+   `:65`), `Handle::marked` (`:400`); `the_list_item_carries_the_selected_state`
+   (`widgets.rs:1033`) asserts true for the selected row, false for the
+   others, true again after a reordering frame, none once Escape
+   cleared it. With the `update_state` call removed it fails (checked).
+   The ruling's preferred test (GTK's value through a test-only
+   `#[allow(unsafe_code)]`) was not used: `unsafe` stays in `sys.rs`.
+3. **A lost release cannot hold the rows for long**: a press holds at
+   most two frames (`HOLD_FRAMES`, `page.rs:143`, `:217`); the third is
+   written and the press taken as lost; `press` and `unmapped` reset the
+   count. Test: `a_press_the_list_never_releases_lets_frames_through`
+   (`widgets.rs:1109`).
+4. **One pass over `fd/`**: `fd_targets` (`inspect.rs:247`) lists `fd/`
+   once and reads each link once; `open_files` (`:265`) and `gpu`
+   (`:304`) take its list (`:550`). The GPU test gains the exact-64 case
+   (`tests/apps.rs:1230`). Re-measured (2026-11-15, development machine,
+   release build, fixture daemon, `mirqab what --json`, 20 calls, three
+   runs, CLI start-up included): the 1 100-fd process with 8 DRM fds
+   1.43–1.44 ms a call, the fixture's browser 0.83–0.86 ms.
+5. **Test helpers die with the sandbox**: `tests/lib.sh` (shared harness)
+   gains `HELPER_PIDS`, killed by `_cleanup_scratch`; the fake
+   Hyprland, the proxy and the tick loop in `tests/test-ui-apps.sh`, the
+   `--watch` reader in `tests/test-bar.sh` and the `--background`
+   interfaces in `tests/test-ui-shell.sh` and `tests/test-ui-home.sh`
+   join it. Checked by hand: with a `false` put after the loop's start
+   in `tests/test-ui-apps.sh`, the file aborts and no `hypr.py`,
+   `proxy.py` or root-reading process is left (then removed).
+6. **README**: plan 006 is done in the status paragraph, and the
+   popover's Escape says the first Escape clears an Apps selection.
+
+Counts after the fixes (2026-11-15): `crates/mirqab-ui/tests/widgets.rs`
+16 → 18 under Broadway (two new, N8's rewritten); `tests/apps.rs` 30
+(the GPU test gains the 64 case); `tests/test-ui-home.sh` repeated 38
+times: 36 runs 55/55, and the "with that group in the inspector" check
+never failed; 2 runs aborted with every interface check failing from
+the first `--selftest` on (the interface never drew a page, so `mirqab
+open` then found no interface and tried the stubbed `systemctl`). That
+failure did not come back in 16 further runs of a copy that prints the
+selftest's output, nor in 6 rounds of a bare Broadway, daemon and
+`--selftest home` loop; its cause is not known (the machine was shared
+with other builds), and it is not the collapse. The same whole-file
+failure came once in `tests/test-ui-shell.sh` during a full
+`--affected` run (that file builds no Apps page), then passed in 12
+runs alone and in the next full run (699/699): a harness flake to find
+when it is caught with the selftest's output.
+
+Deferred: real key and pointer dispatch for Escape and S8 (owner checks,
+in the State line, with the search entry's Escape); `inspect_gone`'s
+text match (Known limits (part 4b), for the next protocol plan); an
+AT-SPI readback of the selected state (owner check, Orca). Dropped: a
+real-machine basis for the 64 cap (counted: 13 at most, recorded above),
+"freezes for good" (the next click or an unmap clears a press), and a
+longer wait in the Home test (the cause was item 1).
 
 
 ## Unverified

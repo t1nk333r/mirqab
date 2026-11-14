@@ -39,7 +39,18 @@ export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$REPO/target}"
 MIRQAB_SCRATCH_PARENT="${TMPDIR:-/tmp}"
 
 SCRATCH=""
+# Background helpers a test starts (a fake compositor, a proxy, a loop, a
+# second interface): appended with `HELPER_PIDS+=("$!")`, killed with the
+# sandbox, so a failure or a timeout between start and the test's own kill
+# leaves none running.
+HELPER_PIDS=()
 _cleanup_scratch() {
+    local h
+    for h in "${HELPER_PIDS[@]}"; do
+        kill "$h" 2>/dev/null || true
+        wait "$h" 2>/dev/null || true
+    done
+    HELPER_PIDS=()
     # A daemon a test left running dies with its sandbox.
     [[ -z ${DAEMON_PID:-} ]] || { kill "$DAEMON_PID" 2>/dev/null || true; wait "$DAEMON_PID" 2>/dev/null || true; }
     [[ -z ${BROADWAY_PID:-} ]] || { kill "$BROADWAY_PID" 2>/dev/null || true; wait "$BROADWAY_PID" 2>/dev/null || true; }

@@ -141,6 +141,7 @@ until_subs() {
 }
 MIRQAB_UI_EXIT_MS=60000 "$BIN/mirqab-ui" --socket "$MIRQAB_SOCKET" --background >"$SANDBOX/ui.out" 2>&1 &
 ui=$!
+HELPER_PIDS+=("$ui")
 for _ in $(seq 100); do
     [[ -n "$("$BIN/mirqab" status --json 2>/dev/null | jq -r '.ui.pid // empty')" ]] && break
     sleep 0.02

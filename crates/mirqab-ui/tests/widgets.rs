@@ -1032,24 +1032,147 @@ fn a_frame_during_a_press_waits_for_the_release() {
 #[ignore = "needs a display: run tests/test-ui-widgets.sh"]
 fn the_list_item_carries_the_selected_state() {
     let (ctx, _page, handle, win) = apps_page();
+    // What the page wrote on each list item: GTK itself writes false on
+    // every item under NoSelection, so a row reads selected only through
+    // the page's write (N8). GTK gives no getter for the value; the page
+    // records what it wrote, and an AT readback is an owner check (Orca).
+    let marked = |name: &str| {
+        handle
+            .marked()
+            .into_iter()
+            .find(|(n, _)| n == name)
+            .map(|(_, v)| v)
+    };
+    let others_false = |name: &str| {
+        let m = handle.marked();
+        assert!(
+            m.iter().all(|(n, v)| n == name || *v != Some(true)),
+            "only {name} reads true: {m:?}"
+        );
+        assert!(
+            m.iter().filter(|(_, v)| *v == Some(false)).count() >= 10,
+            "the rows on screen read false: {m:?}"
+        );
+    };
     handle.activate(0);
     settle("the selected row is drawn", || {
         named(win.0.upcast_ref(), "apps-group:session:3030")
             .and_then(|w| w.parent())
             .is_some_and(|b| b.has_css_class("selected"))
     });
+    assert_eq!(marked("apps-group:session:3030"), Some(Some(true)));
+    others_false("apps-group:session:3030");
+    // On the list item, not on the row's box.
     let row = named(win.0.upcast_ref(), "apps-group:session:3030").unwrap();
     let item_box = row.parent().unwrap();
     let list_item = item_box.parent().unwrap();
     assert_eq!(list_item.accessible_role(), gtk::AccessibleRole::ListItem);
-    assert!(
-        gtk::test_accessible_has_state(&list_item, gtk::AccessibleState::Selected),
-        "on the list item (N8)"
-    );
+    assert!(gtk::test_accessible_has_state(
+        &list_item,
+        gtk::AccessibleState::Selected
+    ));
     assert!(
         !gtk::test_accessible_has_state(&item_box, gtk::AccessibleState::Selected),
         "not on the row's box"
     );
+
+    // A frame that reorders the list rebinds the items: cargo still reads
+    // true wherever it went, and the row now first reads false.
+    let mut v: Value =
+        serde_json::from_str(include_str!("../../../tests/golden/apps.json")).unwrap();
+    for g in v["groups"].as_array_mut().unwrap() {
+        if g["id"] == "session:3030" {
+            g["cpu"] = json!(0.0);
+        }
+    }
+    handle.frame(&v);
+    settle("the reordered rows are drawn", || {
+        handle.marked().iter().all(|(_, v)| v.is_some())
+    });
+    let first = group_ids(&handle.rows())[0].clone();
+    assert_ne!(first, "session:3030");
+    assert_eq!(marked(&format!("apps-group:{first}")), Some(Some(false)));
+    if let Some(m) = marked("apps-group:session:3030") {
+        assert_eq!(m, Some(true), "cargo, rebound elsewhere, still selected");
+    }
+    others_false("apps-group:session:3030");
+
+    // Cleared: nothing reads true.
+    assert!(handle.escape());
+    assert_eq!(marked("apps-group:session:3030").flatten(), Some(false));
+    assert!(handle.marked().iter().all(|(_, v)| *v != Some(true)));
+    ctx.client.close();
+}
+
+#[gtk::test]
+#[ignore = "needs a display: run tests/test-ui-widgets.sh"]
+fn a_press_the_list_never_releases_lets_frames_through() {
+    let (ctx, _page, handle, _win) = apps_page();
+    let golden: Value =
+        serde_json::from_str(include_str!("../../../tests/golden/apps.json")).unwrap();
+    let mut v = golden.clone();
+    for g in v["groups"].as_array_mut().unwrap() {
+        if g["id"] == "session:3030" {
+            g["cpu"] = json!(0.0);
+        }
+    }
+    let before = handle.rows();
+    handle.press(true);
+    handle.frame(&v);
+    handle.frame(&v);
+    assert_eq!(handle.rows(), before, "two frames held while pressed");
+    // The third frame in one press: the release was lost, the rows move.
+    handle.frame(&v);
+    assert_ne!(group_ids(&handle.rows())[0], "session:3030", "written");
+    // The press is clear: the next frame is written at once.
+    handle.frame(&golden);
+    assert_eq!(group_ids(&handle.rows())[0], "session:3030");
+    // A new press holds again, from zero.
+    handle.press(true);
+    handle.frame(&v);
+    assert_eq!(group_ids(&handle.rows())[0], "session:3030", "held");
+    handle.press(false);
+    assert_ne!(group_ids(&handle.rows())[0], "session:3030", "released");
+    ctx.client.close();
+}
+
+#[gtk::test]
+#[ignore = "needs a display: run tests/test-ui-widgets.sh"]
+fn collapsing_the_page_keeps_the_selection() {
+    let (ctx, page, handle, win) = apps_page();
+    fn split(w: &gtk::Widget) -> Option<adw::OverlaySplitView> {
+        if let Some(s) = w.downcast_ref::<adw::OverlaySplitView>() {
+            return Some(s.clone());
+        }
+        let mut c = w.first_child();
+        while let Some(child) = c {
+            if let Some(s) = split(&child) {
+                return Some(s);
+            }
+            c = child.next_sibling();
+        }
+        None
+    }
+    let split = split(&page).expect("the split view");
+    assert!(split.is_pin_sidebar(), "the sheet is the selection's");
+    handle.activate(0);
+    assert!(split.shows_sidebar());
+    // Under the 60 em breakpoint the sheet overlays the list; it must not
+    // close, nor clear the selection (review of PR #21: the Home flake).
+    split.set_collapsed(true);
+    assert!(ctx.apps.borrow().selected.is_some(), "still selected");
+    assert!(split.shows_sidebar(), "still shown");
+    split.set_collapsed(false);
+    assert!(ctx.apps.borrow().selected.is_some());
+    // The same through the breakpoint itself: a narrow window.
+    page.set_size_request(300, 400);
+    win.0.set_default_size(300, 400);
+    settle("the page is narrow and collapsed", || split.is_collapsed());
+    assert!(ctx.apps.borrow().selected.is_some(), "still selected");
+    assert!(split.shows_sidebar());
+    // An explicit hide still closes the sheet and clears the selection.
+    split.set_show_sidebar(false);
+    assert_eq!(ctx.apps.borrow().selected, None);
     ctx.client.close();
 }
 

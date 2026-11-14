@@ -1227,6 +1227,19 @@ fn gpu_memory_comes_only_from_drm_fds_and_not_past_64_of_them() {
     assert_eq!(v["gpu"]["vramBytes"], 2 * 512 * 1024, "{v}");
     assert_eq!(v["files"]["count"], 1100);
 
+    // Exactly 64 DRM fds: the row is there (the cap's boundary).
+    let e = own_proc(&s.0, 9303, "edge");
+    std::fs::create_dir_all(e.join("fd")).unwrap();
+    std::fs::create_dir_all(e.join("fdinfo")).unwrap();
+    let cap = mirqab_core::samplers::apps::inspect::MAX_DRM_FDINFO as u32;
+    for n in 0..cap {
+        std::os::unix::fs::symlink("/dev/dri/renderD128", e.join(format!("fd/{n}"))).unwrap();
+        std::fs::write(e.join(format!("fdinfo/{n}")), drm_fdinfo(n, 1)).unwrap();
+    }
+    let v = inspect(&mut a, &root, 9303);
+    assert_eq!(v["gpu"]["vramBytes"], u64::from(cap) * 1024, "{v}");
+    assert_eq!(v["files"]["count"], cap);
+
     // Past 64 DRM fds the row is left out (and the rest still answers).
     let r = own_proc(&s.0, 9302, "lots");
     std::fs::create_dir_all(r.join("fd")).unwrap();

@@ -44,18 +44,30 @@ struct Item {
     bound: RefCell<Option<glib::BoxedAnyObject>>,
     /// Whether the bound row is the selection, for the list item's state.
     selected: Rc<Cell<bool>>,
+    /// The value last written to the list item's `Selected` state; None
+    /// before the row was first on screen (the widget tests read it: GTK
+    /// gives no getter for a state's value).
+    applied: Rc<Cell<Option<bool>>>,
+}
+
+/// Writes `Selected` on `item` and gives back what it wrote.
+fn write_selected(item: &gtk::Widget, selected: bool) -> bool {
+    item.update_state(&[gtk::accessible::State::Selected(Some(selected))]);
+    selected
 }
 
 /// The selected state on the list item that holds `root`, which assistive
-/// technology reads as the row (review of PR #19, N8). Only once `root` is
-/// on screen: a list item being bound may not be parented yet, and taking
-/// a reference to it then would sink and drop it.
-fn mark_selected(root: &gtk::Box, selected: bool) {
+/// technology reads as the row (review of PR #19, N8). GTK writes
+/// `Selected(false)` on every list item under `NoSelection`, so without
+/// this no row ever reads selected. Only once `root` is on screen: a list
+/// item being bound may not be parented yet, and taking a reference to it
+/// then would sink and drop it.
+fn mark_selected(root: &gtk::Box, selected: bool, applied: &Cell<Option<bool>>) {
     if !root.is_mapped() {
         return;
     }
     if let Some(item) = root.parent() {
-        item.update_state(&[gtk::accessible::State::Selected(Some(selected))]);
+        applied.set(Some(write_selected(&item, selected)));
     }
 }
 
@@ -71,8 +83,9 @@ impl Item {
         root.append(&process.root);
         root.append(&note);
         let selected = Rc::new(Cell::new(false));
-        let s = Rc::clone(&selected);
-        root.connect_map(move |root| mark_selected(root, s.get()));
+        let applied = Rc::new(Cell::new(None));
+        let (s, a) = (Rc::clone(&selected), Rc::clone(&applied));
+        root.connect_map(move |root| mark_selected(root, s.get(), &a));
         Item {
             root,
             group,
@@ -80,6 +93,7 @@ impl Item {
             note,
             bound: RefCell::new(None),
             selected,
+            applied,
         }
     }
 
@@ -110,7 +124,7 @@ impl Item {
         }
         // On the list item (N8); the box keeps only its style class.
         self.selected.set(selected);
-        mark_selected(&self.root, selected);
+        mark_selected(&self.root, selected, &self.applied);
     }
 
     fn show_bound(&self) {
@@ -124,6 +138,9 @@ impl Item {
         }
     }
 }
+
+/// Frames a press may hold back before it is taken as lost (S8).
+const HOLD_FRAMES: u8 = 2;
 
 struct Page {
     ctx: Weak<Ctx>,
@@ -141,6 +158,8 @@ struct Page {
     pressed: Cell<bool>,
     /// A frame came while pressed; the release writes it.
     deferred: Cell<bool>,
+    /// Frames held during this press.
+    held: Cell<u8>,
     /// The page itself is hiding the sheet (on unmap): the selection stays.
     quiet: Cell<bool>,
 }
@@ -190,8 +209,19 @@ impl Page {
     /// writes the latest frame, so none is lost.
     fn refresh(&self, tick: bool) {
         if tick && self.pressed.get() {
-            self.deferred.set(true);
-            return;
+            // A press on a single-click list lasts well under the two
+            // frames (some 4 s) this holds; a longer one is a release the
+            // list never saw (a keyboard workspace switch mid-press on
+            // Wayland sends a leave, no release), and the third frame is
+            // written with the press taken as lost (review of PR #21).
+            if self.held.get() < HOLD_FRAMES {
+                self.held.set(self.held.get() + 1);
+                self.deferred.set(true);
+                return;
+            }
+            self.pressed.set(false);
+            self.held.set(0);
+            self.deferred.set(false);
         }
         let Some(ctx) = self.ctx.upgrade() else {
             return;
@@ -295,6 +325,7 @@ impl Page {
     /// release writes a frame that waited for it.
     fn press(&self, down: bool) {
         self.pressed.set(down);
+        self.held.set(0);
         if !down && self.deferred.replace(false) {
             self.refresh(true);
         }
@@ -325,6 +356,7 @@ impl Page {
         self.store.remove_all();
         self.pressed.set(false);
         self.deferred.set(false);
+        self.held.set(0);
         self.quiet.set(true);
         self.split.set_show_sidebar(false);
         self.quiet.set(false);
@@ -360,6 +392,35 @@ impl Handle {
     /// Activates the row at `pos`, as a click does.
     pub fn activate(&self, pos: u32) {
         self.0.activate(pos);
+    }
+
+    /// Each bound row's widget name (`apps-group:<id>`, `apps-process:<pid>`)
+    /// with the `Selected` value the page last wrote on its list item; None
+    /// for a row not yet on screen.
+    pub fn marked(&self) -> Vec<(String, Option<bool>)> {
+        self.0
+            .items
+            .borrow()
+            .values()
+            .filter_map(|item| {
+                let row = item
+                    .bound
+                    .borrow()
+                    .as_ref()
+                    .map(|o| o.borrow::<Row>().clone())?;
+                let name = match row {
+                    Row::Group(g) => format!("apps-group:{}", g.id),
+                    Row::Process(p) => format!("apps-process:{}", p.pid),
+                    Row::Note(_) => return None,
+                };
+                Some((name, item.applied.get()))
+            })
+            .collect()
+    }
+
+    /// Escape, as the page's shortcut runs it: true when it was spent.
+    pub fn escape(&self) -> bool {
+        self.0.escape()
     }
 }
 
@@ -513,6 +574,13 @@ pub fn build_page(ctx: &Rc<Ctx>) -> (gtk::Widget, Handle) {
     let split = adw::OverlaySplitView::new();
     split.set_sidebar_position(gtk::PackType::End);
     split.set_enable_show_gesture(false);
+    // The sheet's visibility is the selection's (`refresh` sets it every
+    // frame), so collapsing or uncollapsing must not change it on its own:
+    // unpinned, the 60 em breakpoint's collapse hides the sidebar, and the
+    // notify handler below took that for the user closing the sheet and
+    // cleared the selection (review of PR #21; the Home test's flake since
+    // part 3b, and a window shrunk under 60 em lost its selection).
+    split.set_pin_sidebar(true);
     // A swipe would hide the sheet with its row still selected, its graph
     // still live, and the next frame would show it again (review of
     // PR #19, S7).
@@ -535,6 +603,7 @@ pub fn build_page(ctx: &Rc<Ctx>) -> (gtk::Widget, Handle) {
         first: Cell::new(false),
         pressed: Cell::new(false),
         deferred: Cell::new(false),
+        held: Cell::new(0),
         quiet: Cell::new(false),
     });
     let weak = Rc::downgrade(&page);

@@ -169,6 +169,7 @@ PROXY="$MIRQAB_RUN_DIR/proxy.sock"
 : >"$SANDBOX/proxy.log"
 python3 -I "$SANDBOX/proxy.py" "$PROXY" "$MIRQAB_SOCKET" "$SANDBOX/proxy.log" &
 proxy=$!
+HELPER_PIDS+=("$proxy")
 for _ in $(seq 100); do
     [[ -S $PROXY ]] && break
     sleep 0.02
@@ -365,6 +366,7 @@ while True:
 PY
 python3 -I "$SANDBOX/hypr.py" "$HDIR" 2001 &
 hypr=$!
+HELPER_PIDS+=("$hypr")
 for _ in $(seq 100); do
     [[ -S $HDIR/.socket.sock ]] && break
     sleep 0.02
@@ -385,6 +387,7 @@ bump() {
 }
 bump &
 bumper=$!
+HELPER_PIDS+=("$bumper")
 rm -f "$SANDBOX/daemon.out"
 MIRQAB_HEAVY_WINDOW_MS=4000 start_daemon "$HROOT"
 "$BIN/mirqab-ui" --socket "$MIRQAB_SOCKET" --selftest apps --do "pause 11000" >"$SANDBOX/ui4.out" 2>&1 &
