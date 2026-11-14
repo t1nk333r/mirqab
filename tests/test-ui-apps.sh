@@ -216,6 +216,9 @@ PY
     is "no widget tree was dumped" 0 "$(grep -c '^{' "$SANDBOX/unique.out" || true)"
     unlike "no GTK criticals in the unique interface" "$(<"$SANDBOX/unique.out")" "CRITICAL"
     like "the interface said why" "$(<"$SANDBOX/unique.out")" "only with MIRQAB_TEST=1"
+elif [[ -n ${CI:-} ]]; then
+    # CI installs both (ci.yml), so a skip there would hide this check.
+    not_ok "dbus-run-session and python3-gobject are installed for the forwarding check"
 else
     echo "# skipped the forwarding check: no dbus-run-session or python3-gobject" >&2
 fi
