@@ -84,7 +84,7 @@ pub const CLI_COMMANDS: &[CliCommand] = &[
             "apps [--sort cpu|mem|name] [--all] [--json]",
             "apps by CPU or memory, helpers folded in",
         )],
-        help: "One row per app: CPU (percent of one core, over the last seconds), memory and how many processes, heaviest first. A browser's helpers count as the browser and a terminal's jobs as themselves; other users' processes are one System group, last. --sort orders by cpu (default), mem or name. --all lists every process under its app. On Hyprland, while the Apps page is open, an app that used over 20 % of a core for five minutes with none of its windows in focus is tagged in an IDLE column, shown only when some row is tagged.",
+        help: "One row per app: CPU (percent of one core, over the last seconds), memory and how many processes, heaviest first. A browser's helpers count as the browser and a terminal's jobs as themselves; other users' processes are one System group, last. --sort orders by cpu (default), mem or name. --all lists every process under its app. On Hyprland, while the Apps page is open, an app that used at least 20 % of a core for five minutes with none of its windows in focus is tagged in an IDLE column, shown only when some row is tagged.",
     },
     CliCommand {
         name: "what",
@@ -551,7 +551,7 @@ pub fn cli_completions(shell: &str) -> Option<String> {
 
 pub const MCP_INSTRUCTIONS: &str = "mirqab reports this Linux machine's state. Read tools only: system_load for CPU, load, memory, pressure and the thermal word; explain_slowness when the user says the machine is slow; top_apps for the apps using the most CPU or memory; what_is_process to explain one process by pid. Every tool reads the mirqab daemon; if it is not running, the result says how to start it.";
 pub const MCP_TOP_APPS_TITLE: &str = "Top apps";
-pub const MCP_TOP_APPS: &str = "Reads only: the apps using the most CPU (or memory) now, from the mirqab daemon. Helper processes are folded into their app (a browser's content processes count as the browser, a terminal's jobs as themselves); other users' processes are one System group, listed last. CPU is percent of one core and may pass 100. A group marked idleHeavy used over 20 % of a core with none of its windows in focus for five minutes; the mark appears only while the Apps page has been open five minutes on Hyprland.";
+pub const MCP_TOP_APPS: &str = "Reads only: the apps using the most CPU (or memory) now, from the mirqab daemon. Helper processes are folded into their app (a browser's content processes count as the browser, a terminal's jobs as themselves); other users' processes are one System group, listed last. CPU is percent of one core and may pass 100. A group marked idleHeavy used at least 20 % of a core with none of its windows in focus for five minutes; the mark appears only while the Apps page has been open five minutes on Hyprland.";
 pub const MCP_WHAT_TITLE: &str = "What is this process";
 pub const MCP_WHAT: &str = "Reads only: explains one process by pid, from the mirqab daemon: a verdict in plain words (packaged by which repository, Flatpak, container, not owned by any package, replaced since it started), its parents, user, executable, unit, sandbox, memory and counts of open files. Command lines, the working directory and open files' paths are left out, as they can hold secrets.";
 pub const MCP_ARG_SORT: &str = "cpu (default), mem or name";

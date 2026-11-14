@@ -74,7 +74,7 @@ Every temperature sensor, each GPU, and package and battery power.
 mirqab apps [--sort cpu|mem|name] [--all] [--json]
 ```
 
-One row per app: CPU (percent of one core, over the last seconds), memory and how many processes, heaviest first. A browser's helpers count as the browser and a terminal's jobs as themselves; other users' processes are one System group, last. --sort orders by cpu (default), mem or name. --all lists every process under its app. On Hyprland, while the Apps page is open, an app that used over 20 % of a core for five minutes with none of its windows in focus is tagged in an IDLE column, shown only when some row is tagged.
+One row per app: CPU (percent of one core, over the last seconds), memory and how many processes, heaviest first. A browser's helpers count as the browser and a terminal's jobs as themselves; other users' processes are one System group, last. --sort orders by cpu (default), mem or name. --all lists every process under its app. On Hyprland, while the Apps page is open, an app that used at least 20 % of a core for five minutes with none of its windows in focus is tagged in an IDLE column, shown only when some row is tagged.
 
 ## what
 
