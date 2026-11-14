@@ -138,7 +138,8 @@ fn each_grouping_rule_picks_the_expected_group() {
         "flatpak",
         &[4000, 4001, 4100],
     );
-    // Rule 3: a rootless container under the user manager.
+    // Rule 3: a rootless container under the user manager, its pid 5001
+    // on one of the user's sub-uids (review of PR #16).
     check(
         "container:c0ffee00c0ff",
         "postgres (container c0ffee00c0ff)",
@@ -149,6 +150,30 @@ fn each_grouping_rule_picks_the_expected_group() {
     check("scope:app-Hyprland-foot-3e4f5a6b", "Foot", "app", &[3000]);
     check("session:3010", "vite", "terminal", &[3010, 3020, 3021]);
     check("session:3030", "cargo", "terminal", &[3030, 3040, 3041]);
+    // A bare interpreter is named as itself, never after the desktop entry
+    // whose Exec= happens to run the same interpreter (review of PR #16).
+    check("session:3050", "python3", "terminal", &[3050, 3060]);
+    check(
+        "scope:app-Hyprland-script-1a2b3c4d",
+        "python3",
+        "app",
+        &[7500],
+    );
+    // A NoDisplay handler running the browser's program does not rename it
+    // (the browser group's name is asserted above).
+    // An escaped dash in a unit name belongs to the application id.
+    check(
+        "scope:app-Hyprland-two\\x2dwords-0f0f0f0f",
+        "Two Words",
+        "app",
+        &[7300],
+    );
+    check(
+        "flatpak:org.example.Two-Words",
+        "Two Words Reader",
+        "flatpak",
+        &[7400],
+    );
     // Rule 5: the process tree stops below a shell, and at another user.
     check("tree:6201", "devserver", "process", &[6201, 6202]);
     check("tree:1050", "Hyprland", "process", &[1050, 6200]);
@@ -163,9 +188,10 @@ fn each_grouping_rule_picks_the_expected_group() {
     for g in &d.groups {
         assert!(!g.pids.contains(&2) && !g.pids.contains(&3), "{}", g.id);
     }
-    assert_eq!(d.totals.procs, 37);
+    assert_eq!(d.totals.procs, 43);
     assert_eq!(d.totals.cores, Some(16));
-    assert_eq!(d.groups.iter().map(|g| g.procs).sum::<u32>(), 37);
+    assert_eq!(d.totals.groups, 23);
+    assert_eq!(d.groups.iter().map(|g| g.procs).sum::<u32>(), 43);
 }
 
 #[test]
@@ -206,7 +232,7 @@ fn cpu_and_storage_come_from_the_difference() {
         + (1_000 - 800)
         + 30_000;
     assert_eq!(browser.rss_bytes, pages * 4096);
-    assert_eq!(second.totals.cpu, Some(198.0));
+    assert_eq!(second.totals.cpu, Some(201.5));
 }
 
 #[test]
@@ -223,6 +249,14 @@ fn a_reused_pid_is_a_new_process() {
     // not 600 % from the old process's counter, but a new process.
     let new = by_id(&second, "scope:app-Hyprland-newjob-22222222");
     assert_eq!((new.name.as_str(), new.cpu), ("newjob", Some(0.0)));
+    // 7200 is reused with the same name and a new start time, so the start
+    // time alone must tell them apart: not 1000 % from the old counter.
+    let worker = by_id(&second, "scope:app-Hyprland-worker-33333333");
+    assert_eq!((worker.name.as_str(), worker.cpu), ("worker", Some(0.0)));
+    assert_eq!(
+        by_id(&first, "scope:app-Hyprland-worker-33333333").pids,
+        [7200]
+    );
 }
 
 #[test]
@@ -248,10 +282,13 @@ fn views_sort_limit_and_expand() {
     );
     let mem = apps::view(&full, &json!({"sort": "mem", "limit": 2}));
     assert_eq!(names(&mem), ["cargo", "Example Browser", "System"]);
+    // The count before the limit, so a reader can tell the list was cut.
+    assert_eq!(mem["totals"]["groups"], 23);
+    assert_eq!(mem["groups"].as_array().unwrap().len(), 3);
     let name = apps::view(&full, &json!({"sort": "name", "limit": 3}));
     assert_eq!(names(&name), ["Calculator", "cargo", "devserver", "System"]);
     let default = apps::view(&full, &Value::Null);
-    assert_eq!(default["groups"].as_array().unwrap().len(), 18);
+    assert_eq!(default["groups"].as_array().unwrap().len(), 23);
     assert!(
         default["groups"]
             .as_array()
@@ -485,4 +522,93 @@ fn the_architecture_is_read_only_inside_the_tree() {
     let fx = fixture("root-desktop");
     let mut b = probed(&s.0.join("pacman"));
     assert!(inspect(&mut b, &fx, 2001).get("arch").is_none());
+}
+
+/// A scratch tree with `proc/self/status` saying the daemon runs as 1000.
+fn bare_root(name: &str) -> Scratch {
+    let s = scratch(name);
+    std::fs::create_dir_all(s.0.join("proc/self")).unwrap();
+    std::fs::write(
+        s.0.join("proc/self/status"),
+        "Uid:\t1000\t1000\t1000\t1000\n",
+    )
+    .unwrap();
+    s
+}
+
+#[test]
+fn a_name_that_is_not_utf8_is_still_listed() {
+    // Any process may name itself with any bytes (prctl PR_SET_NAME); a
+    // name that is not UTF-8 must not hide it from the list or from the
+    // inspector (review of PR #16).
+    let s = bare_root("utf8");
+    let p = s.0.join("proc/9200");
+    std::fs::create_dir_all(&p).unwrap();
+    let mut stat =
+        b"9200 (bad\xff\xfename) S 1 9200 9200 0 -1 4194560 0 0 0 0 5 5 0 0 20 0 1 0 100 0 0 0"
+            .to_vec();
+    stat.push(b'\n');
+    std::fs::write(p.join("stat"), stat).unwrap();
+    std::fs::write(
+        p.join("status"),
+        b"Name:\tbad\xff\xfename\nUid:\t1000\t1000\t1000\t1000\n",
+    )
+    .unwrap();
+    let root = Root::new(&s.0);
+    let mut a = Apps::with_pacman(s.0.join("pacman").to_string_lossy());
+    a.probe(&root).unwrap();
+    let d = data(a.sample(&root, Instant::now()));
+    assert_eq!(d.groups.len(), 1, "{:?}", ids(&d));
+    assert_eq!(d.groups[0].pids, [9200]);
+    assert_eq!(d.groups[0].kind, "process", "the user's, not System");
+    assert!(
+        d.groups[0].name.contains('\u{fffd}'),
+        "{}",
+        d.groups[0].name
+    );
+    let v = inspect(&mut a, &root, 9200);
+    assert_eq!(v["limited"], false, "{v}");
+    assert!(v["name"].as_str().unwrap().contains('\u{fffd}'));
+}
+
+#[test]
+fn a_process_moved_after_its_first_sample_is_regrouped() {
+    // A launcher may move a process into its scope just after it starts;
+    // pid, start time and name stay the same. The second sighting reads
+    // the process again once (review of PR #16).
+    let s = bare_root("moved");
+    let p = s.0.join("proc/9300");
+    std::fs::create_dir_all(&p).unwrap();
+    std::fs::write(
+        p.join("stat"),
+        "9300 (late) S 1 9300 9300 0 -1 4194560 0 0 0 0 5 5 0 0 20 0 1 0 100 0 0 0\n",
+    )
+    .unwrap();
+    std::fs::write(p.join("status"), "Uid:\t1000\t1000\t1000\t1000\n").unwrap();
+    std::fs::write(
+        p.join("cgroup"),
+        "0::/user.slice/user-1000.slice/session-2.scope\n",
+    )
+    .unwrap();
+    let root = Root::new(&s.0);
+    let mut a = Apps::with_pacman(s.0.join("pacman").to_string_lossy());
+    a.probe(&root).unwrap();
+    let t0 = Instant::now();
+    let first = data(a.sample(&root, t0));
+    assert_eq!(ids(&first), ["tree:9300"]);
+    std::fs::write(
+        p.join("cgroup"),
+        "0::/user.slice/user-1000.slice/user@1000.service/app.slice/app-Hyprland-late-0a0a0a0a.scope\n",
+    )
+    .unwrap();
+    let second = data(a.sample(&root, t0 + Duration::from_secs(2)));
+    assert_eq!(ids(&second), ["scope:app-Hyprland-late-0a0a0a0a"]);
+    // Settled: a third move is not seen (one extra read per process).
+    std::fs::write(
+        p.join("cgroup"),
+        "0::/user.slice/user-1000.slice/session-2.scope\n",
+    )
+    .unwrap();
+    let third = data(a.sample(&root, t0 + Duration::from_secs(4)));
+    assert_eq!(ids(&third), ["scope:app-Hyprland-late-0a0a0a0a"]);
 }

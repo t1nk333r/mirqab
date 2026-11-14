@@ -1,0 +1,5 @@
+[Desktop Entry]
+Type=Application
+Name=Two Words Reader
+Exec=/usr/bin/flatpak run --command=tworeader org.example.Two-Words
+Icon=org.example.Two-Words

@@ -304,6 +304,9 @@ pub struct AppProcess {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct AppsTotals {
+    /// Groups before a view's `limit`, System included: more than
+    /// `groups.len()` means the list was cut.
+    pub groups: u32,
     pub procs: u32,
     pub threads: u32,
     pub cpu: Option<f64>,

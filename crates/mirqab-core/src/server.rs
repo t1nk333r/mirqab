@@ -582,7 +582,13 @@ fn sampler_loop(inner: Arc<Inner>, name: String, slot: Arc<Slot>) {
         }
         drop(state);
 
-        let data = lock(&slot.sampler).sample(&inner.root, now);
+        // `now` keeps the schedule; the sample is stamped once the sampler
+        // is ours, as a `get` may have held it (apps sleeps 500 ms in one),
+        // and a rate over a stale stamp reads high (review of PR #16).
+        let data = {
+            let mut sampler = lock(&slot.sampler);
+            sampler.sample(&inner.root, Instant::now())
+        };
         let event = |data: Value| {
             frame::encode(&ServerFrame::Event(Event {
                 stream: name.clone(),

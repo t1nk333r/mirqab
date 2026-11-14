@@ -230,10 +230,30 @@ pub fn basename(path: &str) -> &str {
     path.rsplit('/').next().unwrap_or(path)
 }
 
+/// A file of `proc/<pid>/` as text. Bytes that are not UTF-8 become U+FFFD:
+/// a process may give itself any name (`prctl(PR_SET_NAME)`), and a name
+/// that is not UTF-8 must not hide it (review of PR #16).
+pub fn read_text(root: &Root, rel: &str) -> Option<String> {
+    root.read_bytes(rel)
+        .ok()
+        .map(|b| String::from_utf8_lossy(&b).into_owned())
+}
+
+/// What the cache knows of one pid.
+struct Known {
+    start: u64,
+    comm: String,
+    info: Arc<Info>,
+    /// Read again once, on the second sighting: a launcher may move a
+    /// process into its scope, or a wrapper exec a program of the same
+    /// name, just after the first read (review of PR #16).
+    settled: bool,
+}
+
 /// The per-process facts already read, by pid.
 #[derive(Default)]
 pub struct Cache {
-    known: HashMap<u32, (u64, String, Arc<Info>)>,
+    known: HashMap<u32, Known>,
 }
 
 /// Every process now, kernel threads included (the caller hides them).
@@ -245,9 +265,7 @@ pub fn walk(root: &Root, cache: &mut Cache, own_uid: u32) -> Vec<Proc> {
     for pid in names.iter().filter_map(|n| n.parse::<u32>().ok()) {
         let dir = format!("proc/{pid}");
         // Gone since the listing: skipped, not an error.
-        let Some(st) = root
-            .read(&format!("{dir}/stat"))
-            .ok()
+        let Some(st) = read_text(root, &format!("{dir}/stat"))
             .as_deref()
             .and_then(stat)
         else {
@@ -256,13 +274,25 @@ pub fn walk(root: &Root, cache: &mut Cache, own_uid: u32) -> Vec<Proc> {
         // The same pid with another start time is another process; the same
         // one with another name has exec'd, and its cgroup and command line
         // may have changed with it.
-        let info = match cache.known.get(&pid) {
-            Some((start, comm, info)) if *start == st.start && *comm == st.comm => Arc::clone(info),
+        let info = match cache.known.get_mut(&pid) {
+            Some(k) if k.start == st.start && k.comm == st.comm => {
+                if !k.settled {
+                    k.info = Arc::new(read_info(root, &dir, own_uid));
+                    k.settled = true;
+                }
+                Arc::clone(&k.info)
+            }
             _ => {
                 let info = Arc::new(read_info(root, &dir, own_uid));
-                cache
-                    .known
-                    .insert(pid, (st.start, st.comm.clone(), Arc::clone(&info)));
+                cache.known.insert(
+                    pid,
+                    Known {
+                        start: st.start,
+                        comm: st.comm.clone(),
+                        info: Arc::clone(&info),
+                        settled: false,
+                    },
+                );
                 info
             }
         };
@@ -289,13 +319,8 @@ pub fn walk(root: &Root, cache: &mut Cache, own_uid: u32) -> Vec<Proc> {
 }
 
 fn read_info(root: &Root, dir: &str, own_uid: u32) -> Info {
-    let uid = root
-        .read(&format!("{dir}/status"))
-        .ok()
-        .and_then(|t| status(&t).uid);
-    let cgroup = root
-        .read(&format!("{dir}/cgroup"))
-        .ok()
+    let uid = read_text(root, &format!("{dir}/status")).and_then(|t| status(&t).uid);
+    let cgroup = read_text(root, &format!("{dir}/cgroup"))
         .as_deref()
         .and_then(cgroup);
     let cmdline = root

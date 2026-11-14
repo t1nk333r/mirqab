@@ -182,6 +182,27 @@
       "unit": "pipewire.service"
     },
     {
+      "cpu": 2.0,
+      "icon": null,
+      "id": "scope:app-Hyprland-script-1a2b3c4d",
+      "ioReadPerSec": 0.0,
+      "ioWritePerSec": 0.0,
+      "kind": "app",
+      "name": "python3",
+      "pids": [
+        7500
+      ],
+      "procs": 1,
+      "rssBytes": 49152000,
+      "threads": 2,
+      "top": {
+        "cpu": 2.0,
+        "name": "python3",
+        "pid": 7500
+      },
+      "unit": "app-Hyprland-script-1a2b3c4d.scope"
+    },
+    {
       "cpu": 1.0,
       "icon": null,
       "id": "scope:app-Hyprland-editor-0a1b2c3d",
@@ -245,6 +266,28 @@
       "unit": "app-Hyprland-foot-3e4f5a6b.scope"
     },
     {
+      "cpu": 1.0,
+      "icon": null,
+      "id": "session:3050",
+      "ioReadPerSec": 0.0,
+      "ioWritePerSec": 0.0,
+      "kind": "terminal",
+      "name": "python3",
+      "pids": [
+        3050,
+        3060
+      ],
+      "procs": 2,
+      "rssBytes": 38912000,
+      "threads": 2,
+      "top": {
+        "cpu": 1.0,
+        "name": "python3",
+        "pid": 3060
+      },
+      "unit": null
+    },
+    {
       "cpu": 0.5,
       "icon": null,
       "id": "service:mirqab",
@@ -264,6 +307,27 @@
         "pid": 4321
       },
       "unit": "mirqab.service"
+    },
+    {
+      "cpu": 0.5,
+      "icon": "two-words",
+      "id": "scope:app-Hyprland-two\\x2dwords-0f0f0f0f",
+      "ioReadPerSec": 0.0,
+      "ioWritePerSec": 0.0,
+      "kind": "app",
+      "name": "Two Words",
+      "pids": [
+        7300
+      ],
+      "procs": 1,
+      "rssBytes": 81920000,
+      "threads": 3,
+      "top": {
+        "cpu": 0.5,
+        "name": "twowords-bin",
+        "pid": 7300
+      },
+      "unit": "app-Hyprland-two\\x2dwords-0f0f0f0f.scope"
     },
     {
       "cpu": 0.0,
@@ -352,6 +416,27 @@
     },
     {
       "cpu": 0.0,
+      "icon": "org.example.Two-Words",
+      "id": "flatpak:org.example.Two-Words",
+      "ioReadPerSec": 0.0,
+      "ioWritePerSec": 0.0,
+      "kind": "flatpak",
+      "name": "Two Words Reader",
+      "pids": [
+        7400
+      ],
+      "procs": 1,
+      "rssBytes": 61440000,
+      "threads": 4,
+      "top": {
+        "cpu": 0.0,
+        "name": "tworeader",
+        "pid": 7400
+      },
+      "unit": null
+    },
+    {
+      "cpu": 0.0,
       "icon": null,
       "id": "service:wireplumber",
       "ioReadPerSec": 0.0,
@@ -370,6 +455,27 @@
         "pid": 1211
       },
       "unit": "wireplumber.service"
+    },
+    {
+      "cpu": 0.0,
+      "icon": null,
+      "id": "scope:app-Hyprland-worker-33333333",
+      "ioReadPerSec": 0.0,
+      "ioWritePerSec": 0.0,
+      "kind": "app",
+      "name": "worker",
+      "pids": [
+        7200
+      ],
+      "procs": 1,
+      "rssBytes": 8192000,
+      "threads": 1,
+      "top": {
+        "cpu": 0.0,
+        "name": "worker",
+        "pid": 7200
+      },
+      "unit": "app-Hyprland-worker-33333333.scope"
     },
     {
       "cpu": 3.0,
@@ -401,8 +507,9 @@
   "sort": "cpu",
   "totals": {
     "cores": 16,
-    "cpu": 198.0,
-    "procs": 37,
-    "threads": 314
+    "cpu": 201.5,
+    "groups": 23,
+    "procs": 43,
+    "threads": 326
   }
 }

@@ -199,16 +199,40 @@ times. A stub `pacman` answering `-Qo`.
 2. [x] `crates/mirqab-core/src/samplers/apps/{mod,procfs,group,desktop,inspect}.rs`.
 3. [ ] `crates/mirqab-core/src/samplers/apps/actions.rs` on `act.rs` and
    `plan.rs` (part 2).
+   - Deferred from the review of PR #16 (D3): the inspector accepts a
+     thread id; `actions.rs` resolves the target to its thread-group id
+     and re-checks the start time before a signal.
+   - Deferred from the review of PR #16 (D4): a rootless container's
+     processes on a sub-uid cannot be signalled by the user; Quit on such
+     a group goes through the runtime or reports why it cannot.
 4. [x] `tests/golden/apps.json`, `tests/apps.rs` (the read side; the
    actions' tests come with part 2).
 5. [ ] CLI `apps`, `what`, `quit`; MCP `top_apps`, `what_is_process`
    (part 1 did `apps`, `what` and both MCP tools; `quit` is part 2).
 6. [ ] `crates/mirqab-view/src/tabs/apps.rs` (the view model and the tab's cards); `crates/mirqab-ui/src/tabs/apps/{mod,page,group_row,process_row,inspector,top_card}.rs` (part 3).
+   - Deferred from the review of PR #16 (D5): session-scope group ids
+     (`session:<sid>`) can be reused after a logout; the view model's row
+     keys must not rely on them alone across frames.
 7. [ ] Focus tracking: `crates/mirqab-core/src/desktop/hyprland.rs` (event
    socket reader, active only while `apps` has a subscriber) (part 4).
 8. [ ] Tests above (part 1 wrote the read side's).
+   - Deferred from the review of PR #16 (D6): views on a re-subscribe
+     with new params, their cleanup on unsubscribe, and two subscribers
+     that differ only in interval; written with part 3, where the page
+     changes `sort` and `expand` live.
+   - Deferred from the review of PR #16 (D7): `root/.flatpak-info` is read
+     with no size cap or file-type check (a FIFO there would stall the
+     walk); read it only when it is a regular file, through
+     `read_prefix`, with a test.
 9. [ ] Measure `--subscribe apps` and the top-apps minute cost; record both
    (part 4).
+   - Deferred from the review of PR #16 (D1): `get apps` holds the sampler
+     for its 0.5 s second reading, and `apps.inspect` holds it across
+     pacman, so a subscriber's frame comes late; measure it, then move the
+     sleep and the pacman call outside the lock.
+   - Deferred from the review of PR #16 (D2): the inspector's GPU memory
+     reads every `fdinfo` of the process; measured with the inspector's
+     cost.
 
 ## As built (part 1)
 
@@ -329,6 +353,78 @@ read commands of 5. Where it differs from the plan or adds to it:
   `tests/test-fixtures.sh` (7 checks). `tests/run.sh --affected` selects
   8 of 15 files (the protocol and `Root` are shared infrastructure): 274
   checks pass.
+
+From the review of PR #16 (2026-11-14; the ruling kept 11 items,
+deferred 7 to the checklist steps above and dropped 13):
+
+- **Unit names are unescaped.** `group::unit_unescape`
+  (`crates/mirqab-core/src/samplers/apps/group.rs:161`) decodes `\xNN` in
+  the ids `flatpak_scope` and `unit_app_ids` take from a unit name, after
+  splitting on the name's own dashes; the unit name and the group id stay
+  escaped, as systemd shows them. A malformed escape stays as written.
+- **`Exec=` lookup names only real apps.** A `NoDisplay=true` entry is
+  found by its id but gives no `by_exec` key, and an `Exec=` whose program
+  is a shell, an interpreter or a launcher gives none: `LAUNCHERS`
+  (`desktop.rs:63`: `xdg-open`, `wine`, `java`, `electron`, `flatpak`,
+  `snap`, `steam`, `sh`, `env`), and by rule (`launches`) any `…-launch`
+  program or one whose first argument is `launch` or `open`. The ruling
+  listed the toolkit's two launchers by name; `tools/lint.sh` forbids the
+  toolkit's names anywhere in `mirqab-core` (architecture §3), so the rule
+  catches them instead.
+- **Names that are not UTF-8.** `stat`, `status` and `cgroup` are read as
+  bytes and decoded lossily (`procfs::read_text`, `procfs.rs:236`), in the
+  walk and in the inspector, so a process naming itself with arbitrary
+  bytes is listed (U+FFFD in its name) and inspected as the user's.
+- **Printed text is plain.** `strings::plain` (`strings.rs:1270`) turns
+  every control character and the bidirectional overrides into U+FFFD; it
+  is applied in `fit`, `what_line`, `proc_ref`, `apps_container`, and in
+  `what_lines` to the verdict, the working directory, the command line
+  and open files' paths. `mirqab what` now prints those paths (`open`
+  lines). The stream and `--json` stay raw: JSON escapes.
+- **`what_is_process` is an allow-list** (`inspect_summary`,
+  `crates/mirqab/src/mcp/tools.rs:246`): named fields only, absent ones
+  as null; no `cgroup`, command line, working directory or path.
+  `MCP_WHAT` says what is left out.
+- **Samples are stamped after they get the sampler.** `sampler_loop`
+  keeps its own `now` for the schedule and passes `Instant::now()` taken
+  under the sampler's lock (`crates/mirqab-core/src/server.rs:590`); the
+  `apps` snapshot stamps both readings when they were taken (`mod.rs:371`).
+  A tick that waited behind a `get` no longer reads up to 25 % high.
+- **Rootless containers keep their sub-uid processes.** A container under
+  `user@<own uid>.service` is the user's container whatever uid its
+  process runs as (`base`, `group.rs:235`); a foreign uid anywhere else
+  is still System. Fixture pid 5001 runs as uid 100998.
+- **The contract.** `docs/architecture.md` §5.2 describes stream params,
+  per-subscriber views and `get <stream>.<query>`; §5.3 describes
+  `Sampler::view`, `Sampler::query` and the `apps` params.
+- **A cut list says so.** `totals.groups` counts the groups before the
+  limit (`stream.rs:309`, set at `mod.rs:212`); `mirqab apps` ends with
+  "and N more" when the list was cut, and `top_apps` sends the count.
+- **A process is read again on its second sighting.** The cache marks an
+  entry settled after one more `read_info` (`procfs.rs:279`), so a process
+  a launcher moved into its scope just after its first sample is
+  regrouped; later moves are not followed.
+- **An answer the CLI or a tool cannot read is an error**, not an empty
+  list: `parse_apps` and `parse_inspect` (`crates/mirqab/src/apps.rs:16`)
+  give `bad_daemon_answer`, exit 1 in the CLI and a tool error in MCP.
+- **Fixtures.** `procs.tsv` gained a third shell running a bare
+  `python3`, a `python3` script as a scope's main process, an escaped
+  Hyprland scope and an escaped Flatpak scope, and pid 7200 reused with
+  the same name and a new start time: 45 processes in `root-desktop`, 45
+  in `.t1`. Four desktop entries were added (`two-words`, a Flatpak
+  `org.example.Two-Words`, a `NoDisplay` URL handler running the browser,
+  and an `Exec=python3` app). Golden changed: `tests/golden/apps.json`
+  (`totals.groups`, the new groups); `tests/golden/apps-inspect.json` is
+  unchanged.
+- **Tests.** `crates/mirqab-core/tests/apps.rs`: 12 tests (new
+  `a_name_that_is_not_utf8_is_still_listed` and
+  `a_process_moved_after_its_first_sample_is_regrouped`; the grouping,
+  reuse and view tests assert the new cases); `protocol.rs`: 17 (new
+  `a_sample_is_stamped_after_it_got_the_sampler`, which fails with the
+  old stamp); `crates/mirqab/tests/mcp.rs` compares the exact field sets
+  of both tools; unit tests: `mirqab-core` 41, `mirqab` 16 (parse, plain
+  rows and the "more" line, the tool's parse), and one more in
+  `mirqab-proto` (`plain`).
 
 ## Unverified
 

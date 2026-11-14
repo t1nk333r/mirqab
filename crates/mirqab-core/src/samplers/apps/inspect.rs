@@ -339,9 +339,7 @@ fn smaps(text: &str) -> (Option<u64>, Option<u64>) {
 fn parents(root: &Root, mut ppid: u32) -> Vec<ProcRef> {
     let mut out = Vec::new();
     while ppid > 0 && out.len() < MAX_PARENTS {
-        let Some(st) = root
-            .read(&format!("proc/{ppid}/stat"))
-            .ok()
+        let Some(st) = procfs::read_text(root, &format!("proc/{ppid}/stat"))
             .as_deref()
             .and_then(procfs::stat)
         else {
@@ -374,14 +372,11 @@ pub fn inspect(
     owners: &mut Owners,
 ) -> Result<Inspect, (Code, String)> {
     let dir = format!("proc/{pid}");
-    let st = root
-        .read(&format!("{dir}/stat"))
-        .ok()
+    let st = procfs::read_text(root, &format!("{dir}/stat"))
         .as_deref()
         .and_then(procfs::stat)
         .ok_or_else(|| (Code::Failed, strings::apps_no_process(pid)))?;
-    let status = root
-        .read(&format!("{dir}/status"))
+    let status = procfs::read_text(root, &format!("{dir}/status"))
         .map(|t| procfs::status(&t))
         .unwrap_or_default();
     let cmdline = root
@@ -460,9 +455,7 @@ pub fn inspect(
         out.exe_deleted = link.ends_with(DELETED);
         out.exe = Some(link.strip_suffix(DELETED).unwrap_or(link).to_string());
     }
-    let cg = root
-        .read(&format!("{dir}/cgroup"))
-        .ok()
+    let cg = procfs::read_text(root, &format!("{dir}/cgroup"))
         .as_deref()
         .and_then(procfs::cgroup);
     if let Some(cg) = &cg {

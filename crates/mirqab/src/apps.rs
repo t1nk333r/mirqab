@@ -3,12 +3,24 @@
 //! `what_is_process` print the same lines.
 
 use crate::cli::{call, exit_for, socket_or_exit};
-use crate::{Args, EXIT_USAGE};
+use crate::{Args, EXIT_FAILED, EXIT_USAGE};
 use mirqab_core::proto::stream::{APPS, APPS_INSPECT, AppsData, Inspect};
 use mirqab_core::proto::{Request, strings};
 use mirqab_view::format;
 use serde_json::{Value, json};
 use std::process::ExitCode;
+
+/// The daemon's `apps` answer, or the message for one this mirqab cannot
+/// read: an empty list would pass for "no apps" (review of PR #16; after
+/// an upgrade the running daemon is often the old one).
+pub(crate) fn parse_apps(v: Value) -> Result<AppsData, String> {
+    serde_json::from_value(v).map_err(|e| strings::bad_daemon_answer(&e.to_string()))
+}
+
+/// The daemon's `apps.inspect` answer, the same way.
+pub(crate) fn parse_inspect(v: Value) -> Result<Inspect, String> {
+    serde_json::from_value(v).map_err(|e| strings::bad_daemon_answer(&e.to_string()))
+}
 
 fn usage(msg: &str) -> ExitCode {
     crate::out::err(msg);
@@ -41,14 +53,20 @@ pub(crate) fn apps_lines(d: &AppsData, all: bool) -> Vec<String> {
             }
         }
     }
+    // The daemon's limit cut the list: say so (review of PR #16).
+    let shown = d.groups.len() as u32;
+    if d.totals.groups > shown {
+        out.push(strings::apps_more(d.totals.groups - shown));
+    }
     out
 }
 
 /// `mirqab what`'s lines: the verdict, then one labelled line per field
 /// the daemon could read. `private` adds the command line and the working
-/// directory, which the MCP tool leaves out.
+/// directory, which the MCP tool leaves out. Every value is made `plain`,
+/// as a process names itself.
 pub(crate) fn what_lines(i: &Inspect, private: bool) -> Vec<String> {
-    let mut out = vec![i.verdict.text.clone()];
+    let mut out = vec![strings::plain(&i.verdict.text).into_owned()];
     let mut line = |label: &str, value: String| out.push(strings::what_line(label, &value));
     line(strings::WHAT_PROCESS, strings::proc_ref(&i.name, i.pid));
     if !i.parents.is_empty() {
@@ -146,10 +164,18 @@ pub(crate) fn what_lines(i: &Inspect, private: bool) -> Vec<String> {
     }
     if private {
         if let Some(d) = &i.cwd {
-            line(strings::WHAT_CWD, d.clone());
+            line(strings::WHAT_CWD, strings::plain(d).into_owned());
         }
         if !i.cmdline.is_empty() {
-            line(strings::WHAT_COMMAND, i.cmdline.join(" "));
+            line(
+                strings::WHAT_COMMAND,
+                strings::plain(&i.cmdline.join(" ")).into_owned(),
+            );
+        }
+        if let Some(f) = &i.files {
+            for p in &f.paths {
+                line(strings::WHAT_OPEN, strings::plain(p).into_owned());
+            }
         }
     }
     out
@@ -201,15 +227,98 @@ pub fn run(command: &str, args: Args) -> ExitCode {
         }
         Ok(v) => {
             let lines = if command == "apps" {
-                apps_lines(&serde_json::from_value(v).unwrap_or_default(), all)
+                parse_apps(v).map(|d| apps_lines(&d, all))
             } else {
-                what_lines(&serde_json::from_value(v).unwrap_or_default(), true)
+                parse_inspect(v).map(|i| what_lines(&i, true))
             };
-            for l in lines {
-                crate::out::line(&l);
+            match lines {
+                Ok(lines) => {
+                    for l in lines {
+                        crate::out::line(&l);
+                    }
+                    ExitCode::SUCCESS
+                }
+                Err(msg) => {
+                    crate::out::err(&msg);
+                    ExitCode::from(EXIT_FAILED)
+                }
             }
-            ExitCode::SUCCESS
         }
         Err(e) => exit_for(&socket, e),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mirqab_core::proto::stream::{AppGroup, AppsTotals, OpenFiles};
+
+    fn group(name: &str) -> AppGroup {
+        AppGroup {
+            id: format!("tree:{name}"),
+            name: name.to_string(),
+            procs: 1,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn a_name_cannot_forge_rows_or_reach_the_terminal() {
+        let d = AppsData {
+            groups: vec![group("x\nFAKE 99 %"), group("\x1b[2Jclear")],
+            totals: AppsTotals {
+                groups: 2,
+                ..Default::default()
+            },
+            sort: "cpu".into(),
+        };
+        let lines = apps_lines(&d, false);
+        assert_eq!(lines.len(), 3, "a header and two rows: {lines:?}");
+        for l in &lines {
+            assert!(!l.contains('\x1b') && !l.contains('\n'), "{l:?}");
+        }
+        let i = Inspect {
+            pid: 7,
+            name: "n\x1b]0;t\x07".into(),
+            cmdline: vec!["run".into(), "\x1b]0;t\x07".into()],
+            cwd: Some("/tmp/\x1b[31mred".into()),
+            files: Some(OpenFiles {
+                count: 1,
+                sockets: 0,
+                paths: vec!["/tmp/a\nb".into()],
+            }),
+            ..Default::default()
+        };
+        let what = what_lines(&i, true);
+        for l in &what {
+            assert!(!l.chars().any(char::is_control), "{l:?}");
+        }
+        assert!(what.iter().any(|l| l.starts_with(strings::WHAT_COMMAND)));
+        assert!(what.iter().any(|l| l.starts_with(strings::WHAT_OPEN)));
+    }
+
+    #[test]
+    fn a_cut_list_says_how_many_more() {
+        let mut d = AppsData {
+            groups: vec![group("a"), group("b")],
+            totals: AppsTotals {
+                groups: 2,
+                ..Default::default()
+            },
+            sort: "cpu".into(),
+        };
+        let more = strings::apps_more(3);
+        assert!(!apps_lines(&d, false).contains(&strings::apps_more(0)));
+        assert_eq!(apps_lines(&d, false).len(), 3);
+        d.totals.groups = 5;
+        assert_eq!(apps_lines(&d, false).last(), Some(&more));
+    }
+
+    #[test]
+    fn an_answer_this_mirqab_cannot_read_is_an_error() {
+        let err = parse_apps(json!({"groups": "x"})).unwrap_err();
+        assert!(err.contains("restart the daemon"), "{err}");
+        assert!(parse_inspect(json!({"pid": "seven"})).is_err());
+        assert!(parse_apps(json!({"groups": []})).is_ok());
     }
 }

@@ -7,7 +7,9 @@
 #   ut1 st1  the same two seconds later in root-desktop.t1
 #   rss shr  resident and shared pages (4096 bytes)
 #   cgroup   the cgroup v2 path; a leading ~ is the user manager,
-#            /user.slice/user-UID.slice/user@UID.service
+#            /user.slice/user-UID.slice/user@UID.service of the row's uid
+#            (pid 5001 runs on a sub-uid in the user's rootless
+#            container, so its path is spelled out)
 #   exe      the exe link's target; `-` omits the link (another user's
 #            process, or a kernel thread)
 #   extras   `;`-separated: kthread; io=READ:WRITE:READ1:WRITE1 (bytes);
@@ -51,7 +53,7 @@ both	4000	1100	1000	S	bwrap	4000	4000	-	12000	10	10	10	10	1	500	400	~/app.slice/
 both	4001	4000	1000	S	notes	4001	4001	-	12010	2000	500	2005	501	14	70000	20000	~/app.slice/app-flatpak-org.example.Notes-48213.scope	/app/bin/notes	/app/bin/notes	flatpak=org.example.Notes;nnp;seccomp=2;ns=mnt+pid+user;smaps=210000:0
 both	4100	1050	1000	S	notes-daemon	4100	1050	-	12500	100	50	100	50	2	3000	2000	/user.slice/user-1000.slice/session-2.scope	/app/bin/notes-daemon	/app/bin/notes-daemon --background	flatpak=org.example.Notes;nnp;seccomp=2;ns=mnt+pid+user
 both	5000	1100	1000	S	postgres	5000	5000	-	15000	900	400	903	401	1	30000	25000	~/user.slice/libpod-c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00.scope/container	/usr/lib/postgresql/bin/postgres	postgres -D /var/lib/postgresql/data	ns=mnt+pid+net+uts+ipc
-both	5001	5000	1000	S	postgres	5000	5000	-	15010	100	50	101	50	1	8000	7000	~/user.slice/libpod-c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00.scope/container	/usr/lib/postgresql/bin/postgres	postgres: checkpointer	ns=mnt+pid+net+uts+ipc
+both	5001	5000	100998	S	postgres	5000	5000	-	15010	100	50	101	50	1	8000	7000	/user.slice/user-1000.slice/user@1000.service/user.slice/libpod-c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00.scope/container	/usr/lib/postgresql/bin/postgres	postgres: checkpointer	ns=mnt+pid+net+uts+ipc
 both	5100	1	999	S	redis-server	5100	5100	-	15500	800	400	802	400	5	4000	2000	/system.slice/docker-feedfacefeedfacefeedfacefeedfacefeedfacefeedfacefeedfacefeedface.scope	-	redis-server *:6379	-
 both	6000	1050	1000	S	tool	6000	6000	-	30000	100	20	100	20	2	5000	3000	~/app.slice/app-Hyprland-tool-9a8b7c6d.scope	/opt/example-tool/bin/tool (deleted)	/opt/example-tool/bin/tool --watch	capeff=0000000000003000
 both	6200	1050	1000	S	bash	6200	6200	-	31000	10	10	10	10	1	900	700	/user.slice/user-1000.slice/session-2.scope	/usr/bin/bash	bash /users/user/bin/start-dev	-
@@ -61,3 +63,10 @@ both	7100	1050	1000	S	editor	7100	7100	-	34000	600	100	602	100	6	45000	15000	~/a
 both	8000	1100	1000	S	calculator	8000	8000	-	33000	10	5	10	5	4	15000	10000	~/app.slice/app-org.example.Calculator-24680.scope	/usr/bin/example-calculator	example-calculator	-
 t0	7000	1050	1000	S	oldjob	7000	7000	-	300000	5000	1000	-	-	1	2000	1000	~/app.slice/app-Hyprland-oldjob-11111111.scope	/usr/bin/oldjob	oldjob	-
 t1	7000	1050	1000	R	newjob	7000	7000	-	360000	-	-	6000	1200	1	3000	1000	~/app.slice/app-Hyprland-newjob-22222222.scope	/usr/bin/newjob	newjob	-
+both	3050	3000	1000	S	zsh	3050	3050	3060	8300	40	20	40	20	1	2000	1500	~/app.slice/app-Hyprland-foot-3e4f5a6b.scope	/usr/bin/zsh	-zsh	-
+both	3060	3050	1000	S	python3	3060	3050	3060	26000	300	50	302	50	1	9000	3000	~/app.slice/app-Hyprland-foot-3e4f5a6b.scope	/usr/bin/python3	python3	-
+both	7300	1050	1000	S	twowords-bin	7300	7300	-	35000	200	50	201	50	3	20000	8000	~/app.slice/app-Hyprland-two\x2dwords-0f0f0f0f.scope	/usr/bin/twowords-bin	twowords-bin	-
+both	7400	1100	1000	S	tworeader	7400	7400	-	35500	100	20	100	20	4	15000	6000	~/app.slice/app-flatpak-org.example.Two\x2dWords-777.scope	/app/bin/tworeader	/app/bin/tworeader	flatpak=org.example.Two-Words;nnp;seccomp=2;ns=mnt+pid+user
+both	7500	1050	1000	S	python3	7500	7500	-	36000	400	40	404	40	2	12000	3000	~/app.slice/app-Hyprland-script-1a2b3c4d.scope	/usr/bin/python3	python3 /users/user/bin/report.py	-
+t0	7200	1050	1000	S	worker	7200	7200	-	310000	5000	1000	-	-	1	2000	1000	~/app.slice/app-Hyprland-worker-33333333.scope	/usr/bin/worker	worker	-
+t1	7200	1050	1000	S	worker	7200	7200	-	361000	-	-	7000	1000	1	2000	1000	~/app.slice/app-Hyprland-worker-33333333.scope	/usr/bin/worker	worker	-

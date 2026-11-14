@@ -26,7 +26,7 @@ use std::collections::{BTreeMap, HashMap};
 
 /// Shells, by command name: a shell is never a group's main process, and
 /// rule 5 stops below one.
-const SHELLS: &[&str] = &[
+pub const SHELLS: &[&str] = &[
     "sh", "bash", "zsh", "fish", "dash", "ksh", "mksh", "tcsh", "csh", "nu", "elvish", "xonsh",
     "ion", "-sh", "-bash", "-zsh", "-fish",
 ];
@@ -57,7 +57,7 @@ const TERMINALS: &[&str] = &[
 
 /// Interpreters: a job run by one is named after its script
 /// (`node node_modules/.bin/vite` is `vite`).
-const INTERPRETERS: &[&str] = &["node", "python", "python3", "ruby", "perl", "deno"];
+pub const INTERPRETERS: &[&str] = &["node", "python", "python3", "ruby", "perl", "deno"];
 
 pub fn is_shell(comm: &str) -> bool {
     SHELLS.contains(&comm)
@@ -154,6 +154,33 @@ pub fn container_id(cgroup: &str) -> Option<String> {
     None
 }
 
+/// A unit name's `\xNN` escapes decoded (systemd escapes `-` inside an
+/// application id as `\x2d`, a space as `\x20`, systemd.unit(5)). Any other
+/// backslash is left as written. Applied to the ids taken from a unit name,
+/// never to the unit name itself, so group ids stay what systemd shows.
+pub fn unit_unescape(s: &str) -> String {
+    let b = s.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'\\'
+            && b.get(i + 1) == Some(&b'x')
+            && let Some(hex) = b.get(i + 2..i + 4)
+            // from_str_radix would take a leading `+`; only two hex digits do.
+            && hex.iter().all(u8::is_ascii_hexdigit)
+            && let Ok(h) = std::str::from_utf8(hex)
+            && let Ok(byte) = u8::from_str_radix(h, 16)
+        {
+            out.push(byte);
+            i += 4;
+            continue;
+        }
+        out.push(b[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
 /// `app-flatpak-<app id>-<n>.scope` → the app id.
 pub fn flatpak_scope(unit: &str) -> Option<String> {
     let rest = unit.strip_prefix("app-flatpak-")?.strip_suffix(".scope")?;
@@ -161,7 +188,7 @@ pub fn flatpak_scope(unit: &str) -> Option<String> {
         Some((id, n)) if n.bytes().all(|b| b.is_ascii_digit()) => id,
         _ => rest,
     };
-    (!id.is_empty()).then(|| id.to_string())
+    (!id.is_empty()).then(|| unit_unescape(id))
 }
 
 /// The application ids a unit name may carry, most likely first. systemd's
@@ -186,9 +213,11 @@ pub fn unit_app_ids(unit: &str) -> Vec<String> {
     } else {
         rest.split('@').next().unwrap_or(rest)
     };
-    let mut out = vec![id.to_string()];
+    // Split on the unit name's own dashes first: an escaped `\x2d` belongs
+    // to the id.
+    let mut out = vec![unit_unescape(id)];
     if let Some((_, without_launcher)) = id.split_once('-') {
-        out.push(without_launcher.to_string());
+        out.push(unit_unescape(without_launcher));
     }
     out
 }
@@ -204,10 +233,19 @@ enum Base {
 }
 
 fn base(p: &Proc, own_uid: u32) -> Base {
+    let cg = p.info.cgroup.as_deref().unwrap_or("");
+    // A rootless container under the user's own manager is the user's,
+    // whatever uid its processes run as: an image that drops root runs on
+    // one of the user's sub-uids (review of PR #16).
+    let manager = format!("user@{own_uid}.service");
+    if let Some(id) = container_id(cg)
+        && cg.split('/').any(|part| part == manager)
+    {
+        return Base::Container(id);
+    }
     if p.info.uid != Some(own_uid) {
         return Base::System;
     }
-    let cg = p.info.cgroup.as_deref().unwrap_or("");
     if let Some(id) = container_id(cg) {
         return Base::Container(id);
     }
@@ -471,6 +509,24 @@ mod tests {
         );
         assert_eq!(user_unit("/system.slice/sshd.service"), None);
         assert_eq!(any_unit("/system.slice/sshd.service"), Some("sshd.service"));
+        // The unit name stays escaped; only ids taken from it are decoded.
+        let escaped = format!("{u}/app.slice/app-flatpak-org.example.Two\\x2dWords-123.scope");
+        let unit = user_unit(&escaped).unwrap();
+        assert_eq!(unit, "app-flatpak-org.example.Two\\x2dWords-123.scope");
+        assert_eq!(
+            flatpak_scope(unit).as_deref(),
+            Some("org.example.Two-Words")
+        );
+    }
+
+    #[test]
+    fn unit_escapes_are_decoded_only_when_well_formed() {
+        assert_eq!(unit_unescape("two\\x2dwords"), "two-words");
+        assert_eq!(unit_unescape("a\\x20b"), "a b");
+        assert_eq!(unit_unescape("bad\\xZZ"), "bad\\xZZ");
+        assert_eq!(unit_unescape("short\\x2"), "short\\x2");
+        assert_eq!(unit_unescape("plus\\x+f"), "plus\\x+f");
+        assert_eq!(unit_unescape("other\\n"), "other\\n");
     }
 
     #[test]
@@ -493,6 +549,20 @@ mod tests {
             flatpak_scope("app-flatpak-org.example.Notes-48213.scope").as_deref(),
             Some("org.example.Notes")
         );
+        // An escaped dash belongs to the id (review of PR #16).
+        assert_eq!(
+            flatpak_scope("app-flatpak-org.example.Two\\x2dWords-123.scope").as_deref(),
+            Some("org.example.Two-Words")
+        );
+        assert_eq!(
+            unit_app_ids("app-Hyprland-two\\x2dwords-0f0f0f0f.scope"),
+            ["Hyprland-two-words", "two-words"]
+        );
+        assert_eq!(
+            unit_app_ids("app-Hyprland-odd\\xZZname-0f0f0f0f.scope"),
+            ["Hyprland-odd\\xZZname", "odd\\xZZname"],
+            "a malformed escape stays as written"
+        );
     }
 
     #[test]
@@ -512,5 +582,43 @@ mod tests {
             "conmon is not the container"
         );
         assert_eq!(container_id("/system.slice/docker.service"), None);
+
+        // A sub-uid process stays in a rootless container under the user's
+        // manager; a foreign uid in a container under system.slice stays
+        // System (review of PR #16).
+        let proc_in = |uid: u32, cgroup: String| Proc {
+            stat: super::super::procfs::Stat {
+                pid: 10,
+                comm: "db".into(),
+                state: 'S',
+                ppid: 1,
+                pgrp: 10,
+                sid: 10,
+                tpgid: -1,
+                flags: 0,
+                ticks: 0,
+                threads: 1,
+                start: 1,
+            },
+            mem: None,
+            io: None,
+            info: std::sync::Arc::new(super::super::procfs::Info {
+                uid: Some(uid),
+                cgroup: Some(cgroup),
+                ..Default::default()
+            }),
+        };
+        let rootless =
+            format!("/user.slice/user-1000.slice/user@1000.service/user.slice/libpod-{id}.scope");
+        assert_eq!(
+            base(&proc_in(100_998, rootless), 1000),
+            Base::Container("c0ffee00c0ff".into())
+        );
+        let rootful = format!("/system.slice/docker-{id}.scope");
+        assert_eq!(base(&proc_in(999, rootful.clone()), 1000), Base::System);
+        assert_eq!(
+            base(&proc_in(1000, rootful), 1000),
+            Base::Container("c0ffee00c0ff".into())
+        );
     }
 }

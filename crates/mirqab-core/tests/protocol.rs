@@ -661,3 +661,83 @@ fn the_subscribe_reply_comes_before_the_first_event() {
         }
     }
 }
+
+/// A live stream whose `snapshot` holds the sampler for 300 ms, and which
+/// logs, in the order it was given the sampler, each sample's stamp and the
+/// end of each snapshot.
+struct Clocked(std::sync::Arc<std::sync::Mutex<Vec<(&'static str, Instant)>>>);
+impl Sampler for Clocked {
+    fn stream(&self) -> &'static str {
+        "clocked"
+    }
+    fn live(&self) -> bool {
+        true
+    }
+    fn probe(&mut self, _root: &Root) -> Result<(), String> {
+        Ok(())
+    }
+    fn sample(&mut self, _root: &Root, now: Instant) -> Value {
+        self.0.lock().unwrap().push(("sample", now));
+        json!({})
+    }
+    fn snapshot(&mut self, _root: &Root, _now: Instant) -> Value {
+        std::thread::sleep(Duration::from_millis(300));
+        self.0
+            .lock()
+            .unwrap()
+            .push(("snapshot-end", Instant::now()));
+        json!({})
+    }
+}
+
+#[test]
+fn a_sample_is_stamped_after_it_got_the_sampler() {
+    // A tick that waited behind a `get` must not compute its rates over a
+    // stamp taken before the wait (review of PR #16: up to 25 % high).
+    let log = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let dir = PathBuf::from("/tmp").join(format!("mqp-clock-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let socket = dir.join("run/daemon.sock");
+    let server = server::listen(Options {
+        socket: socket.clone(),
+        root: Root::new(fixture("root-desktop")),
+        config_path: dir.join("config/mirqab/config.json"),
+        samplers: vec![Box::new(Clocked(std::sync::Arc::clone(&log)))],
+        history: None,
+    })
+    .expect("listens");
+    std::thread::spawn(move || server.serve());
+    let d = Daemon { socket, dir };
+    let mut sub = Client::connect(&d);
+    let mut getter = Client::connect(&d);
+    sub.hello();
+    getter.hello();
+    sub.call(
+        "subscribe",
+        Some("clocked"),
+        json!({"interval": 1000, "live": true}),
+    )
+    .unwrap();
+    // Back-to-back gets keep the sampler busy, so ticks wait for it.
+    let until = Instant::now() + Duration::from_millis(3500);
+    while Instant::now() < until {
+        getter.call("get", Some("clocked"), Value::Null).unwrap();
+    }
+    let log = log.lock().unwrap().clone();
+    assert!(
+        log.iter().filter(|(k, _)| *k == "sample").count() >= 3,
+        "{log:?}"
+    );
+    let mut last_end = None;
+    for (kind, at) in log {
+        match kind {
+            "snapshot-end" => last_end = Some(at),
+            _ => {
+                if let Some(end) = last_end {
+                    assert!(at >= end, "a sample stamped before the get it waited for");
+                }
+            }
+        }
+    }
+}

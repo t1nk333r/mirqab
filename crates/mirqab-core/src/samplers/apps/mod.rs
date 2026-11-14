@@ -207,9 +207,13 @@ impl Apps {
                 processes: Some(processes),
             });
         }
+        // Counted before any view's limit, so a reader can tell a cut list
+        // (review of PR #16).
+        let groups = out.len() as u32;
         AppsData {
             groups: out,
             totals: AppsTotals {
+                groups,
                 procs: all_procs,
                 threads: all_threads,
                 cpu: all_cpu.map(round1),
@@ -358,11 +362,13 @@ impl Sampler for Apps {
             let procs = self.walk(root);
             return self.data(&procs, self.live.as_ref(), now);
         }
+        // Both readings are stamped when they were taken, so the rate is
+        // over the time that really passed (review of PR #16).
         let first = self.walk(root);
-        let base = Tick::of(&first, now);
+        let base = Tick::of(&first, Instant::now());
         std::thread::sleep(SNAPSHOT_GAP);
         let procs = self.walk(root);
-        self.data(&procs, Some(&base), now + SNAPSHOT_GAP)
+        self.data(&procs, Some(&base), Instant::now())
     }
 
     fn view(&self) -> Option<View> {

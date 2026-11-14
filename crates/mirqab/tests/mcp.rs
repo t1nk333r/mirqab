@@ -206,6 +206,13 @@ fn a_legacy_client_initializes_lists_and_reads_the_load() {
     assert_eq!(slow["result"]["structuredContent"]["causes"], json!([]));
 }
 
+fn text_of(result: &Value) -> String {
+    result["content"][0]["text"]
+        .as_str()
+        .unwrap_or("")
+        .to_string()
+}
+
 #[test]
 fn top_apps_and_what_is_process_read_the_fixture() {
     let d = daemon("apps");
@@ -222,6 +229,17 @@ fn top_apps_and_what_is_process_read_the_fixture() {
     assert_eq!(groups[0]["name"], "cargo");
     assert_eq!(groups[3]["id"], "system");
     assert!(groups[0].get("pids").is_none(), "no pid lists for an agent");
+    // An allow-list: a field added to the stream later fails here first.
+    let keys = |v: &Value| -> Vec<String> {
+        let mut k: Vec<String> = v.as_object().unwrap().keys().cloned().collect();
+        k.sort();
+        k
+    };
+    assert_eq!(
+        keys(&groups[0]),
+        ["cpu", "id", "kind", "name", "procs", "rssBytes", "top"]
+    );
+    assert_eq!(top["structuredContent"]["totals"]["groups"], 23);
     assert_eq!(top["structuredContent"]["sort"], "mem");
     let text = top["content"][0]["text"].as_str().unwrap();
     assert!(text.contains("Example Browser"), "{text}");
@@ -235,6 +253,40 @@ fn top_apps_and_what_is_process_read_the_fixture() {
         json!({"name": "example-browser", "repo": "extra"})
     );
     assert_eq!(data["files"]["count"], 9);
+    // Exactly these fields reach an agent (review of PR #16): no cgroup,
+    // command line, working directory or path, and nothing added later
+    // without being named in the tool.
+    let mut want = vec![
+        "pid",
+        "name",
+        "verdict",
+        "limited",
+        "ppid",
+        "parents",
+        "uid",
+        "user",
+        "startedAt",
+        "ageSec",
+        "cpuTimeSec",
+        "threads",
+        "state",
+        "exe",
+        "exeDeleted",
+        "package",
+        "arch",
+        "unit",
+        "flatpak",
+        "container",
+        "group",
+        "sandbox",
+        "memory",
+        "files",
+        "gpu",
+    ];
+    want.sort_unstable();
+    assert_eq!(keys(data), want);
+    assert_eq!(keys(&data["files"]), ["count", "sockets"]);
+    assert!(!text_of(&what).contains("cgroup") && !text_of(&what).contains("user.slice"));
     // Command lines and paths can hold secrets: never sent to an agent.
     for absent in ["cmdline", "cwd"] {
         assert!(data.get(absent).is_none(), "{absent}: {data}");

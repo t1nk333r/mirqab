@@ -3,7 +3,7 @@
 //! (plan 007 on) add the confirm flow (`mirqab_core::plan`) and the
 //! ancestry guard (`mirqab_core::guard`).
 
-use crate::apps::{apps_lines, what_lines};
+use crate::apps::{apps_lines, parse_apps, parse_inspect, what_lines};
 use crate::cli::{CallError, call, load_lines, system};
 use mirqab_core::proto::stream::{AppsData, Inspect, SystemData};
 use mirqab_core::proto::{Request, stream, strings};
@@ -206,8 +206,8 @@ fn top_apps(socket: &Path, args: &Value) -> Value {
     let req = Request::new(1, "get")
         .with_stream(stream::APPS)
         .with_params(json!({"sort": sort, "limit": limit}));
-    let d: AppsData = match fetch(socket, req) {
-        Ok(v) => serde_json::from_value(v).unwrap_or_default(),
+    let d: AppsData = match fetch(socket, req).and_then(|v| answer(parse_apps(v))) {
+        Ok(d) => d,
         Err(e) => return e,
     };
     // What an agent reasons about: no pid lists, no processes.
@@ -225,9 +225,52 @@ fn top_apps(socket: &Path, args: &Value) -> Value {
     let data = json!({
         "sort": d.sort,
         "groups": groups,
-        "totals": {"procs": d.totals.procs, "cpu": d.totals.cpu, "cores": d.totals.cores},
+        "totals": {
+            "groups": d.totals.groups, "procs": d.totals.procs,
+            "cpu": d.totals.cpu, "cores": d.totals.cores,
+        },
     });
     done(apps_lines(&d, false).join("\n"), data)
+}
+
+/// A parsed daemon answer, or the tool error saying it could not be read.
+fn answer<T>(parsed: Result<T, String>) -> Result<T, Value> {
+    parsed.map_err(failed)
+}
+
+/// What `what_is_process` sends, field by field: an allow-list, so a field
+/// added to the inspector later reaches an agent only when named here
+/// (review of PR #16). No cgroup, command line, working directory or open
+/// file's path: they can hold secrets or private names, and the agent's
+/// vendor keeps its transcript.
+fn inspect_summary(i: &Inspect) -> Value {
+    json!({
+        "pid": i.pid,
+        "name": i.name,
+        "verdict": i.verdict,
+        "limited": i.limited,
+        "ppid": i.ppid,
+        "parents": i.parents.iter().map(|p| json!({"pid": p.pid, "name": p.name})).collect::<Vec<_>>(),
+        "uid": i.uid,
+        "user": i.user,
+        "startedAt": i.started_at,
+        "ageSec": i.age_sec,
+        "cpuTimeSec": i.cpu_time_sec,
+        "threads": i.threads,
+        "state": i.state,
+        "exe": i.exe,
+        "exeDeleted": i.exe_deleted,
+        "package": i.package,
+        "arch": i.arch,
+        "unit": i.unit,
+        "flatpak": i.flatpak,
+        "container": i.container,
+        "group": i.group,
+        "sandbox": i.sandbox,
+        "memory": i.memory,
+        "files": i.files.as_ref().map(|f| json!({"count": f.count, "sockets": f.sockets})),
+        "gpu": i.gpu,
+    })
 }
 
 fn what_is_process(socket: &Path, args: &Value) -> Value {
@@ -241,21 +284,26 @@ fn what_is_process(socket: &Path, args: &Value) -> Value {
     let req = Request::new(1, "get")
         .with_stream(stream::APPS_INSPECT)
         .with_params(json!({ "pid": pid }));
-    let mut inspect: Inspect = match fetch(socket, req) {
-        Ok(v) => serde_json::from_value(v).unwrap_or_default(),
+    let inspect: Inspect = match fetch(socket, req).and_then(|v| answer(parse_inspect(v))) {
+        Ok(i) => i,
         Err(e) => return e,
     };
-    // A command line, a working directory or an open file's path can hold
-    // a secret or a private name; the agent's vendor keeps its transcript.
-    inspect.cmdline.clear();
-    inspect.cwd = None;
-    if let Some(f) = &mut inspect.files {
-        f.paths.clear();
-    }
+    // `what_lines` without `private` prints no cgroup, command line,
+    // working directory or path.
     let text = what_lines(&inspect, false).join("\n");
-    let mut data = serde_json::to_value(&inspect).unwrap_or(Value::Null);
-    if let Some(files) = data.get_mut("files").and_then(Value::as_object_mut) {
-        files.remove("paths");
+    done(text, inspect_summary(&inspect))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_answer_the_tool_cannot_read_is_a_tool_error() {
+        let e = answer(parse_apps(json!({"groups": "x"}))).unwrap_err();
+        assert_eq!(e["isError"], true);
+        let text = e["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains("restart the daemon"), "{text}");
+        assert!(answer(parse_inspect(json!({"pid": 1, "name": "x"}))).is_ok());
     }
-    done(text, data)
 }

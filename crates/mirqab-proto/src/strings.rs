@@ -542,7 +542,7 @@ pub const MCP_INSTRUCTIONS: &str = "mirqab reports this Linux machine's state. R
 pub const MCP_TOP_APPS_TITLE: &str = "Top apps";
 pub const MCP_TOP_APPS: &str = "Reads only: the apps using the most CPU (or memory) now, from the mirqab daemon. Helper processes are folded into their app (a browser's content processes count as the browser, a terminal's jobs as themselves); other users' processes are one System group, listed last. CPU is percent of one core and may pass 100.";
 pub const MCP_WHAT_TITLE: &str = "What is this process";
-pub const MCP_WHAT: &str = "Reads only: explains one process by pid, from the mirqab daemon: a verdict in plain words (packaged by which repository, Flatpak, container, not owned by any package, replaced since it started), its parents, user, executable, unit, sandbox, memory and counts of open files. Command lines and file paths are left out, as they can hold secrets.";
+pub const MCP_WHAT: &str = "Reads only: explains one process by pid, from the mirqab daemon: a verdict in plain words (packaged by which repository, Flatpak, container, not owned by any package, replaced since it started), its parents, user, executable, unit, sandbox, memory and counts of open files. Command lines, the working directory and open files' paths are left out, as they can hold secrets.";
 pub const MCP_ARG_SORT: &str = "cpu (default), mem or name";
 pub const MCP_ARG_LIMIT: &str =
     "how many apps, 1 to 50 (default 10); the System group comes on top of them";
@@ -1258,7 +1258,26 @@ pub const APPS_SYSTEM: &str = "System";
 
 /// A container's group: its main process and the short id `docker ps` shows.
 pub fn apps_container(name: &str, id: &str) -> String {
-    format!("{name} (container {id})")
+    format!("{} (container {})", plain(name), plain(id))
+}
+
+/// `s` safe to print: every control character (C0, DEL, C1) and the
+/// bidirectional overrides and isolates (U+202A–202E, U+2066–2069) become
+/// U+FFFD. A process names itself, and an escape sequence or a newline in
+/// its name would rewrite the terminal or forge rows in `mirqab apps` and
+/// in the text an MCP client reads (review of PR #16). JSON needs none of
+/// this: serde escapes.
+pub fn plain(s: &str) -> std::borrow::Cow<'_, str> {
+    let bad =
+        |c: char| c.is_control() || matches!(c, '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}');
+    if !s.chars().any(bad) {
+        return std::borrow::Cow::Borrowed(s);
+    }
+    std::borrow::Cow::Owned(
+        s.chars()
+            .map(|c| if bad(c) { '\u{fffd}' } else { c })
+            .collect(),
+    )
 }
 
 pub const APPS_PID_REQUIRED: &str = "pid is required: a process id";
@@ -1305,15 +1324,29 @@ pub fn apps_process_row(pid: u32, name: &str, cpu: &str, memory: &str) -> String
     format!("  {pid:>7} {name:<18} {cpu:>6} {memory:>11}")
 }
 
-/// `text` cut to `width` characters, an ellipsis marking the cut, so a long
-/// name keeps the columns of a table.
+/// `text` made `plain` and cut to `width` characters, an ellipsis marking
+/// the cut, so a long name keeps the columns of a table.
 fn fit(text: &str, width: usize) -> String {
+    let text = plain(text);
     if text.chars().count() <= width {
         return text.to_string();
     }
     let mut s: String = text.chars().take(width - 1).collect();
     s.push('\u{2026}');
     s
+}
+
+/// `mirqab apps`' last line when the daemon's limit cut the list.
+pub fn apps_more(n: u32) -> String {
+    format!("and {n} more")
+}
+
+/// The daemon answered with data this mirqab cannot read: after an
+/// upgrade, the running daemon is often the old one.
+pub fn bad_daemon_answer(why: &str) -> String {
+    format!(
+        "mirqab: the daemon's answer could not be read ({why}); if mirqab was upgraded, restart the daemon: systemctl --user restart mirqab.service"
+    )
 }
 
 pub fn apps_bad_sort(v: &str) -> String {
@@ -1326,7 +1359,7 @@ pub fn bad_pid(v: &str) -> String {
 
 /// `mirqab what`: one labelled line.
 pub fn what_line(label: &str, value: &str) -> String {
-    format!("{label:<11} {value}")
+    format!("{label:<11} {}", plain(value))
 }
 
 pub const WHAT_PROCESS: &str = "process";
@@ -1349,10 +1382,11 @@ pub const WHAT_FILES: &str = "files";
 pub const WHAT_GPU: &str = "gpu";
 pub const WHAT_CWD: &str = "directory";
 pub const WHAT_COMMAND: &str = "command";
+pub const WHAT_OPEN: &str = "open";
 
 /// A process by name and pid: `browser (2001)`.
 pub fn proc_ref(name: &str, pid: u32) -> String {
-    format!("{name} ({pid})")
+    format!("{} ({pid})", plain(name))
 }
 
 pub fn started_ago(duration: &str) -> String {
@@ -1545,6 +1579,21 @@ mod tests {
             assert!(command_help(c.name).is_some(), "{} has no help", c.name);
         }
         assert!(command_help("nope").is_none());
+    }
+
+    #[test]
+    fn plain_text_has_no_control_characters() {
+        let p = plain("a\x1b[2Jb\nc\u{9b}d\u{202e}e\u{7f}");
+        assert!(!p.chars().any(char::is_control), "{p:?}");
+        assert!(!p.contains('\u{202e}'));
+        assert_eq!(p, "a\u{fffd}[2Jb\u{fffd}c\u{fffd}d\u{fffd}e\u{fffd}");
+        assert!(matches!(
+            plain("Web Content"),
+            std::borrow::Cow::Borrowed(_)
+        ));
+        assert_eq!(apps_row("x\ny", "1%", "1 MB", 1).lines().count(), 1);
+        assert_eq!(what_line("command", "a\rb"), "command     a\u{fffd}b");
+        assert_eq!(proc_ref("a\x1bb", 1), "a\u{fffd}b (1)");
     }
 
     #[test]
