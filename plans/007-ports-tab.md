@@ -352,6 +352,11 @@ ended by its own pid; addresses are loopback, names scrubbed):
   `brport/`; loopback is `type` 772; physical interfaces have `device/`;
   a tun interface is `type` 65534 with `tun_flags`; a wireless one has
   `DEVTYPE=wlan`, `device/` and `wireless/`.
+- **Still open, for part 4's bench (review of PR #22, ruling 7):** UDP
+  autobind churn forces a rebuild per tick while a `udp` subscriber
+  exists; `get {udp}` followed by a TCP-only tick rebuilds twice. Part
+  4's bench row also runs `--subscribe ports --udp` and decides the
+  staleness rule if the churn shows.
 - **Still open, an owner check after part 2a:** whether PolicyKit shows
   `pkexec /usr/bin/ss` with a sensible prompt. No policy for `ss` exists
   under `/usr/share/polkit-1/actions`, so it will be `pkexec`'s generic
@@ -361,85 +366,103 @@ ended by its own pid; addresses are loopback, names scrubbed):
 
 ## As built (part 1a)
 
-Part 1a (2026-11-20): the `ports` stream, who listens where, and the
-read commands, as the brief's §3.1, §3.2 and part 1a describe, with the
-owner's decisions above. What was built, with where it lives:
+Part 1a (2026-11-20, with the review of PR #22 below): the `ports`
+stream, who listens where, and the read commands, as the brief's §3.1,
+§3.2, part 1a and §9 describe, with the owner's decisions above. What was
+built, with where it lives:
 
 - **The stream** (`crates/mirqab-proto/src/stream.rs:30`, added to
-  `STREAMS` at `:12`): `PortsData` (`:382`) with `ports`, `exposedCount`,
+  `STREAMS` at `:12`): `PortsData` (`:383`) with `ports`, `exposedCount`,
   `leftBehindCount`, `total`, `udp`, `docker` and `system`; `PortRow`
-  (`:404`), with `families` in place of the plan's `family`; the part 1b
-  shapes `PortProject`, `PortShell`, `PortLauncher` and `ContainerRef`,
-  always null in 1a; `SystemPorts` (`:483`), never loaded in 1a; and
-  `PortsLite` (`:505`). Golden: `tests/golden/ports.json` (`get ports
+  (`:405`), with `families` in place of the plan's `family` and `pids`
+  (`:428`); the part 1b shapes `PortProject`, `PortShell`,
+  `PortLauncher` and `ContainerRef`, always null in 1a; `SystemPorts`
+  (`:489`), never loaded in 1a; and `PortsLite` (`:511`). A row is
+  `(port, proto, bind pair, owner)`, the owner a tree of the user's
+  processes or a uid. Golden: `tests/golden/ports.json` (`get ports
   {"udp": true}` on `root-desktop`, 13 rows).
 - **The sampler** (`crates/mirqab-core/src/samplers/ports/mod.rs`),
   registered after `process` in its own slot (`server.rs:391`). `listen`
   builds the sender once (`server.rs:388`) and hands the same `Arc` to
   `Ports::new` and `Actions::new` (`:433`); part 1a keeps it unused
-  (`#[expect(dead_code)]`, `mod.rs:182`, so part 1b must remove the
+  (`#[expect(dead_code)]`, `mod.rs:239`, so part 1b must remove the
   attribute when it reads `docker ps`). Every 5 s, never `live`. Params
-  (`accepts`, `mod.rs:45`): `udp` and `lite`, booleans, nothing else.
-  `wants` (`:495`) records whether anyone asked for UDP and whether every
-  subscriber is lite. Each tick (`measure`, `:302`): the tables; with a
-  subscriber that is not lite, the owner map, rebuilt (`rebuild`, `:270`)
-  only when the user's listening inodes differ from the last build or a
-  mapped process's `stat` is gone or has another start time (`stale`,
-  `:247`, which otherwise refreshes the mapped processes' `statm`);
-  then the interface table (`table`, `:226`) and the fold (`fold`,
-  `:352`). A `get` that is not lite rebuilds (`snapshot`, `:506`);
-  `idle` (`:521`) drops the process cache, the map and the table;
-  `status` (`:528`) adds `ports: {owners, rebuilds}`. The view (`:428`)
-  takes the UDP rows out for a subscriber that did not ask, counts per
-  view, and shapes the lite view.
+  (`accepts`, `mod.rs:48`): `udp` and `lite`, booleans, nothing else.
+  `wants` (`:569`) records whether anyone asked for UDP and whether every
+  subscriber is lite. Each tick (`measure`, `:373`): the tables; with a
+  subscriber that is not lite, the owner map, rebuilt (`rebuild`, `:333`)
+  only when the user's listening inodes differ from the last build or
+  the `stat` of any mapped pid (every member of every tree) is gone or
+  has another start time (`stale`, `:304`, which otherwise refreshes the
+  trees' summed `statm`); then the interface table (`table`, `:283`) and
+  the fold (`fold`, `:423`). A `get` that is not lite rebuilds
+  (`snapshot`, `:580`); `idle` (`:595`) drops the process cache, the map
+  and the table; `status` (`:602`) adds `ports: {owners, rebuilds}`,
+  `owners` counting the mapped pids. The view (`:502`) takes the UDP rows
+  out for a subscriber that did not ask, counts per view, and shapes the
+  lite view; `total` counts every row of the view, lite or full.
 - **The tables** (`samplers/ports/procnet.rs`): `parse` (`:83`) keeps
   state `0A` (TCP) or `07` (UDP) and skips a line it cannot read;
   `address` (`:62`) reads each 32-bit word with `to_ne_bytes`, as the
   kernel prints it, and gives a v4-mapped IPv6 address as the IPv4 one;
   `read` (`:106`) reads `udp` and `udp6` only when asked.
 - **Scopes** (`samplers/ports/ifaces.rs`): loopback, unspecified and
-  link-local by the address (`intrinsic`, `:60`), anything else by the
+  link-local by the address (`intrinsic`, `:59`), anything else by the
   interface that holds it (`Table::read`, `:131`: `sys::ifaddrs` on the
-  host, `run/mirqab-test/ifaddrs.json` under a fixture root) and that
-  interface's kind (`kind`, `:96`, from `sys/class/net/<name>/`). The
-  table is read only while some bind address needs it, again when that
-  set changes, and at most once a minute otherwise. Interface names stay
-  in the daemon.
+  host, `run/mirqab-test/ifaddrs.json` under a fixture root; an alias
+  label such as `lan0:1` is stripped to its interface, `:144`) and that
+  interface's kind (`kind`, `:95`, from `sys/class/net/<name>/`). There
+  is no arm for the loopback interface: an address on `lo` that is not
+  127/8 or `::1` is `other`, exposed (Linux's weak host model lets others
+  reach it). The table is read only while some bind address needs it,
+  again when that set changes, and at most once a minute otherwise.
+  Interface names stay in the daemon.
 - **`sys::ifaddrs`** (`crates/mirqab-core/src/sys.rs:245`): `getifaddrs`,
   IPv4 and IPv6 only, the list freed by a guard (`IfAddrs`, `:232`) on
   every path; three `unsafe` blocks, each with its `// SAFETY:`. Unit
   test `ifaddrs_lists_the_loopback` (`:319`).
 - **The owner map** (`samplers/ports/owner.rs`): `socket_inodes` (`:12`)
-  reads a process's `fd/` links; `owners_of` (`:42`) scans the user's
-  processes in pid order and stops after the process in which the last
-  wanted inode turned up. The walk is `procfs::walk` with the sampler's
-  own `procfs::Cache`, so the `apps` lock is never taken.
-- **Rows**: one per port, protocol and owner; an owner's `0.0.0.0` and
-  `::` sockets, or `127.0.0.1` and `::1`, fold into one row named by the
-  IPv4 address (`bind_key`, `mod.rs:147`), and a lone `::` is `[4, 6]`
-  unless `proc/sys/net/ipv6/bindv6only` is 1 (`families_of`, `:167`).
-  `label` (`:71`): an interpreter's script or `-m` module stands for the
-  program, joined by the next argument when it is a word (`next dev`,
-  `http.server`, `manage.py runserver`, `vite`), cut to 40 characters and
-  made `plain`. `uptimeSec` is `procfs::age_secs`
-  (`samplers/apps/procfs.rs:259`), which the inspector now uses for
-  `ageSec` too (`inspect.rs:466`). `url` (`mod.rs:118`) is
-  `http://localhost:<port>`, `https` for 443 and 8443.
+  reads a process's `fd/` links; `owners_of` (`:42`) reads every one of
+  the user's processes, in pid order. `trees` (`mod.rs:160`) groups one
+  socket's holders by their parent links: a holder whose parent does not
+  hold the socket heads a tree, and the others join the tree their chain
+  of holding parents leads to. Each tree is a row: `pid`, `start`,
+  `process`, `label` and `uptimeSec` are the root's, `pids` lists the
+  root and then the rest by pid, and `rssBytes` sums the members
+  (`sum`, `:148`). Independent holders (`SO_REUSEPORT` siblings, a second
+  server whose parent holds nothing) are rows of their own, in pid order.
+  Root's and other users' rows have `pids: []`. The walk is
+  `procfs::walk` with the sampler's own `procfs::Cache`, so the `apps`
+  lock is never taken.
+- **Rows**: one per port, protocol, bind pair and owner; an owner's
+  `0.0.0.0` and `::` sockets, or `127.0.0.1` and `::1`, are one bind pair
+  and fold into one row named by the IPv4 address (`bind_key`,
+  `mod.rs:204`); one process on two other addresses of a port is two
+  rows. A lone `::` is `[4, 6]` unless `proc/sys/net/ipv6/bindv6only` is
+  1 (`families_of`, `:224`). `label` (`:74`): an interpreter's script or
+  `-m` module stands for the program, joined by the next argument when it
+  is a word (`next dev`, `http.server`, `manage.py runserver`, `vite`),
+  cut to 40 characters and made `plain`. `uptimeSec` is
+  `procfs::age_secs` (`samplers/apps/procfs.rs:259`), which the
+  inspector now uses for `ageSec` too (`inspect.rs:466`). `url`
+  (`mod.rs:121`) is `http://localhost:<port>`, `https` for 443 and 8443.
 - **The CLI** (`crates/mirqab/src/ports.rs`, dispatched at `main.rs:114`):
-  `mirqab ports [--udp] [--json]` (`ports_lines`, `:54`: columns PORT,
+  `mirqab ports [--udp] [--json]` (`ports_lines`, `:55`: columns PORT,
   PROTO, BIND, REACH, PROCESS, PROJECT, LAUNCHER, UP, then one `exposed:`
   line per exposed row of yours) and `mirqab port PORT [--proto tcp|udp]
-  [--json]` (`port_lines`, `:85`: Port, Reach in words, Process, Label,
+  [--json]` (`port_lines`, `:86`: Port, Reach in words, Process, Label,
   Up, URL; part 1b's fields appear once the daemon fills them; exit 1
-  "nothing listens on port N/tcp"). The strings are in `strings.rs`'s
-  "Ports (plan 007)" section (`:2014`) and two `CLI_COMMANDS` entries
-  (`:106`, `:114`); `docs/cli.md` is regenerated.
+  "nothing listens on port N/tcp"). Every value printed is made `plain`,
+  a container's name too (`process_cell`, `:24`). The strings are in
+  `strings.rs`'s "Ports (plan 007)" section (`:2014`) and two
+  `CLI_COMMANDS` entries (`:106`, `:114`); `docs/cli.md` is regenerated.
 - **Fixtures**: ten processes in `tests/fixtures/procs.tsv` (four
   terminal sessions, an agent, its dev server, an agent that listens,
   the MCP server as a future caller), socket `fd=` links added to 1300
   and 3020, and `tools/mkfixture.sh`'s new `env=NAME,NAME` extra, which
   writes `environ` as `NAME=MARKERVALUE` (`tools/mkfixture.sh:89`,
-  `:163`); the hand-written tables, `bindv6only`, the interface table,
+  `:163`); the hand-written tables, `bindv6only`, the interface table
+  (with a veth and an alias label that no committed socket binds),
   `sys/class/net/` and three `package.json` files in both trees
   (`tests/fixtures/README.md`). The `apps` golden and the group counts
   went from 24 to 28 groups (four `session:` groups) and 44 to 54 (t0) or
@@ -448,62 +471,100 @@ owner's decisions above. What was built, with where it lives:
   `tests/test-ui-apps.sh`. The new processes use no CPU between the two
   trees, so no rate assertion moved.
 - **Docs**: architecture §5.2 (the params and `status.ports`) and §5.3
-  (the `ports` paragraph, with the `IPV6_V6ONLY` limit and "exposed" as a
-  claim about the bind address only); `README.md`.
+  (the `ports` paragraph: rows, trees and `pids`, scopes, the
+  `IPV6_V6ONLY` limit, "exposed" as a claim about the bind address
+  only); `README.md`.
 
-Tests (2026-11-20): `crates/mirqab-core/tests/ports.rs` 9 (new:
-`tcp_rows_parse_both_families_and_only_listeners` `:137`,
-`udp_rows_are_bound_sockets_and_only_when_asked` `:185`,
-`a_dual_stack_listener_is_one_row_marked_both` `:216`,
-`each_bind_address_gets_its_scope` `:249`,
-`inodes_map_to_the_processes_that_hold_them_and_root_has_no_pid` `:303`,
-`the_owner_map_is_rebuilt_only_when_the_inode_set_changes` `:340`,
-`the_lite_view_reads_no_fd_and_gives_counts` `:383`,
-`uptime_rss_and_label_come_from_the_owner` `:414`,
-`the_stream_matches_its_golden` `:460`); `tests/protocol.rs` 28 → 29
-(`ports_params_are_strict` `:1046`; the hello test names `ports`);
+Tests (2026-11-20): `crates/mirqab-core/tests/ports.rs` 13
+(`tcp_rows_parse_both_families_and_only_listeners` `:181`,
+`udp_rows_are_bound_sockets_and_only_when_asked` `:229`,
+`a_dual_stack_listener_is_one_row_marked_both` `:260`,
+`each_bind_address_gets_its_scope` `:293`,
+`inodes_map_to_the_processes_that_hold_them_and_root_has_no_pid` `:361`,
+`the_owner_map_is_rebuilt_only_when_the_inode_set_changes` `:398`,
+`the_lite_view_reads_no_fd_and_gives_counts` `:451`,
+`uptime_rss_and_label_come_from_the_owner` `:482`, and from the review
+`a_forked_servers_workers_join_the_parents_row` `:528`,
+`independent_holders_of_one_port_are_rows_in_pid_order` `:553`,
+`one_process_on_two_binds_of_one_port_is_two_rows` `:566`,
+`the_interface_table_is_read_again_when_the_bind_addresses_change`
+`:586`; `the_stream_matches_its_golden` `:606`); `tests/protocol.rs`
+27 → 28 (`ports_params_are_strict`; the hello test names `ports`);
 `mirqab-core` unit tests 70 → 76 (the params, the label, the URL, the
 address words, the intrinsic scopes, `ifaddrs`); `mirqab` unit tests
-20 → 22; `tests/test-cli.sh` 231 checks (new: `ports --json` 11 TCP rows,
-`--udp` 13, the table's port, process, reach and root row, the exposed
-line for 8000 and none for root's 22, `port 3000`'s and `port 8000`'s
-Reach, root's port with no process, `--proto udp`, exit 1 for port 1,
-64 for `abc`, 70000 and `--proto sctp`, `ports` in `status` with no
-subscriber before and after, `ports` and `port` in `--help`, `help` and
-the completions). Each new test was checked by breaking the code it
-covers (the PR lists the mutations).
+20 → 23 (`a_containers_name_cannot_reach_the_terminal` `ports.rs:247`
+from the review); `tests/test-cli.sh` 231 checks (new: `ports --json` 11
+TCP rows, `--udp` 13, the table's port, process, reach and root row, the
+exposed line for 8000 and none for root's 22, `port 3000`'s and
+`port 8000`'s Reach, root's port with no process, `--proto udp`, exit 1
+for port 1, 64 for `abc`, 70000 and `--proto sctp`, `ports` in `status`
+with no subscriber before and after, `ports` and `port` in `--help`,
+`help` and the completions). Each new test was checked by breaking the
+code it covers (the PR lists the mutations).
 
 Cost (2026-11-20, release build, the development machine,
-`tools/bench-idle.sh --subscribe ports`): 0.000 % of one core over 60 s,
-7.8 MiB, 233 context switches; with `--procs 400` (432 processes, 8
-clones of the 47 user processes) 0.033 %, 8.1 MiB, 268 context
-switches. Both under the brief's 1 % (and the 0.3 % idle row). The CI
-line and the §9.1 row come with part 4, with the tray's subscription.
+`tools/bench-idle.sh --subscribe ports`, before the review's every-process
+fd scan): 0.000 % of one core over 60 s, 7.8 MiB, 233 context switches;
+with `--procs 400` (432 processes, 8 clones of the 47 user processes)
+0.033 %, 8.1 MiB, 268 context switches. Both under the brief's 1 % (and
+the 0.3 % idle row). The scan now reads every process of the user's on a
+rebuild, which happens only when the inodes or a mapped pid change.
+After the review (same build settings, same day): 0.000 %, 7.6 MiB, 211
+context switches; with `--procs 400` 0.067 %, 8.5 MiB, 230 context
+switches. The CI line and the §9.1 row come
+with part 4, with the tray's subscription.
 
 Deviations from the brief, each with its reason:
 
-- **The fd scan keeps the holders found by the time every inode is
-  found**, as the brief's "stop the scan" says, rather than every holder
-  ("keep them all"): the two cannot both hold. A forked server's
-  workers share the parent's socket inode, and the parent, met first in
-  pid order, is the row; listing every worker would repeat one port per
-  worker. Part 2a's `owners_of` for a stop may scan without stopping.
 - **A scope `other`**: the brief's interface kinds include `other` (a
   veth, a dummy, a bridge's port), which its scope list and its
   sentences left out. It is a scope of its own, exposed, with its own
-  sentence and REACH word.
-- **The lite view's `total` counts your rows**, not every row: part 4's
-  badge shows "`total` of your rows" (7 on the fixture), and the lite view
-  has nothing else to give it. The full view's `total` counts every row
-  it shows, as §3.1 says.
+  sentence and REACH word (kept by the review, ruling 13).
 - **`mirqab port` reads TCP unless `--proto udp`**, as `kill` will.
 - **No `.git/HEAD` in the fixture projects**: git refuses to track a
-  path with a `.git` component, so part 1b's project test must make the
-  marker in a scratch copy, or rely on `package.json`.
+  path with a `.git` component (deferred to part 1b, ruling 12).
 - **The project trees' `package.json` files are added now** (the brief
   allowed it), so the trees change once.
 
 Known limits: a socket that set `IPV6_V6ONLY` itself shows as both
 families (the table does not say; overstating reach is the safe
-direction); the scope of an address on the loopback interface that is
-not 127/8 or `::1` is `local`.
+direction); when one address sits on two interfaces (a misconfiguration),
+`Table::read` keeps the last interface it sees, as exposure is not
+totally ordered across kinds.
+
+### Review of PR #22 (2026-11-20)
+
+A Sonnet review asked for changes; the planner (Fable 5.1) ruled, and
+the brief's §9 records the amendments for later parts. Built in this PR:
+
+1. **One row per holder tree** (KEEP). The first build stopped the fd
+   scan once every wanted inode was found, so a forked server's later
+   workers were missed and a stop could not name them. Now `owners_of`
+   reads every process, the holders of a socket are grouped by parent
+   links into trees, each tree is a row with `pids` (root first),
+   `stale` checks every pid of a tree, `rssBytes` sums them and
+   `status.owners` counts pids. Independent holders stay separate rows.
+2. **No loopback arm in `ifaces::kind`** (KEEP): an address on `lo` that
+   `intrinsic` did not place is `other`, exposed. The tie-break for an
+   address on two interfaces was dropped and is a known limit.
+3. **Alias labels are stripped** (`lan0:1` → `lan0`) before the sysfs
+   lookup (KEEP), with `veth0` and `lan0:1` fixtures.
+4. **`total` counts every row** in the lite view as in the full one
+   (KEEP); there is no `yourCount`, and part 4's badge shows `total`,
+   coloured by `exposedCount`. (The first build counted your rows there.)
+5. **A row is `(port, proto, bind pair, owner)`** (KEEP the words and
+   the test). DEFER: part 3's `RowKey` gains `bind`.
+6. **The interface table's refresh is tested** (KEEP).
+7. DEFER to part 4's bench: see Unverified.
+8. The test counts above are corrected (`tests/protocol.rs` 27 → 28).
+9. DROP: `proc/uptime` is still read once per row.
+10. DEFER to part 3: `strings::PORTS_UDP_NOTE` under the UDP switch (UDP
+    includes sockets programs opened to talk out, and anything can send
+    to them).
+11. **The CLI makes a container's name `plain`** (KEEP). DEFER to part
+    1b: make it plain at the source in `docker.rs`.
+12. DEFER to part 1b: `package.json` stays committed; part 1b's test
+    makes `.git/HEAD` in a scratch copy and asserts that a directory
+    holding only `.git` is a project.
+13. The `other` scope and its sentence stay as written, with no
+    firewall clause.

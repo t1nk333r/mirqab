@@ -432,30 +432,40 @@ Streams: `system`, `apps`, `process`, `ports`, `agents`, `awake`, `disk`,
   UDP sockets) and `params.lite` (counts only), each a boolean, nothing
   else. Each tick reads `proc/net/tcp` and `tcp6` (and `udp`, `udp6` when
   a subscriber asked): the listening sockets with their bind address,
-  port, uid and inode. One row per port, protocol and owner; an owner's
-  `0.0.0.0` and `::` sockets, or its `127.0.0.1` and `::1`, fold into one
-  row marked `families: [4, 6]`, and a lone `::` socket is both unless
+  port, uid and inode. One row per port, protocol, bind pair and owner;
+  an owner's `0.0.0.0` and `::` sockets, or its `127.0.0.1` and `::1`
+  (a bind pair), fold into one row marked `families: [4, 6]`, and one
+  process on two other addresses of a port is two rows, and a lone `::` socket is both unless
   `proc/sys/net/ipv6/bindv6only` is 1 (a socket that set `IPV6_V6ONLY`
   itself is still shown as both: the table does not say, and overstating
   reach is the safe direction). `scope` says how far the bind address
   reaches: `local` (loopback), `all` (unspecified), `link`
   (link-local), and otherwise the kind of the interface that holds the
   address (`sys::ifaddrs` on the machine, `run/mirqab-test/ifaddrs.json`
-  under a fixture root, the kind from `sys/class/net/<name>/`): `lan`,
-  `bridge`, `vpn` or `other`; an address on no interface is `unknown`.
+  under a fixture root, the kind from `sys/class/net/<name>/` with an
+  alias label such as `:1` stripped): `lan`, `bridge`, `vpn` or `other`
+  (a veth, a dummy, and an address on `lo` that is not loopback itself,
+  which Linux's weak host model lets others reach); an address on no
+  interface is `unknown`.
   Everything but `local` is `exposed`. "Exposed" is a claim about the bind
   address only: mirqab never reads firewall rules, and its text says
   "unless a firewall blocks it". Interface names never leave the daemon.
-  A socket of the user's names its process (`pid`, `start`, `process`,
-  `label`, `rssBytes`, `uptimeSec`), found by the `socket:[inode]` links
-  of the user's processes' `fd/`; root's and other users' sockets keep
-  their uid and no process, never a guess. That owner map is rebuilt only
-  when the user's listening inodes changed or a mapped process is gone or
-  another one, and by every `get`; between rebuilds a tick reads `stat`
-  and `statm` of the mapped processes. While every subscriber is `lite`
+  A socket of the user's names its processes, found by the
+  `socket:[inode]` links of every user's process's `fd/`: the holders of
+  one socket are grouped by parent links into trees, and each tree is a
+  row (a forked server and its workers are one row; independent holders,
+  such as `SO_REUSEPORT` siblings, are rows of their own). The row's
+  `pid`, `start`, `process`, `label` and `uptimeSec` are the tree root's,
+  `pids` lists every holder in it (the root first, the rest by pid) and
+  `rssBytes` sums them. Root's and other users' sockets keep their uid,
+  `pid` null and `pids` empty, never a guess. That owner map is rebuilt
+  only when the user's listening inodes changed or any mapped pid is gone
+  or another one, and by every `get`; between rebuilds a tick reads
+  `stat` and `statm` of the mapped pids. While every subscriber is `lite`
   the tables are all that is read, and a lite subscriber gets `{lite,
-  total, exposedCount, leftBehindCount, udp}`, where `total` counts the
-  user's rows. `exposedCount` counts the user's exposed rows only: root's
+  total, exposedCount, leftBehindCount, udp}`. `total` counts every row
+  of the view, lite or full. `exposedCount` counts the user's exposed
+  rows only: root's
   `sshd` on `0.0.0.0` carries the pill in its row but colours no badge.
   It is its own sampler with its own lock and process cache.
 - **Live sampling is 1 s, and only while a live graph is on screen**

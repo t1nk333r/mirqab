@@ -6,7 +6,12 @@
 //! processes that hold them, and root's or another user's sockets get no
 //! pid; the owner map is rebuilt only when the user's inodes change or a
 //! mapped process is gone; the lite view reads no fd; uptime, memory and
-//! the label come from the owner; and the stream's golden file.
+//! the label come from the owner; and the stream's golden file. From the
+//! review of PR #22: a forked server's workers join the parent's row
+//! (`pids`), independent holders are rows of their own, one process on two
+//! binds is two rows, addresses on `lo`, a veth and an alias label get
+//! their scopes, and the interface table is read again when the bind
+//! addresses change.
 
 use mirqab_core::Root;
 use mirqab_core::act::Recording;
@@ -84,6 +89,45 @@ fn tcp_row(local: &str, uid: u32, inode: u64) -> String {
     format!(
         "  99: {local} 00000000:0000 0A 00000000:00000000 00:00000000 00000000 {uid:5}        0 {inode} 1 0000000000000000 100 0 0 10 0"
     )
+}
+
+/// A copy of the process at `from` as pid `to` with parent `ppid`: its
+/// `stat` and `status` say the new pid and parent, and its fd links stay,
+/// so it holds the same sockets (a forked worker, or a second server).
+fn clone_proc(dir: &Path, from: u32, to: u32, ppid: u32) {
+    let (src, dst) = (
+        dir.join(format!("proc/{from}")),
+        dir.join(format!("proc/{to}")),
+    );
+    copy_tree(&src, &dst);
+    let stat = std::fs::read_to_string(dst.join("stat")).unwrap();
+    let close = stat.rfind(')').unwrap();
+    let mut rest: Vec<&str> = stat[close + 2..].split(' ').collect();
+    let ppid_s = ppid.to_string();
+    rest[1] = &ppid_s;
+    let comm = &stat[stat.find(' ').unwrap()..close + 1];
+    std::fs::write(dst.join("stat"), format!("{to}{comm} {}", rest.join(" "))).unwrap();
+    let status: String = std::fs::read_to_string(dst.join("status"))
+        .unwrap()
+        .lines()
+        .map(|l| match l.split_once(':') {
+            Some(("Pid" | "Tgid", _)) => format!("{}:\t{to}\n", l.split(':').next().unwrap()),
+            Some(("PPid", _)) => format!("PPid:\t{ppid}\n"),
+            _ => format!("{l}\n"),
+        })
+        .collect();
+    std::fs::write(dst.join("status"), status).unwrap();
+}
+
+/// Writes a scratch tree's interface table with these entries added.
+fn add_ifaddrs(dir: &Path, entries: &[(&str, &str)]) {
+    let path = dir.join("run/mirqab-test/ifaddrs.json");
+    let mut table: Vec<Value> =
+        serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    for (name, addr) in entries {
+        table.push(json!({"name": name, "addr": addr}));
+    }
+    std::fs::write(&path, serde_json::to_string(&table).unwrap()).unwrap();
 }
 
 fn probed(root: &Root) -> Ports {
@@ -271,16 +315,19 @@ fn each_bind_address_gets_its_scope() {
             &tcp_row("016433C6:1388", 1000, 70901),
             &tcp_row("630200C0:1389", 1000, 70902),
             &tcp_row("140200C0:138A", 1000, 70903),
+            &tcp_row("4D0200C0:1770", 1000, 70905),
+            &tcp_row("116433C6:1771", 1000, 70906),
+            &tcp_row("0B0200C0:1772", 1000, 70907),
         ],
     );
+    add_ifaddrs(&s.0, &[("lo", "192.0.2.77")]);
     add_rows(
         &s.0,
         "tcp6",
-        &[&tcp_row(
-            "000080FE000000000000000001000000:138B",
-            1000,
-            70904,
-        )],
+        &[
+            &tcp_row("000080FE000000000000000001000000:138B", 1000, 70904),
+            &tcp_row("B80D0120000000000000000010000000:1773", 1000, 70908),
+        ],
     );
     let root = Root::new(&s.0);
     let d = data(get(&mut probed(&root), &root, json!({})));
@@ -296,7 +343,18 @@ fn each_bind_address_gets_its_scope() {
         "a wireless address"
     );
     assert_eq!(scope(5003), ("fe80::1", "link", true));
-    assert_eq!(d.exposed_count, 8);
+    // An address on lo that is not loopback itself: reachable from
+    // outside under the weak host model.
+    assert_eq!(scope(6000), ("192.0.2.77", "other", true));
+    assert_eq!(scope(6001), ("198.51.100.17", "other", true), "a veth");
+    assert_eq!(
+        scope(6002),
+        ("192.0.2.11", "lan", true),
+        "an alias label's interface"
+    );
+    assert_eq!(scope(6003), ("2001:db8::10", "lan", true));
+    assert_eq!(row(&d, 6003).families, [6]);
+    assert_eq!(d.exposed_count, 12);
 }
 
 #[test]
@@ -377,6 +435,16 @@ fn the_owner_map_is_rebuilt_only_when_the_inode_set_changes() {
     p.idle();
     tick(&mut p, &copy, &all);
     assert_eq!(rebuilds(&p), 6);
+    // A worker of a mapped tree exits: the tree's every pid is checked,
+    // not only its root.
+    clone_proc(&s.0, 6410, 6700, 6410);
+    get(&mut p, &copy, json!({}));
+    assert_eq!(rebuilds(&p), 7);
+    tick(&mut p, &copy, &all);
+    assert_eq!(rebuilds(&p), 7);
+    std::fs::remove_dir_all(s.0.join("proc/6700")).unwrap();
+    tick(&mut p, &copy, &all);
+    assert_eq!(rebuilds(&p), 8, "a mapped worker is gone");
 }
 
 #[test]
@@ -390,18 +458,18 @@ fn the_lite_view_reads_no_fd_and_gives_counts() {
         0,
         "no owner map while every subscriber is lite"
     );
-    // Your TCP rows: 3000, 4096, 5173, 8000, 8384, 9000, 22000.
+    // Every TCP row, whoever's: `total` counts as in the full view.
     assert_eq!(
         ports::view(&sample, &lite),
-        json!({"lite": true, "total": 7, "exposedCount": 4, "leftBehindCount": 0, "udp": false})
+        json!({"lite": true, "total": 11, "exposedCount": 4, "leftBehindCount": 0, "udp": false})
     );
     assert_eq!(
         ports::view(&sample, &json!({"lite": true, "udp": true})),
-        json!({"lite": true, "total": 7, "exposedCount": 4, "leftBehindCount": 0, "udp": true}),
+        json!({"lite": true, "total": 11, "exposedCount": 4, "leftBehindCount": 0, "udp": true}),
         "UDP was not read for a TCP-only subscriber"
     );
     let get_lite = get(&mut p, &root, lite.clone());
-    assert_eq!(get_lite["total"], 7);
+    assert_eq!(get_lite["total"], 11);
     assert_eq!(rebuilds(&p), 0, "a lite get maps nothing either");
     // A subscriber that is not lite brings the map.
     let sample = tick(&mut p, &root, &[lite.clone(), json!({})]);
@@ -454,6 +522,84 @@ fn uptime_rss_and_label_come_from_the_owner() {
         row(&d, 3000).rss_bytes,
         Some(1000 * selfcost::page_size(&copy))
     );
+}
+
+#[test]
+fn a_forked_servers_workers_join_the_parents_row() {
+    let s = scratch_copy("forked");
+    clone_proc(&s.0, 6410, 6700, 6410);
+    let root = Root::new(&s.0);
+    let mut p = probed(&root);
+    let d = data(get(&mut p, &root, json!({})));
+    let next = row(&d, 3000);
+    assert_eq!((next.pid, next.start), (Some(6410), Some(9100)));
+    assert_eq!(next.pids, [6410, 6700]);
+    let page = selfcost::page_size(&root);
+    assert_eq!(
+        next.rss_bytes,
+        Some(2 * 60_000 * page),
+        "summed over the tree"
+    );
+    assert_eq!(row(&d, 22).pids, Vec::<u32>::new(), "root's rows list none");
+    assert_eq!(row(&d, 8000).pids, [6600]);
+    let (_, status) = p.status().into_iter().find(|(k, _)| *k == "ports").unwrap();
+    assert_eq!(
+        status["owners"], 7,
+        "every pid that holds a socket: {status}"
+    );
+}
+
+#[test]
+fn independent_holders_of_one_port_are_rows_in_pid_order() {
+    let s = scratch_copy("siblings");
+    // A second server sharing the socket whose parent holds nothing (the
+    // shell): its own row, not a worker of 6410.
+    clone_proc(&s.0, 6410, 6701, 3070);
+    let root = Root::new(&s.0);
+    let d = data(get(&mut probed(&root), &root, json!({})));
+    let rows = rows_on(&d, 3000);
+    let got: Vec<(Option<u32>, &[u32])> = rows.iter().map(|r| (r.pid, r.pids.as_slice())).collect();
+    assert_eq!(got, [(Some(6410), &[6410][..]), (Some(6701), &[6701][..])]);
+}
+
+#[test]
+fn one_process_on_two_binds_of_one_port_is_two_rows() {
+    let s = scratch_copy("twobinds");
+    std::os::unix::fs::symlink("socket:[70072]", s.0.join("proc/6610/fd/22")).unwrap();
+    add_rows(&s.0, "tcp", &[&tcp_row("0100007F:2328", 1000, 70072)]);
+    let root = Root::new(&s.0);
+    let d = data(get(&mut probed(&root), &root, json!({})));
+    let got: Vec<(Option<u32>, &str, &str)> = rows_on(&d, 9000)
+        .iter()
+        .map(|r| (r.pid, r.bind.as_str(), r.scope.as_str()))
+        .collect();
+    assert_eq!(
+        got,
+        [
+            (Some(6610), "127.0.0.1", "local"),
+            (Some(6610), "192.0.2.10", "lan")
+        ]
+    );
+}
+
+#[test]
+fn the_interface_table_is_read_again_when_the_bind_addresses_change() {
+    let s = scratch_copy("table");
+    add_rows(&s.0, "tcp", &[&tcp_row("630200C0:1389", 1000, 70902)]);
+    let root = Root::new(&s.0);
+    let mut p = probed(&root);
+    let scope = |v: Value, port: u16| row(&data(v), port).scope.clone();
+    assert_eq!(scope(get(&mut p, &root, json!({})), 5001), "unknown");
+    // The machine gains the address, but no bind address changed: the
+    // table read a moment ago still serves.
+    add_ifaddrs(&s.0, &[("lan0", "192.0.2.99")]);
+    let all = [json!({})];
+    let v = ports::view(&tick(&mut p, &root, &all), &json!({}));
+    assert_eq!(scope(v, 5001), "unknown");
+    // A new specific bind address: the table is read again.
+    add_rows(&s.0, "tcp", &[&tcp_row("140200C0:138A", 1000, 70903)]);
+    let v = ports::view(&tick(&mut p, &root, &all), &json!({}));
+    assert_eq!(scope(v, 5001), "lan");
 }
 
 #[test]

@@ -374,7 +374,8 @@ pub struct ProcessData {
     pub state: Option<String>,
 }
 
-/// The `ports` stream (plan 007): one row per listening socket and owner.
+/// The `ports` stream (plan 007): one row per port, protocol, bind pair and
+/// owner (a tree of the user's processes, or a uid).
 /// `params` are `udp` (bool: also bound UDP sockets) and `lite` (bool:
 /// the counts only, [`PortsLite`]), nothing else.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -387,7 +388,7 @@ pub struct PortsData {
     pub exposed_count: u32,
     /// Your rows whose launcher's session ended (an agent that exited).
     pub left_behind_count: u32,
-    /// Every row in this view.
+    /// Every row in this view, whoever's.
     pub total: u32,
     /// Whether UDP rows are in this view.
     pub udp: bool,
@@ -418,8 +419,13 @@ pub struct PortRow {
     /// `you`, `root`, `other` or `docker`.
     pub owner: String,
     pub uid: Option<u32>,
-    /// The process holding the socket, for your rows only, when found.
+    /// The process holding the socket, for your rows only, when found:
+    /// the root of the tree of processes that hold it.
     pub pid: Option<u32>,
+    /// Every process of that tree that holds the socket (a forked
+    /// server's workers): the root first, then the rest by pid. Empty for
+    /// root's and other users' rows.
+    pub pids: Vec<u32>,
     /// Its start time (clock ticks after boot), with the pid its identity.
     pub start: Option<u64>,
     /// The process's name (`comm`, or the program's when cut short).
@@ -499,7 +505,7 @@ pub struct SystemPort {
 }
 
 /// The `ports` stream with `lite: true`: counts only, for a badge, the
-/// tray and a bar item. `total` counts your rows.
+/// tray and a bar item. `total` counts every row, as in the full view.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct PortsLite {

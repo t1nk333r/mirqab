@@ -8,7 +8,10 @@
 //! listening inodes changed since the last tick, or a mapped process is
 //! gone or is another one (a new start time); between rebuilds a tick reads
 //! the tables and `stat` and `statm` of the few mapped processes. A `get`
-//! rebuilds it. While every subscriber is lite (the counts, for a badge, the
+//! rebuilds it. A row is a port, a protocol, a bind pair and an owner: for
+//! the user's sockets, the tree of processes that hold it (a forked
+//! server and its workers are one row, `pids` listing them, root first;
+//! independent holders are rows of their own). While every subscriber is lite (the counts, for a badge, the
 //! tray and a bar item) the tables are all that is read.
 //!
 //! The sampler is its own slot with its own lock and its own process
@@ -124,14 +127,68 @@ fn url(port: u16) -> String {
     format!("{scheme}://localhost:{port}")
 }
 
-/// A process of the user's that holds a listening socket.
+/// The user's processes that hold one listening socket and form one
+/// tree: the root (a holder whose parent does not hold the socket) and
+/// its descendants that hold it too, such as a forked server's workers.
 #[derive(Debug, Clone)]
 struct Holder {
+    /// The root's pid and start time: the row's identity.
     pid: u32,
     start: u64,
     name: String,
     label: String,
+    /// Every process of the tree that holds the socket, as (pid, start):
+    /// the root first, then the rest by pid.
+    members: Vec<(u32, u64)>,
+    /// Resident memory summed over the members.
     rss: Option<u64>,
+}
+
+/// Sums what each member gave, or None when none gave anything.
+fn sum(values: impl Iterator<Item = Option<u64>>) -> Option<u64> {
+    values.fold(None, |acc, v| match (acc, v) {
+        (None, v) => v,
+        (Some(a), Some(b)) => Some(a + b),
+        (a, None) => a,
+    })
+}
+
+/// Groups the holders of one socket into trees by their parent links: a
+/// holder whose parent does not hold the socket heads a tree, and every
+/// other holder joins the tree its chain of holding parents leads to.
+/// Trees come in their roots' pid order, each root first.
+fn trees(holders: &[&procfs::Proc]) -> Vec<Vec<usize>> {
+    let index: HashMap<u32, usize> = holders
+        .iter()
+        .enumerate()
+        .map(|(i, p)| (p.pid(), i))
+        .collect();
+    let root_of = |mut i: usize| {
+        // A loop in the parent links (pids reused mid-walk) cannot hang it.
+        for _ in 0..64 {
+            match index.get(&holders[i].stat.ppid) {
+                Some(&parent) if parent != i => i = parent,
+                _ => break,
+            }
+        }
+        i
+    };
+    let mut by_root: Vec<(usize, Vec<usize>)> = Vec::new();
+    for i in 0..holders.len() {
+        let r = root_of(i);
+        match by_root.iter_mut().find(|(root, _)| *root == r) {
+            Some((_, members)) => members.push(i),
+            None => by_root.push((r, vec![i])),
+        }
+    }
+    by_root.sort_by_key(|(r, _)| holders[*r].pid());
+    by_root
+        .into_iter()
+        .map(|(r, mut members)| {
+            members.sort_by_key(|&i| (i != r, holders[i].pid()));
+            members
+        })
+        .collect()
 }
 
 /// Which addresses of one owner and port fold into one row: the
@@ -242,25 +299,31 @@ impl Ports {
     }
 
     /// Whether the map must be built again: the user's inodes changed, or
-    /// a mapped process is gone or another one. Refreshes the mapped
-    /// processes' memory when it need not.
+    /// a mapped process (any member of a tree, not only its root) is gone
+    /// or another one. Refreshes the trees' memory when it need not.
     fn stale(&mut self, root: &Root, mine: &BTreeSet<u64>) -> bool {
         if self.built_for.as_ref() != Some(mine) {
             return true;
         }
+        let page = self.page;
         for h in self.owners.values_mut().flatten() {
-            let st = procfs::read_text(root, &format!("proc/{}/stat", h.pid))
-                .as_deref()
-                .and_then(procfs::stat);
-            if st.is_none_or(|s| s.start != h.start) {
-                return true;
+            let mut rss = Vec::with_capacity(h.members.len());
+            for &(pid, start) in &h.members {
+                let st = procfs::read_text(root, &format!("proc/{pid}/stat"))
+                    .as_deref()
+                    .and_then(procfs::stat);
+                if st.is_none_or(|s| s.start != start) {
+                    return true;
+                }
+                rss.push(
+                    root.read(&format!("proc/{pid}/statm"))
+                        .ok()
+                        .as_deref()
+                        .and_then(procfs::statm)
+                        .map(|m| m.resident * page),
+                );
             }
-            h.rss = root
-                .read(&format!("proc/{}/statm", h.pid))
-                .ok()
-                .as_deref()
-                .and_then(procfs::statm)
-                .map(|m| m.resident * self.page);
+            h.rss = sum(rss.into_iter());
         }
         false
     }
@@ -276,18 +339,26 @@ impl Ports {
         let found = owner::owners_of(root, &own, &mine);
         let by_key: HashMap<(u32, u64), &procfs::Proc> =
             own.iter().map(|p| (p.key(), *p)).collect();
+        let page = self.page;
         self.owners = found
             .into_iter()
             .map(|(inode, keys)| {
-                let holders = keys
+                let procs: Vec<&procfs::Proc> =
+                    keys.iter().filter_map(|k| by_key.get(k).copied()).collect();
+                let holders = trees(&procs)
                     .into_iter()
-                    .filter_map(|k| by_key.get(&k))
-                    .map(|p| Holder {
-                        pid: p.pid(),
-                        start: p.stat.start,
-                        name: p.name(),
-                        label: label(&p.stat.comm, &p.info.cmdline),
-                        rss: p.mem.map(|m| m.resident * self.page),
+                    .map(|tree| {
+                        let p = procs[tree[0]];
+                        Holder {
+                            pid: p.pid(),
+                            start: p.stat.start,
+                            name: p.name(),
+                            label: label(&p.stat.comm, &p.info.cmdline),
+                            members: tree.iter().map(|&i| procs[i].key()).collect(),
+                            rss: sum(tree
+                                .iter()
+                                .map(|&i| procs[i].mem.map(|m| m.resident * page))),
+                        }
                     })
                     .collect();
                 (inode, holders)
@@ -404,6 +475,9 @@ impl Ports {
                     owner: owner.to_string(),
                     uid: Some(uid),
                     pid: h.map(|h| h.pid),
+                    pids: h
+                        .map(|h| h.members.iter().map(|m| m.0).collect())
+                        .unwrap_or_default(),
                     start: h.map(|h| h.start),
                     process: h.map(|h| strings::plain(&h.name).into_owned()),
                     label: h.map(|h| h.label.clone()),
@@ -423,8 +497,8 @@ impl Ports {
 }
 
 /// One subscriber's view: the UDP rows only when it asked, its own counts,
-/// or with `lite` the counts alone (`total` then counts the user's rows,
-/// what a badge shows).
+/// or with `lite` the counts alone (`total` counts every row there too; a
+/// badge shows it, coloured by `exposedCount`).
 pub fn view(data: &Value, params: &Value) -> Value {
     let udp = flag(params, "udp");
     let rows: Vec<PortRow> = serde_json::from_value(data["rows"].clone()).unwrap_or_default();
@@ -440,7 +514,7 @@ pub fn view(data: &Value, params: &Value) -> Value {
     if flag(params, "lite") {
         return serde_json::to_value(PortsLite {
             lite: true,
-            total: mine().count() as u32,
+            total: rows.len() as u32,
             exposed_count,
             left_behind_count,
             udp,
@@ -526,7 +600,12 @@ impl Sampler for Ports {
     }
 
     fn status(&self) -> Vec<(&'static str, Value)> {
-        let owners: BTreeSet<u32> = self.owners.values().flatten().map(|h| h.pid).collect();
+        let owners: BTreeSet<u32> = self
+            .owners
+            .values()
+            .flatten()
+            .flat_map(|h| h.members.iter().map(|m| m.0))
+            .collect();
         vec![(
             "ports",
             json!({"owners": owners.len(), "rebuilds": self.rebuilds}),

@@ -15,6 +15,7 @@
       "launcher": null,
       "owner": "root",
       "pid": null,
+      "pids": [],
       "port": 22,
       "process": null,
       "project": null,
@@ -39,6 +40,7 @@
       "launcher": null,
       "owner": "root",
       "pid": null,
+      "pids": [],
       "port": 53,
       "process": null,
       "project": null,
@@ -64,6 +66,7 @@
       "launcher": null,
       "owner": "root",
       "pid": null,
+      "pids": [],
       "port": 631,
       "process": null,
       "project": null,
@@ -88,6 +91,9 @@
       "launcher": null,
       "owner": "you",
       "pid": 6410,
+      "pids": [
+        6410
+      ],
       "port": 3000,
       "process": "node",
       "project": null,
@@ -112,6 +118,9 @@
       "launcher": null,
       "owner": "you",
       "pid": 6500,
+      "pids": [
+        6500
+      ],
       "port": 4096,
       "process": "opencode",
       "project": null,
@@ -137,6 +146,9 @@
       "launcher": null,
       "owner": "you",
       "pid": 3020,
+      "pids": [
+        3020
+      ],
       "port": 5173,
       "process": "node",
       "project": null,
@@ -161,6 +173,7 @@
       "launcher": null,
       "owner": "other",
       "pid": null,
+      "pids": [],
       "port": 6379,
       "process": null,
       "project": null,
@@ -185,6 +198,9 @@
       "launcher": null,
       "owner": "you",
       "pid": 6600,
+      "pids": [
+        6600
+      ],
       "port": 8000,
       "process": "python3",
       "project": null,
@@ -210,6 +226,7 @@
       "launcher": null,
       "owner": "root",
       "pid": null,
+      "pids": [],
       "port": 8088,
       "process": null,
       "project": null,
@@ -234,6 +251,9 @@
       "launcher": null,
       "owner": "you",
       "pid": 1300,
+      "pids": [
+        1300
+      ],
       "port": 8384,
       "process": "example-sync",
       "project": null,
@@ -258,6 +278,9 @@
       "launcher": null,
       "owner": "you",
       "pid": 6610,
+      "pids": [
+        6610
+      ],
       "port": 9000,
       "process": "node",
       "project": null,
@@ -282,6 +305,9 @@
       "launcher": null,
       "owner": "you",
       "pid": 1300,
+      "pids": [
+        1300
+      ],
       "port": 22000,
       "process": "example-sync",
       "project": null,
@@ -306,6 +332,9 @@
       "launcher": null,
       "owner": "you",
       "pid": 6610,
+      "pids": [
+        6610
+      ],
       "port": 41234,
       "process": "node",
       "project": null,

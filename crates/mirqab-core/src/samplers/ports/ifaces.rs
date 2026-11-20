@@ -13,9 +13,8 @@ use crate::root::Root;
 use std::collections::HashMap;
 use std::net::IpAddr;
 
-/// ARPHRD_LOOPBACK and ARPHRD_NONE (`include/uapi/linux/if_arp.h`); a
-/// WireGuard or tun interface is ARPHRD_NONE.
-const ARPHRD_LOOPBACK: &str = "772";
+/// ARPHRD_NONE (`include/uapi/linux/if_arp.h`): a WireGuard or tun
+/// interface.
 const ARPHRD_NONE: &str = "65534";
 /// Where a fixture root keeps its interface table.
 pub const FIXTURE_TABLE: &str = "run/mirqab-test/ifaddrs.json";
@@ -106,9 +105,10 @@ pub fn kind(root: &Root, name: &str) -> Scope {
         .find_map(|l| l.strip_prefix("DEVTYPE="))
         .map(str::trim);
     let has = |sub: &str| root.exists(&format!("{dir}/{sub}"));
-    if ty == ARPHRD_LOOPBACK {
-        Scope::Local
-    } else if devtype == Some("bridge") || has("bridge") {
+    // No arm for the loopback interface: an address on `lo` that is not
+    // loopback itself (127/8, `::1`) is reachable from outside under
+    // Linux's weak host model, so it falls through to `Other`.
+    if devtype == Some("bridge") || has("bridge") {
         Scope::Bridge
     } else if ty == ARPHRD_NONE || devtype == Some("wireguard") || has("tun_flags") {
         Scope::Vpn
@@ -139,6 +139,9 @@ impl Table {
         let mut by_name: HashMap<String, Scope> = HashMap::new();
         let mut kinds = HashMap::new();
         for (name, addr) in addrs {
+            // An alias label (`lan0:1`) names no directory under
+            // sys/class/net: its interface (`lan0`) does.
+            let name = name.split(':').next().unwrap_or_default().to_string();
             let k = *by_name
                 .entry(name)
                 .or_insert_with_key(|name| kind(root, name));

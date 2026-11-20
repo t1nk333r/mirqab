@@ -29,7 +29,8 @@ fn process_cell(r: &PortRow) -> String {
         ("docker", _) => r
             .container
             .as_ref()
-            .and_then(|c| c.name.clone())
+            .and_then(|c| c.name.as_deref())
+            .map(|n| strings::plain(n).into_owned())
             .unwrap_or_else(|| strings::PORTS_NONE.to_string()),
         _ => strings::ports_other(r.uid),
     }
@@ -239,6 +240,24 @@ mod tests {
         let one = row(8000, "you", Some(6600));
         for l in port_lines(&[&one]) {
             assert!(!l.chars().any(char::is_control), "{l:?}");
+        }
+    }
+
+    #[test]
+    fn a_containers_name_cannot_reach_the_terminal() {
+        let mut docker = row(8088, "docker", None);
+        docker.container = Some(mirqab_core::proto::stream::ContainerRef {
+            id: "d0c4e7a1b2c3".into(),
+            name: Some("web\u{1b}[2J".into()),
+            image: None,
+        });
+        assert!(!process_cell(&docker).contains('\u{1b}'));
+        let d = PortsData {
+            ports: vec![docker.clone()],
+            ..Default::default()
+        };
+        for l in ports_lines(&d).iter().chain(port_lines(&[&docker]).iter()) {
+            assert!(!l.contains('\u{1b}'), "{l:?}");
         }
     }
 

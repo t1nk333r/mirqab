@@ -35,10 +35,10 @@ pub fn socket_inodes(root: &Root, pid: u32) -> Vec<u64> {
 }
 
 /// The processes in `procs` that hold each inode of `wanted`, as
-/// `(pid, start)`, read in pid order. The scan stops after the process in
-/// which the last wanted inode turned up: a forked server's workers share
-/// their parent's socket, and the parent, met first, is the one a row
-/// names. An inode no process holds is absent from the map.
+/// `(pid, start)`, in pid order. Every process is read: a forked server's
+/// workers share their parent's socket, and the row (one per holder tree,
+/// `mod.rs`) lists them all, so a stop can name each. An inode no process
+/// holds is absent from the map.
 pub fn owners_of(
     root: &Root,
     procs: &[&Proc],
@@ -55,9 +55,6 @@ pub fn owners_of(
             if wanted.contains(&inode) {
                 found.entry(inode).or_default().push(p.key());
             }
-        }
-        if found.len() == wanted.len() {
-            break;
         }
     }
     found

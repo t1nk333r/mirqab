@@ -46,8 +46,11 @@ root's 8088 on both families (a Docker proxy), root's 631 on 127.0.0.1 and
 the interface table a fixture root uses in place of `getifaddrs`, with
 made-up names and documentation addresses (`lo`, `lan0` 192.0.2.10 and
 2001:db8::10, `wlan0` 192.0.2.20, `br-example` 198.51.100.1, `vpn0`
-203.0.113.5), and `sys/class/net/<name>/` gives each its kind (`type`,
-`uevent`, `device/`, `wireless/`, `bridge/`). `users/user/code/acme-web`,
+203.0.113.5; `veth0` 198.51.100.17, a virtual link with no kind of its
+own, so scope `other`; `lan0:1` 192.0.2.11, an alias label of `lan0`,
+which the table strips before it reads `sys/class/net/lan0/`; no committed
+socket binds these two), and `sys/class/net/<name>/` gives each its kind
+(`type`, `uevent`, `device/`, `wireless/`, `bridge/`). `users/user/code/acme-web`,
 `users/user/src/web` and `users/user/src/api` hold the `package.json` files
 part 1b reads for projects and frameworks (git refuses a tracked `.git`
 directory, so no fixture project has one).
