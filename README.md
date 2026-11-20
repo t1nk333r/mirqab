@@ -67,10 +67,11 @@ QR code and the badge follow in later parts.
   [--json]` (explains one process), `ports [--udp] [--json]` (every
   listening port with its bind address, its reach (`local`, `all`, `lan`,
   `bridge`, `vpn`, `link`, `other` or `unknown`), the process of yours
-  that holds it and how long it has run; root's ports show `root` and no
-  process; a line names each port of yours the network can reach, which
-  mirqab tells from the bind address alone, never from your firewall),
-  `port PORT [--proto tcp|udp] [--json]` (everything about one port),
+  that holds it and how long it has run; root's ports show `root`, another
+  user's show its uid, and neither shows a process; a line names each port
+  of yours the network can reach, which mirqab tells from the bind address
+  alone, never from your firewall), `port PORT [--proto tcp|udp] [--json]`
+  (each listener on one port, with its reach and process),
   `quit PID|NAME [-y] [--force]
   [--dry-run] [--json]` (quits a
   process or an app after asking; `--force` sends SIGKILL, and a user

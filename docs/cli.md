@@ -98,7 +98,7 @@ Asks a process to quit (SIGTERM), or with --force ends it (SIGKILL). A number is
 mirqab ports [--udp] [--json]
 ```
 
-Lists every listening TCP port: the address it is bound to, how far it reaches (local: only this machine; all: every interface; lan, bridge, vpn, link or other: that network; unknown: an address on no interface, treated as reachable), the process holding it and how long it has run. A port of root's or another user's shows its owner and no process: mirqab cannot see whose it is. A line after the table names each port of yours that the network can reach. mirqab reads the bind address only and never your firewall, so a reachable port may still be blocked by one. --udp adds bound UDP sockets.
+Lists every listening TCP port: the address it is bound to, how far it reaches (local: only this machine; all: every interface; lan, bridge, vpn, link or other: that network; unknown: an address on no interface, treated as reachable), the process holding it and how long it has run. A port of root's or another user's shows its owner and no process: mirqab cannot see which process holds it. A line after the table names each port of yours that the network can reach. mirqab reads the bind address only and never your firewall, so a port the network can reach may still be blocked by a firewall. --udp adds bound UDP sockets.
 
 ## port
 
