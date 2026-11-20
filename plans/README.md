@@ -12,7 +12,7 @@ Read `docs/architecture.md` first: it is the contract the plans build to.
 | 004 | Tray icon and bar items | M2 | P1 | M | 001 002 | DONE |
 | 005 | CLI and MCP server | M2 | P1 | M | 001 002 | DONE |
 | 006 | Apps tab and process inspector | M3 | P1 | L | 001 005 | DONE |
-| 007 | Ports tab | M3 | P1 | L | 001 005 006 | PLANNED |
+| 007 | Ports tab | M3 | P1 | L | 001 005 006 | IN PROGRESS |
 | 008 | Agents tab | M3 | P1 | L | 001 005 006 007 | PLANNED |
 | 009 | Awake tab | M3 | P2 | M | 001 005 | PLANNED |
 | 010 | Disk tab | M4 | P2 | L | 001 | PLANNED |

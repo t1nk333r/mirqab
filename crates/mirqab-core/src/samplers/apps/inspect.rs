@@ -444,10 +444,6 @@ pub fn read(root: &Root, pid: u32, ctx: &Ctx) -> Result<Read, (Code, String)> {
         .read("proc/stat")
         .ok()
         .and_then(|t| crate::samplers::system::cpu::stat(&t).btime);
-    let uptime: Option<f64> = root
-        .read("proc/uptime")
-        .ok()
-        .and_then(|u| u.split_whitespace().next()?.parse().ok());
     let started_secs = st.start as f64 / tck;
     let user = status
         .uid
@@ -467,7 +463,7 @@ pub fn read(root: &Root, pid: u32, ctx: &Ctx) -> Result<Read, (Code, String)> {
         uid: status.uid,
         user: user.map(|u| u.name.clone()),
         started_at: btime.map(|b| b + started_secs as i64),
-        age_sec: uptime.map(|u| (u - started_secs).max(0.0) as u64),
+        age_sec: procfs::age_secs(root, st.start, ctx.tck),
         cpu_time_sec: Some((st.ticks as f64 / tck * 100.0).round() / 100.0),
         threads: Some(st.threads),
         state: Some(st.state.to_string()),

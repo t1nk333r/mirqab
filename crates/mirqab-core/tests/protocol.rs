@@ -7,7 +7,8 @@
 //! interval share one line; and the `process` stream. Part 4: the minute
 //! writer writes a sampler's events; a `get apps` and an `apps.inspect`
 //! whose `pacman` takes 2 s no longer hold a subscriber's frame back
-//! (D1); `status.focus` is null without a focus source.
+//! (D1); `status.focus` is null without a focus source. Plan 007: the
+//! `ports` stream takes only its own params, served at 5 s.
 
 use mirqab_core::proto::{Request, ServerFrame, frame};
 use mirqab_core::root::Root;
@@ -196,7 +197,9 @@ fn hello_comes_first_with_the_capabilities() {
     let d = start("hello");
     let mut c = Client::connect(&d);
     let caps = c.hello();
-    let all = ["apps", "counted", "fake", "process", "self", "system", "ui"];
+    let all = [
+        "apps", "counted", "fake", "ports", "process", "self", "system", "ui",
+    ];
     assert_eq!(caps, all);
     assert_eq!(
         c.call("capabilities", None, Value::Null).unwrap(),
@@ -1037,6 +1040,42 @@ fn the_process_stream_serves_one_pid_live_and_checks_its_params() {
     let next = a.event("process").unwrap();
     assert_eq!(next["pid"], 2001);
     assert!(next["cpu"].is_number(), "{next}");
+}
+
+#[test]
+fn ports_params_are_strict() {
+    let d = start("ports");
+    let mut c = Client::connect(&d);
+    c.hello();
+    for bad in [
+        json!({"udp": "yes"}),
+        json!({"sort": "x"}),
+        json!({"lite": 1}),
+    ] {
+        assert_eq!(
+            c.call("subscribe", Some("ports"), bad.clone()),
+            Err("bad-request".into()),
+            "{bad}"
+        );
+        assert_eq!(
+            c.call("get", Some("ports"), bad.clone()),
+            Err("bad-request".into()),
+            "{bad}"
+        );
+    }
+    assert_eq!(
+        subscribers(&mut c, "ports"),
+        0,
+        "a refused subscribe adds none"
+    );
+    let reply = c
+        .call("subscribe", Some("ports"), json!({"udp": true}))
+        .unwrap();
+    assert_eq!(reply["interval"], 5000, "every 5 s unless asked");
+    let frame = c.event("ports").unwrap();
+    assert_eq!(frame["total"], 13);
+    let status = c.call("status", None, Value::Null).unwrap();
+    assert_eq!(status["ports"]["rebuilds"], 1, "{status}");
 }
 
 #[test]

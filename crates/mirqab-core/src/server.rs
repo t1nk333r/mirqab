@@ -23,6 +23,7 @@ use crate::root::Root;
 use crate::sampler::{Accepts, Answer, Sampler, View};
 use crate::samplers::apps::Apps;
 use crate::samplers::apps::actions::{self, Action, Actions};
+use crate::samplers::ports::Ports;
 use crate::samplers::process::Process;
 use crate::samplers::system::System;
 use crate::selfcost::{self, Meter};
@@ -382,6 +383,12 @@ pub fn listen(opts: Options) -> Result<Server, ListenError> {
     // Its own slot and so its own lock: a 1 s reading never waits behind
     // the `apps` walk, `get apps`' second reading or the inspector's pacman.
     samplers.push(Box::new(Process::new()));
+    // One sender for the daemon: the actions and the ports stream's reads
+    // (part 1b's `docker ps`) share it, so a fixture root never runs either.
+    let sender = crate::act::sender_for(&opts.root);
+    // Its own slot too: a 5 s read of the socket tables never waits behind
+    // the `apps` walk (plan 007).
+    samplers.push(Box::new(Ports::new(Arc::clone(&sender))));
     samplers.extend(opts.samplers);
 
     let mut slots = BTreeMap::new();
@@ -423,7 +430,7 @@ pub fn listen(opts: Options) -> Result<Server, ListenError> {
             }
         },
     };
-    let actions = Actions::new(crate::act::sender_for(&opts.root));
+    let actions = Actions::new(sender);
     let config = Config::load(&opts.config_path);
     if let Some(why) = config.broken() {
         log(&strings::config_broken(why));

@@ -103,6 +103,22 @@ pub const CLI_COMMANDS: &[CliCommand] = &[
         help: "Asks a process to quit (SIGTERM), or with --force ends it (SIGKILL). A number is a pid; anything else is an app's name as mirqab apps shows it, matched whole and ignoring case, and quits every process of that app, its main process first. A user service is stopped with systemctl --user, so it does not restart; the list names the other services the stop takes with it, and warns before the sound server or a desktop portal is stopped. The stop is refused when one of those services holds a process mirqab never signals, and at the confirmation when a service that was not listed would now stop too; when systemd cannot say what depends on a service, the list says so. It prints what it will do and asks; -y goes ahead without asking; without a terminal and without -y it does nothing and exits 3; --dry-run prints the list and stops. With --json the list goes to stderr and stdout holds the daemon's answer. It exits 1 when anything failed, or when nothing was done because everything was left alone; a process that had already exited counts as done. Never stopped or signalled: pid 1, another user's processes, kernel threads, anything outside your user's session, the daemon, the session's compositor, your user manager, the session bus (also any process named dbus-daemon, dbus-broker or dbus-broker-launch), and the program asking and its parents. A rootless container is not quit; stop it with its runtime. When the action could not be written to mirqab's history, it is still done and a warning says so.",
     },
     CliCommand {
+        name: "ports",
+        usage: &[(
+            "ports [--udp] [--json]",
+            "what is listening, and whether the network can reach it",
+        )],
+        help: "Lists every listening TCP port: the address it is bound to, how far it reaches (local: only this machine; all: every interface; lan, bridge, vpn, link or other: that network; unknown: an address on no interface, treated as reachable), the process holding it and how long it has run. A port of root's or another user's shows its owner and no process: mirqab cannot see which process holds it. A line after the table names each port of yours that the network can reach. mirqab reads the bind address only and never your firewall, so a port the network can reach may still be blocked by a firewall. --udp adds bound UDP sockets.",
+    },
+    CliCommand {
+        name: "port",
+        usage: &[(
+            "port PORT [--proto tcp|udp] [--json]",
+            "everything about one port",
+        )],
+        help: "Shows everything mirqab knows about what listens on PORT (TCP unless --proto udp): one block per listener with its reach in words, the process, what it serves and how long it has run, and the URL to open it. It exits 1 when nothing listens there.",
+    },
+    CliCommand {
         name: "bar",
         usage: &[
             (
@@ -1993,6 +2009,157 @@ pub const UI_SELFTEST_NOT_FORWARDED: &str =
 /// A warning the daemon gave with the plan (the sound server, a portal).
 pub fn apps_warning(text: &str) -> String {
     format!("Warning: {}", plain(text))
+}
+
+// --- Ports (plan 007) --------------------------------------------------------
+
+/// A `ports` subscription or `get` whose params are not the stream's.
+pub const PORTS_PARAMS: &str =
+    "params are \"udp\" and \"lite\", each true or false, and nothing else";
+
+/// `status`'s reason when the socket tables cannot be read.
+pub fn ports_unavailable(why: &str) -> String {
+    format!("proc/net/tcp cannot be read: {why}")
+}
+
+/// What a scope means, in a sentence: `mirqab port`, the page's Reach
+/// line. mirqab reads bind addresses, never firewall rules.
+pub fn reach_sentence(scope: &str) -> &'static str {
+    match scope {
+        "local" => "Only this machine can connect.",
+        "all" => {
+            "Listening on every interface, so other devices on your network can connect, unless a firewall blocks it. Bind it to 127.0.0.1 to keep it on this machine."
+        }
+        "lan" => {
+            "Listening on this machine's network address, so other devices on your network can connect, unless a firewall blocks it."
+        }
+        "bridge" => {
+            "Listening on a container bridge address: containers on that bridge can connect, and so can anything the bridge forwards."
+        }
+        "vpn" => "Listening on a VPN address: devices on that VPN can connect.",
+        "link" => {
+            "Listening on a link-local address: devices on the same network segment can connect."
+        }
+        "other" => {
+            "Listening on the address of another network, such as a virtual link: whatever is on that network can connect."
+        }
+        _ => {
+            "Listening on an address mirqab cannot place on an interface; treat it as reachable from outside."
+        }
+    }
+}
+
+/// `mirqab ports`: the header and one row per listener, values already
+/// formatted.
+pub const PORTS_HEADER: &str = "PORT    PROTO  BIND             REACH    PROCESS               PROJECT          LAUNCHER      UP";
+
+#[allow(clippy::too_many_arguments)]
+pub fn ports_row(
+    port: u16,
+    proto: &str,
+    bind: &str,
+    reach: &str,
+    process: &str,
+    project: &str,
+    launcher: &str,
+    up: &str,
+) -> String {
+    let port = format!(":{port}");
+    let (bind, process) = (fit(bind, 16), fit(process, 21));
+    let (project, launcher) = (fit(project, 16), fit(launcher, 13));
+    format!(
+        "{port:<7} {proto:<6} {bind:<16} {reach:<8} {process:<21} {project:<16} {launcher:<13} {up}"
+    )
+}
+
+/// A column `mirqab ports` has no value for.
+pub const PORTS_NONE: &str = "-";
+/// The PROCESS cell of a port of root's.
+pub const PORTS_ROOT: &str = "root";
+/// The PROCESS cell of a port of yours whose process was not found.
+pub const PORTS_YOURS_UNKNOWN: &str = "yours, not found";
+/// The same, in a sentence (`mirqab port`, the page).
+pub const PORTS_YOURS_UNKNOWN_LONG: &str = "a process of yours mirqab could not find";
+
+/// The PROCESS cell of a process of yours: its name and pid.
+pub fn ports_process(name: &str, pid: u32) -> String {
+    format!("{} ({pid})", plain(name))
+}
+
+/// The PROCESS cell of another user's port.
+pub fn ports_other(uid: Option<u32>) -> String {
+    match uid {
+        Some(uid) => format!("uid {uid}"),
+        None => "another user".to_string(),
+    }
+}
+
+/// `mirqab port`: what root's port shows for its process.
+pub const PORTS_ROOT_LONG: &str = "owned by root; mirqab cannot see which process";
+
+/// `mirqab port`: another user's port.
+pub fn ports_other_long(uid: Option<u32>) -> String {
+    match uid {
+        Some(uid) => format!("owned by uid {uid}; mirqab cannot see which process"),
+        None => "owned by another user; mirqab cannot see which process".to_string(),
+    }
+}
+
+/// `mirqab ports`' last lines: one per port of yours the network reaches.
+pub fn ports_exposed_line(port: u16, proto: &str, bind: &str, process: &str) -> String {
+    format!(
+        "exposed: :{port}/{proto} {} listens on {}, so the network can reach it unless a firewall blocks it",
+        plain(process),
+        plain(bind)
+    )
+}
+
+/// `mirqab port`'s labels.
+pub const PORT_PORT: &str = "Port";
+pub const PORT_REACH: &str = "Reach";
+pub const PORT_PROCESS: &str = "Process";
+pub const PORT_LABEL: &str = "Label";
+pub const PORT_PROJECT: &str = "Project";
+pub const PORT_FRAMEWORK: &str = "Framework";
+pub const PORT_SHELL: &str = "Shell";
+pub const PORT_LAUNCHER: &str = "Launcher";
+pub const PORT_UNIT: &str = "Unit";
+pub const PORT_CONTAINER: &str = "Container";
+pub const PORT_UP: &str = "Up";
+pub const PORT_URL: &str = "URL";
+
+/// `mirqab port`: one labelled line.
+pub fn port_line(label: &str, value: &str) -> String {
+    format!("{label:<10} {}", plain(value))
+}
+
+/// `mirqab port`'s Port line: the port, the protocol, the bound address
+/// and its families.
+pub fn port_where(port: u16, proto: &str, bind: &str, families: &[u8]) -> String {
+    let fam = match families {
+        [4] => "IPv4",
+        [6] => "IPv6",
+        _ => "IPv4 and IPv6",
+    };
+    format!("{port}/{proto} on {} ({fam})", plain(bind))
+}
+
+/// `mirqab port`'s Project line: the name and where it is.
+pub fn port_project(name: &str, path: &str) -> String {
+    format!("{} ({})", plain(name), plain(path))
+}
+
+/// Nothing listens on the port asked about.
+pub fn port_not_listening(port: u16, proto: &str) -> String {
+    format!("nothing listens on port {port}/{proto}")
+}
+
+pub fn bad_port(v: &str) -> String {
+    format!("mirqab: not a port (1 to 65535): {v}")
+}
+
+pub fn bad_proto(v: &str) -> String {
+    format!("mirqab: --proto is tcp or udp, not {v}")
 }
 
 #[cfg(test)]

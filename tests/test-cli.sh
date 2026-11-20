@@ -2,7 +2,7 @@
 # generated docs and completions, output into a closed pipe, and
 # `status --json` against a daemon on a fixture root. The window commands
 # reaching an interface are tested in crates/mirqab/tests/cli.rs.
-# mirqab:covers crates/mirqab/src/{main,cli,daemon,out,apps,quit}.rs crates/mirqab-proto/src/strings.rs docs/cli.md
+# mirqab:covers crates/mirqab/src/{main,cli,daemon,out,apps,quit,ports}.rs crates/mirqab-proto/src/strings.rs docs/cli.md
 # mirqab:covers tests/fixtures/root-desktop/** tests/fixtures/bin/pacman
 
 sandbox
@@ -29,7 +29,7 @@ status_is "an unknown option exits 64" 64 "$STATUS"
 capture "$BIN/mirqab" --version
 status_is "--version exits 0" 0 "$STATUS"
 like "--version prints the version" "$OUTPUT" "mirqab 0."
-for c in daemon status open toggle close history help; do
+for c in daemon status open toggle close history ports port help; do
     capture "$BIN/mirqab" "$c" --help
     status_is "$c --help exits 0" 0 "$STATUS"
     like "$c --help prints its usage" "$OUTPUT" "usage: mirqab $c"
@@ -54,6 +54,7 @@ status_is "status --json exits 0" 0 "$STATUS"
 is "status --json parses" "0.1.0" "$(jq -r .version <<<"$OUTPUT")"
 is "status names the socket" "$MIRQAB_SOCKET" "$(jq -r .socket <<<"$OUTPUT")"
 is "nobody subscribes yet" "0" "$(jq '[.streams[].subscribers] | add' <<<"$OUTPUT")"
+is "status lists the ports stream, unsubscribed" "0" "$(jq '.streams.ports.subscribers' <<<"$OUTPUT")"
 is "the daemon's memory comes from the fixture" "3145728" "$(jq .daemon.rssBytes <<<"$OUTPUT")"
 capture "$BIN/mirqab" status
 status_is "status exits 0" 0 "$STATUS"
@@ -133,6 +134,43 @@ status_is "what needs a pid" 64 "$STATUS"
 capture "$BIN/mirqab" what abc
 status_is "what needs a number" 64 "$STATUS"
 like "and says so" "$OUTPUT" "not a process id: abc"
+
+# The Ports tab's commands (plan 007, part 1a).
+capture "$BIN/mirqab" ports --json
+status_is "ports --json exits 0" 0 "$STATUS"
+is "ports --json lists the 11 TCP listeners" 11 "$(jq '.ports | length' <<<"$OUTPUT")"
+is "and no UDP without --udp" 0 "$(jq '[.ports[] | select(.proto == "udp")] | length' <<<"$OUTPUT")"
+capture "$BIN/mirqab" ports --udp --json
+is "ports --udp --json adds the bound UDP sockets" 13 "$(jq '.ports | length' <<<"$OUTPUT")"
+capture "$BIN/mirqab" ports
+status_is "ports exits 0" 0 "$STATUS"
+like "ports names the port" "$OUTPUT" ":3000"
+like "and its process" "$OUTPUT" "node (6410)"
+like "and its reach" "$OUTPUT" "local"
+like "and root's port by its owner" "$OUTPUT" ":22     tcp    0.0.0.0          all      root"
+like "and warns of the exposed server" "$OUTPUT" "exposed: :8000/tcp python3 (6600) listens on 0.0.0.0"
+unlike "but not of root's" "$OUTPUT" "exposed: :22/"
+capture "$BIN/mirqab" port 3000
+status_is "port 3000 exits 0" 0 "$STATUS"
+like "port 3000 says only this machine reaches it" "$OUTPUT" "Reach      Only this machine can connect."
+like "and what it serves" "$OUTPUT" "Label      next dev"
+capture "$BIN/mirqab" port 8000
+like "port 8000 says every interface reaches it" "$OUTPUT" "Listening on every interface, so other devices on your network can connect"
+capture "$BIN/mirqab" port 22
+like "root's port names no process" "$OUTPUT" "owned by root; mirqab cannot see which process"
+capture "$BIN/mirqab" port 41234 --proto udp --json
+is "port --proto udp finds the UDP socket" '[6610]' "$(jq -c '[.[].pid]' <<<"$OUTPUT")"
+capture "$BIN/mirqab" port 1
+status_is "port 1 exits 1" 1 "$STATUS"
+like "and says nothing listens" "$OUTPUT" "nothing listens on port 1/tcp"
+capture "$BIN/mirqab" port abc
+status_is "port abc is a usage error" 64 "$STATUS"
+capture "$BIN/mirqab" port 70000
+status_is "a port past 65535 is a usage error" 64 "$STATUS"
+capture "$BIN/mirqab" port 3000 --proto sctp
+status_is "an unknown --proto is a usage error" 64 "$STATUS"
+capture "$BIN/mirqab" status --json
+is "no ports subscriber lingers after the commands" "0" "$(jq '.streams.ports.subscribers' <<<"$OUTPUT")"
 
 # mirqab quit (plan 006, part 2), against the recording sender.
 act_log() { cat "$MIRQAB_ACT_LOG"; }
@@ -257,6 +295,8 @@ like "help offers sensors" "$(complete_bash mirqab help "")" "sensors"
 is "bar --format offers the formats" "$(complete_bash mirqab bar --format "")" "json plain waybar "
 is "history --range offers the ranges" "$(complete_bash mirqab history --range "")" "1h 24h 30d 7d "
 is "apps --sort offers the orders" "$(complete_bash mirqab apps --sort "")" "cpu mem name "
+like "the commands include ports and port" "$(complete_bash mirqab "")" "port ports "
+is "port --proto offers the protocols" "$(complete_bash mirqab port --proto "")" "tcp udp "
 like "bar offers the items" "$(complete_bash mirqab bar "")" "combo"
 mkdir -p "$SANDBOX/sockdir"
 is "--socket completes a path" "$(complete_bash mirqab --socket "$SANDBOX/sockd")" "$SANDBOX/sockdir "

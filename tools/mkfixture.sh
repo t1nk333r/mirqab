@@ -17,9 +17,12 @@
 # What it writes, per process (plan 006, "Tests and fixtures"): stat, statm,
 # status, cmdline and cgroup for everyone; for the user's own processes
 # (uid 1000, as proc/self/status says) also io, cwd, ns/*, the exe link,
-# and the fd, fdinfo, smaps_rollup and root/.flatpak-info the extras ask
-# for. Another user's process gets no exe, io, cwd, ns or fd, as the kernel
-# refuses those (EACCES).
+# and the fd, fdinfo, smaps_rollup, root/.flatpak-info and environ the
+# extras ask for. Another user's process gets no exe, io, cwd, ns, fd or
+# environ, as the kernel refuses those (EACCES). env=NAME,NAME writes
+# environ as NAME=MARKERVALUE, NUL-separated (plan 007: the agent markers
+# are read by name, and no value may reach the stream); a process without
+# it has no environ file, which the reader treats as unreadable.
 set -Eeuo pipefail
 cd "$(dirname "$0")/.."
 
@@ -67,7 +70,7 @@ write_proc() {
     local d="$tree/proc/$pid" tty=0 flags=4194560 nnp=0 seccomp=0
     local capeff=0000000000000000 cwd=$HOME_DIR ns="" io="" smaps="" flatpak="" kthread=0
     local uids="$uid:$uid:$uid:$uid"
-    local fds=() drms=() e
+    local fds=() drms=() envs="" e
     [[ $tpgid == - ]] && tpgid=-1 || tty=34816
     IFS=';' read -ra parts <<<"${extras/#-/}"
     for e in "${parts[@]}"; do
@@ -83,6 +86,7 @@ write_proc() {
         flatpak=*) flatpak=${e#*=} ;;
         fd=*) fds+=("${e#*=}") ;;
         drm=*) drms+=("${e#*=}") ;;
+        env=*) envs=${e#*=} ;;
         uids=*) uids=${e#*=} ;;
         *) echo "mkfixture: pid $pid: unknown extra: $e" >&2; return 1 ;;
         esac
@@ -152,6 +156,11 @@ write_proc() {
         printf '00400000-7ffd00000000 ---p 00000000 00:00 0                          [rollup]\n' >"$d/smaps_rollup"
         printf 'Rss:\t%s kB\nPss:\t%s kB\nShared_Clean:\t0 kB\nPrivate_Dirty:\t0 kB\nSwap:\t%s kB\nSwapPss:\t%s kB\n' \
             "$((rss * 4))" "$pss" "$swap" "$swap" >>"$d/smaps_rollup"
+    fi
+    if [[ -n $envs ]]; then
+        local names name
+        IFS=, read -ra names <<<"$envs"
+        for name in "${names[@]}"; do printf '%s=MARKERVALUE\0' "$name"; done >"$d/environ"
     fi
     if [[ -n $flatpak ]]; then
         mkdir -p "$d/root"

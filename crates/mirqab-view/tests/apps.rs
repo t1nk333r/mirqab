@@ -72,7 +72,7 @@ fn search_finds_a_group_by_its_name_a_member_or_a_pid() {
     let all = apps::rows(&frame, &st, "");
     assert_eq!(
         all.iter().filter(|r| matches!(r, Row::Group(_))).count(),
-        24
+        28
     );
     assert!(all.iter().all(|r| !matches!(r, Row::Process(_))), "closed");
     assert!(matches!(all.last(), Some(Row::Group(g)) if g.id == "system"));
@@ -147,7 +147,7 @@ fn an_open_group_lists_its_processes_and_flatten_lists_only_processes() {
 
     st.flatten = true;
     let flat = apps::rows(&frame, &st, "");
-    assert_eq!(flat.len(), 44, "every process, no group rows");
+    assert_eq!(flat.len(), 53, "every process, no group rows");
     let Row::Process(first) = &flat[0] else {
         panic!()
     };
@@ -167,9 +167,9 @@ fn a_cut_list_ends_with_the_more_line() {
     let mut st = state();
     let (frame, _) = st.take(data(&cut));
     // Three groups and System, which comes outside the limit.
-    assert_eq!(frame.more, 20);
+    assert_eq!(frame.more, 24);
     let rows = apps::rows(&frame, &st, "");
-    assert_eq!(rows.last(), Some(&Row::Note(s::apps_more(20))));
+    assert_eq!(rows.last(), Some(&Row::Note(s::apps_more(24))));
 }
 
 #[test]

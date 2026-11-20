@@ -19,7 +19,11 @@ and 003 are complete too, and milestone M1 (a running app with Home and
 System) is done. Plan 006 (Apps) is done: the page and its inspector,
 Quit and Force quit, the "idle but heavy" tag on the page, in
 `mirqab apps` and in the MCP server, the top-apps history, and the cost
-budget in CI.
+budget in CI. Plan 007 (Ports) is in progress: part 1a lists what listens
+on which port, the process of yours that holds it, and how far the
+network reaches it, in the `ports` stream and `mirqab ports` and
+`mirqab port PORT`; the project, launcher, Docker, Stop, the page, the
+QR code and the badge follow in later parts.
 
 - Measured cost (2026-11-13, on the development machine, release build):
   idle, with no subscriber, 0.000 % of one core over 60 s and 5.0 MiB.
@@ -34,7 +38,8 @@ budget in CI.
   its own CPU and memory cost on the `self` stream, and the machine's CPU,
   load, memory, pressure, temperatures, GPUs and power on the `system`
   stream. The processes grouped into apps are on the `apps` stream, read
-  every 2 s while something subscribes.
+  every 2 s while something subscribes; the listening ports on the `ports`
+  stream, every 5 s.
 - History: once a minute the daemon stores one value for each of 25
   series. `mirqab history --list` names them. The first four are
   `cpu.total` (percent, the average over the minute), `mem.used`,
@@ -59,7 +64,15 @@ budget in CI.
   name; `--all` lists every process; with Hyprland and the Apps page open,
   an IDLE column marks apps that used 20 % of a core for five minutes with
   no window focused, and shows only when some app is marked), `what PID
-  [--json]` (explains one process), `quit PID|NAME [-y] [--force]
+  [--json]` (explains one process), `ports [--udp] [--json]` (every
+  listening port with its bind address, its reach (`local`, `all`, `lan`,
+  `bridge`, `vpn`, `link`, `other` or `unknown`), the process of yours
+  that holds it and how long it has run; root's ports show `root`, another
+  user's show its uid, and neither shows a process; a line names each port
+  of yours the network can reach, which mirqab tells from the bind address
+  alone, never from your firewall), `port PORT [--proto tcp|udp] [--json]`
+  (each listener on one port, with its reach and process),
+  `quit PID|NAME [-y] [--force]
   [--dry-run] [--json]` (quits a
   process or an app after asking; `--force` sends SIGKILL, and a user
   service is stopped through systemctl, and the list shows the other

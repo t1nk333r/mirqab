@@ -685,6 +685,50 @@
     {
       "cpu": 0.0,
       "icon": null,
+      "id": "session:3090",
+      "ioReadPerSec": 0.0,
+      "ioWritePerSec": 0.0,
+      "kind": "terminal",
+      "name": "http.server",
+      "pids": [
+        3090,
+        6600
+      ],
+      "processes": [
+        {
+          "cpu": 0.0,
+          "name": "zsh",
+          "pid": 3090,
+          "ppid": 3000,
+          "rssBytes": 8192000,
+          "start": 9400,
+          "state": "S",
+          "threads": 1
+        },
+        {
+          "cpu": 0.0,
+          "name": "python3",
+          "pid": 6600,
+          "ppid": 3090,
+          "rssBytes": 24576000,
+          "start": 9450,
+          "state": "S",
+          "threads": 1
+        }
+      ],
+      "procs": 2,
+      "rssBytes": 26624000,
+      "threads": 2,
+      "top": {
+        "cpu": 0.0,
+        "name": "python3",
+        "pid": 6600
+      },
+      "unit": null
+    },
+    {
+      "cpu": 0.0,
+      "icon": null,
       "id": "scope:app-Hyprland-newjob-22222222",
       "ioReadPerSec": 0.0,
       "ioWritePerSec": 0.0,
@@ -714,6 +758,149 @@
         "pid": 7000
       },
       "unit": "app-Hyprland-newjob-22222222.scope"
+    },
+    {
+      "cpu": 0.0,
+      "icon": null,
+      "id": "session:3070",
+      "ioReadPerSec": 0.0,
+      "ioWritePerSec": 0.0,
+      "kind": "terminal",
+      "name": "next",
+      "pids": [
+        3070,
+        6410
+      ],
+      "processes": [
+        {
+          "cpu": 0.0,
+          "name": "zsh",
+          "pid": 3070,
+          "ppid": 3000,
+          "rssBytes": 8192000,
+          "start": 9050,
+          "state": "S",
+          "threads": 1
+        },
+        {
+          "cpu": 0.0,
+          "name": "node",
+          "pid": 6410,
+          "ppid": 1100,
+          "rssBytes": 245760000,
+          "start": 9100,
+          "state": "S",
+          "threads": 11
+        }
+      ],
+      "procs": 2,
+      "rssBytes": 247808000,
+      "threads": 12,
+      "top": {
+        "cpu": 0.0,
+        "name": "node",
+        "pid": 6410
+      },
+      "unit": null
+    },
+    {
+      "cpu": 0.0,
+      "icon": null,
+      "id": "session:3080",
+      "ioReadPerSec": 0.0,
+      "ioWritePerSec": 0.0,
+      "kind": "terminal",
+      "name": "opencode",
+      "pids": [
+        3080,
+        6500,
+        6505
+      ],
+      "processes": [
+        {
+          "cpu": 0.0,
+          "name": "zsh",
+          "pid": 3080,
+          "ppid": 3000,
+          "rssBytes": 8192000,
+          "start": 9200,
+          "state": "S",
+          "threads": 1
+        },
+        {
+          "cpu": 0.0,
+          "name": "opencode",
+          "pid": 6500,
+          "ppid": 3080,
+          "rssBytes": 204800000,
+          "start": 9250,
+          "state": "S",
+          "threads": 9
+        },
+        {
+          "cpu": 0.0,
+          "name": "mirqab",
+          "pid": 6505,
+          "ppid": 6500,
+          "rssBytes": 12288000,
+          "start": 9300,
+          "state": "S",
+          "threads": 2
+        }
+      ],
+      "procs": 3,
+      "rssBytes": 210944000,
+      "threads": 12,
+      "top": {
+        "cpu": 0.0,
+        "name": "opencode",
+        "pid": 6500
+      },
+      "unit": null
+    },
+    {
+      "cpu": 0.0,
+      "icon": null,
+      "id": "session:3095",
+      "ioReadPerSec": 0.0,
+      "ioWritePerSec": 0.0,
+      "kind": "terminal",
+      "name": "server.js",
+      "pids": [
+        3095,
+        6610
+      ],
+      "processes": [
+        {
+          "cpu": 0.0,
+          "name": "zsh",
+          "pid": 3095,
+          "ppid": 3000,
+          "rssBytes": 8192000,
+          "start": 9500,
+          "state": "S",
+          "threads": 1
+        },
+        {
+          "cpu": 0.0,
+          "name": "node",
+          "pid": 6610,
+          "ppid": 3095,
+          "rssBytes": 163840000,
+          "start": 9550,
+          "state": "S",
+          "threads": 7
+        }
+      ],
+      "procs": 2,
+      "rssBytes": 165888000,
+      "threads": 8,
+      "top": {
+        "cpu": 0.0,
+        "name": "node",
+        "pid": 6610
+      },
+      "unit": null
     },
     {
       "cpu": 0.0,
@@ -1017,8 +1204,8 @@
   "totals": {
     "cores": 16,
     "cpu": 201.5,
-    "groups": 24,
-    "procs": 44,
-    "threads": 327
+    "groups": 28,
+    "procs": 53,
+    "threads": 361
   }
 }

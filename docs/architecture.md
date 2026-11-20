@@ -329,7 +329,7 @@ DankMaterialShell (MIT); `NOTICE.md` carries both notices.
 
 | Method | Params | Result |
 |--------|--------|--------|
-| `subscribe` | `stream`, `params.interval` (ms, optional), `params.live` (bool, optional; §5.3). Any other `params` key belongs to the stream (the `apps` stream's `sort`, `limit`, `expand`; the `process` stream's `pid` and `start`). One sample is taken per tick and each subscriber gets its own view of it, shaped by its own params. Subscribing again to the same stream replaces the params. Params a stream cannot serve are `bad-request` | The effective interval; then events |
+| `subscribe` | `stream`, `params.interval` (ms, optional), `params.live` (bool, optional; §5.3). Any other `params` key belongs to the stream (the `apps` stream's `sort`, `limit`, `expand`; the `process` stream's `pid` and `start`; the `ports` stream's `udp` and `lite`). One sample is taken per tick and each subscriber gets its own view of it, shaped by its own params. Subscribing again to the same stream replaces the params. Params a stream cannot serve are `bad-request` | The effective interval; then events |
 | `unsubscribe` | `stream` | — |
 | `get` | `stream`, `params` | One snapshot, no subscription, shaped by `params` as a subscription's view is. `stream` may be `<stream>.<query>` (`apps.inspect` with `params.pid` and optionally `params.start`, which answers `failed` "pid N is another process now" when the pid holds another process), answered by that stream's sampler; an unknown query is `unknown-stream` |
 | `history.query` | `series[]`, `range` (`1h`, `24h`, `7d`, `30d`) or `from`/`to` (unix seconds) | Per series its `unit` and `points`, each `[unixSeconds, avg, max]` unscaled; empty buckets omitted |
@@ -338,7 +338,7 @@ DankMaterialShell (MIT); `NOTICE.md` carries both notices.
 | `action` | `name`, `args`, `dryRun`; for a destructive action `confirm` (a boolean) and `plan` | What was done, or `wouldDo`. A destructive action without `confirm: true` and a plan is the error `needs-confirm`, whose `data` holds `plan`, `wouldDo`, `skipped` and `warnings` (§5.4) |
 | `config.get` / `config.set` | key paths | The config; the daemon is the only writer |
 | `capabilities` | — | The list from `hello`: the streams this machine serves, plus `history` when the history file is open (a capability, not a stream) |
-| `status` | — | Version, uptime, subscribers, self-cost, and `focus`: `{"source": "hyprland"}` while a focus source runs (only while `apps` has a subscriber, plan 006 part 4), else null |
+| `status` | — | Version, uptime, subscribers, self-cost, `focus`: `{"source": "hyprland"}` while a focus source runs (only while `apps` has a subscriber, plan 006 part 4), else null; and `ports`: `{"owners": N, "rebuilds": N}`, the processes the `ports` stream's owner map holds and how often it was built (plan 007) |
 | `shutdown` | — | — |
 
 Rules:
@@ -428,6 +428,50 @@ Streams: `system`, `apps`, `process`, `ports`, `agents`, `awake`, `disk`,
   `apps` walk. It also reads a thread id's own `stat`, harmlessly; the
   interface never sends a typed number, only the `pid` and `start` of a
   process row of the `apps` frame.
+- `ports` (plan 007, every 5 s, never `live`): `params.udp` (also bound
+  UDP sockets) and `params.lite` (counts only), each a boolean, nothing
+  else. Each tick reads `proc/net/tcp` and `tcp6` (and `udp`, `udp6` when
+  a subscriber asked): the listening sockets with their bind address,
+  port, uid and inode.
+  One row per port, protocol, bind pair and owner. An owner's `0.0.0.0`
+  and `::` sockets, or its `127.0.0.1` and `::1` (a bind pair), fold into
+  one row marked `families: [4, 6]`. One process on two other addresses of
+  a port is two rows. A lone `::` socket is both families unless
+  `proc/sys/net/ipv6/bindv6only` is 1. A socket that set `IPV6_V6ONLY`
+  itself is still shown as both: the table does not say, and overstating
+  reach is the safe direction.
+  `scope` says how far the bind address reaches: `local` (loopback), `all`
+  (unspecified), `link` (link-local), or else the kind of the interface
+  that holds the address. The address is looked up in `sys::ifaddrs` on the
+  machine, or in `run/mirqab-test/ifaddrs.json` under a fixture root. The
+  kind comes from `sys/class/net/<name>/`, after an alias label such as
+  `:1` is stripped. The kinds are `lan`, `bridge`, `vpn` and `other`.
+  `other` covers a veth, a dummy, and an address on `lo` that is not
+  loopback itself, which Linux's weak host model lets others reach. An
+  address on no interface is `unknown`.
+  Everything but `local` is `exposed`. "Exposed" is a claim about the bind
+  address only: mirqab never reads firewall rules, and its text says
+  "unless a firewall blocks it". Interface names never leave the daemon.
+  The user's sockets get their processes from the `socket:[inode]` links in
+  the `fd/` directory of each of the user's processes. The holders of one
+  socket are grouped into trees by their parent links, and each tree is a
+  row. A forked server and its workers are one row; independent holders,
+  such as `SO_REUSEPORT` siblings, are rows of their own. The row's `pid`,
+  `start`, `process`, `label` and `uptimeSec` are the tree root's. `pids`
+  lists every holder in the tree, the root first and the rest by pid, and
+  `rssBytes` sums them. Root's and other users' sockets keep their uid,
+  with `pid` null and `pids` empty: mirqab never guesses.
+  The owner map is rebuilt only when the user's listening inodes change,
+  when a mapped pid is gone or is another process, or on every `get` that
+  does not ask for `lite`. Between rebuilds, a tick reads `stat` and
+  `statm` of the mapped pids.
+  While every subscriber is `lite`, no process is read: only the socket
+  tables are read, plus the interface table when a bind address needs it.
+  A lite subscriber gets `{lite, total, exposedCount, leftBehindCount,
+  udp}`. `total` counts every row of the view, lite or full.
+  `exposedCount` counts the user's exposed rows only. Root's `sshd` on
+  `0.0.0.0` carries the pill in its row but colours no badge. The sampler
+  has its own lock and process cache.
 - **Live sampling is 1 s, and only while a live graph is on screen**
   (owner, 2026-11-13). A subscription with `live: true` may ask for
   **1000 ms**, the lowest interval anywhere. The interface sets `live`

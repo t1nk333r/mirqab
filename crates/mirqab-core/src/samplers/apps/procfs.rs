@@ -253,6 +253,21 @@ pub fn read_text(root: &Root, rel: &str) -> Option<String> {
         .map(|b| String::from_utf8_lossy(&b).into_owned())
 }
 
+/// Seconds since a process started: `proc/uptime` less its start time
+/// (`stat` field 22, `start` clock ticks after boot, `tck` a second). The
+/// inspector's `ageSec` and the `ports` stream's `uptimeSec` (plan 007).
+pub fn age_secs(root: &Root, start: u64, tck: u64) -> Option<u64> {
+    let uptime: f64 = root
+        .read("proc/uptime")
+        .ok()?
+        .split_whitespace()
+        .next()?
+        .parse()
+        .ok()?;
+    let started = start as f64 / tck.max(1) as f64;
+    Some((uptime - started).max(0.0) as u64)
+}
+
 /// What the cache knows of one pid.
 struct Known {
     start: u64,

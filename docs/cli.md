@@ -92,6 +92,22 @@ mirqab quit PID|NAME [-y] [--force] [--dry-run] [--json]
 
 Asks a process to quit (SIGTERM), or with --force ends it (SIGKILL). A number is a pid; anything else is an app's name as mirqab apps shows it, matched whole and ignoring case, and quits every process of that app, its main process first. A user service is stopped with systemctl --user, so it does not restart; the list names the other services the stop takes with it, and warns before the sound server or a desktop portal is stopped. The stop is refused when one of those services holds a process mirqab never signals, and at the confirmation when a service that was not listed would now stop too; when systemd cannot say what depends on a service, the list says so. It prints what it will do and asks; -y goes ahead without asking; without a terminal and without -y it does nothing and exits 3; --dry-run prints the list and stops. With --json the list goes to stderr and stdout holds the daemon's answer. It exits 1 when anything failed, or when nothing was done because everything was left alone; a process that had already exited counts as done. Never stopped or signalled: pid 1, another user's processes, kernel threads, anything outside your user's session, the daemon, the session's compositor, your user manager, the session bus (also any process named dbus-daemon, dbus-broker or dbus-broker-launch), and the program asking and its parents. A rootless container is not quit; stop it with its runtime. When the action could not be written to mirqab's history, it is still done and a warning says so.
 
+## ports
+
+```
+mirqab ports [--udp] [--json]
+```
+
+Lists every listening TCP port: the address it is bound to, how far it reaches (local: only this machine; all: every interface; lan, bridge, vpn, link or other: that network; unknown: an address on no interface, treated as reachable), the process holding it and how long it has run. A port of root's or another user's shows its owner and no process: mirqab cannot see which process holds it. A line after the table names each port of yours that the network can reach. mirqab reads the bind address only and never your firewall, so a port the network can reach may still be blocked by a firewall. --udp adds bound UDP sockets.
+
+## port
+
+```
+mirqab port PORT [--proto tcp|udp] [--json]
+```
+
+Shows everything mirqab knows about what listens on PORT (TCP unless --proto udp): one block per listener with its reach in words, the process, what it serves and how long it has run, and the URL to open it. It exits 1 when nothing listens there.
+
 ## bar
 
 ```

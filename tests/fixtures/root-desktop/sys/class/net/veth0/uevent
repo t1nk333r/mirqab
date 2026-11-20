@@ -1,0 +1,2 @@
+INTERFACE=veth0
+IFINDEX=6

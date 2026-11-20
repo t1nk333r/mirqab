@@ -18,7 +18,16 @@
 #            capeff=HEX; ns=mnt+pid+... (namespaces that differ from the
 #            daemon's); cwd=PATH (default the home directory);
 #            uids=REAL:EFFECTIVE:SAVED:FS (default the row's uid four
-#            times; pid 6300 is a setuid-root program, plan 006 part 2)
+#            times; pid 6300 is a setuid-root program, plan 006 part 2);
+#            env=NAME,NAME (environ holds NAME=MARKERVALUE for each; no
+#            environ file without it)
+#
+# Plan 007 (ports): pids 3070-6610 are four terminal sessions with dev
+# servers and an agent; their socket fds (fd=N:socket:[INODE]) match the
+# inodes of the hand-written proc/net tables (tests/fixtures/README.md).
+# Pid 6410 is the agent's server: in root-desktop its parent is the agent
+# (6400); in root-desktop.t1 the agent has exited and the server was
+# re-parented to the user manager, its markers kept.
 #
 # The user is uid 1000 with the home /users/user (etc/passwd), and
 # proc/self/status says the daemon runs as 1000. A home under /users
@@ -37,7 +46,7 @@ both	1100	1	1000	S	systemd	1100	1100	-	1200	200	150	200	150	1	3000	2400	~/init.s
 both	1101	1100	1000	S	(sd-pam)	1100	1100	-	1210	0	0	0	0	1	600	500	~/init.scope	/usr/lib/systemd/systemd	(sd-pam)	-
 both	1210	1100	1000	S	pipewire	1210	1210	-	1400	3000	2000	3003	2001	3	5000	3000	~/session.slice/pipewire.service	/usr/bin/pipewire	/usr/bin/pipewire	-
 both	1211	1100	1000	S	wireplumber	1211	1211	-	1450	400	100	400	100	5	9000	6000	~/session.slice/wireplumber.service	/usr/bin/wireplumber	/usr/bin/wireplumber	-
-both	1300	1100	1000	S	example-sync	1300	1300	-	2600	700	200	701	201	8	30000	8000	~/app.slice/app-org.example.Sync@autostart.service	/usr/bin/example-sync	/usr/bin/example-sync --no-browser	io=1048576:2097152:1148576:2297152
+both	1300	1100	1000	S	example-sync	1300	1300	-	2600	700	200	701	201	8	30000	8000	~/app.slice/app-org.example.Sync@autostart.service	/usr/bin/example-sync	/usr/bin/example-sync --no-browser	io=1048576:2097152:1148576:2297152;fd=10:socket:[70030];fd=11:socket:[70031]
 both	4321	1100	1000	S	mirqab	4321	4321	-	2000	150	50	151	50	4	768	500	~/app.slice/mirqab.service	/usr/bin/mirqab	/usr/bin/mirqab daemon	-
 both	2000	1050	1000	S	bash	2000	2000	-	5000	5	5	5	5	1	1000	800	~/app.slice/app-Hyprland-browser.sh-5650fedc.scope	/usr/bin/bash	/bin/bash /usr/bin/browser.sh	-
 both	2001	2000	1000	S	browser	2000	2000	-	5010	50000	10000	50060	10020	120	200000	30000	~/app.slice/app-Hyprland-browser.sh-5650fedc.scope	/usr/lib/example-browser/browser	/usr/lib/example-browser/browser --new-window	io=104857600:52428800:106954752:53477376;fd=0:/dev/null;fd=1:socket:[40001];fd=2:socket:[40002];fd=3:anon_inode:[eventfd];fd=4:/users/user/.cache/example-browser/cache.db;fd=5:pipe:[40003];drm=10:7:524288:65536:0;drm=11:7:524288:65536:0;drm=12:8:131072:16384:4;smaps=650000:2048
@@ -46,7 +55,7 @@ both	2011	2001	1000	S	Web Content	2000	2000	-	5200	5000	800	5008	802	25	50000	20
 both	2012	2001	1000	S	RDD Process	2000	2000	-	5300	300	100	301	101	5	10000	8000	~/app.slice/app-Hyprland-browser.sh-5650fedc.scope	/usr/lib/example-browser/browser	/usr/lib/example-browser/browser -contentproc 3	-
 both	3000	1050	1000	S	foot	1050	1050	-	8000	900	300	902	300	1	40000	20000	~/app.slice/app-Hyprland-foot-3e4f5a6b.scope	/usr/bin/foot	foot	-
 both	3010	3000	1000	S	zsh	3010	3010	3020	8100	80	40	80	40	1	2000	1500	~/app.slice/app-Hyprland-foot-3e4f5a6b.scope	/usr/bin/zsh	-zsh	cwd=/users/user/src/web
-both	3020	3010	1000	S	node	3020	3010	3020	9000	4000	600	4016	604	11	60000	10000	~/app.slice/app-Hyprland-foot-3e4f5a6b.scope	/usr/bin/node	node node_modules/.bin/vite --port 5173	cwd=/users/user/src/web
+both	3020	3010	1000	S	node	3020	3010	3020	9000	4000	600	4016	604	11	60000	10000	~/app.slice/app-Hyprland-foot-3e4f5a6b.scope	/usr/bin/node	node node_modules/.bin/vite --port 5173	cwd=/users/user/src/web;fd=21:socket:[70020]
 both	3021	3020	1000	S	esbuild	3020	3010	3020	9010	1500	300	1504	300	8	8000	2000	~/app.slice/app-Hyprland-foot-3e4f5a6b.scope	/users/user/src/web/node_modules/esbuild/bin/esbuild	/users/user/src/web/node_modules/esbuild/bin/esbuild --service --ping	cwd=/users/user/src/web
 both	3030	3000	1000	S	zsh	3030	3030	3040	8200	60	30	60	30	1	2000	1500	~/app.slice/app-Hyprland-foot-3e4f5a6b.scope	/usr/bin/zsh	-zsh	cwd=/users/user/src/tool
 both	3040	3030	1000	S	cargo	3040	3030	3040	20000	200	50	202	50	4	20000	3000	~/app.slice/app-Hyprland-foot-3e4f5a6b.scope	/usr/bin/cargo	cargo build --release	cwd=/users/user/src/tool
@@ -73,3 +82,14 @@ both	7500	1050	1000	S	python3	7500	7500	-	36000	400	40	404	40	2	12000	3000	~/app
 t0	7200	1050	1000	S	worker	7200	7200	-	310000	5000	1000	-	-	1	2000	1000	~/app.slice/app-Hyprland-worker-33333333.scope	/usr/bin/worker	worker	-
 t1	7200	1050	1000	S	worker	7200	7200	-	361000	-	-	7000	1000	1	2000	1000	~/app.slice/app-Hyprland-worker-33333333.scope	/usr/bin/worker	worker	-
 both	6300	1050	1000	S	suidtool	6300	6300	-	37000	20	10	20	10	1	3000	2000	~/app.slice/app-Hyprland-suidtool-5e5e5e5e.scope	/usr/bin/suidtool	suidtool --check	uids=1000:0:0:1000
+both	3070	3000	1000	S	zsh	3070	3070	6400	9050	30	10	30	10	1	2000	1500	~/app.slice/app-Hyprland-foot-3e4f5a6b.scope	/usr/bin/zsh	-zsh	cwd=/users/user/code/acme-web
+t0	6400	3070	1000	S	claude	6400	3070	6400	9080	3000	500	-	-	12	80000	12000	~/app.slice/app-Hyprland-foot-3e4f5a6b.scope	/usr/bin/claude	claude	cwd=/users/user/code/acme-web
+t0	6410	6400	1000	S	node	6410	3070	6400	9100	1200	300	-	-	11	60000	10000	~/app.slice/app-Hyprland-foot-3e4f5a6b.scope	/usr/bin/node	node /users/user/code/acme-web/node_modules/.bin/next dev	cwd=/users/user/code/acme-web;env=CLAUDECODE,CLAUDE_CODE_SESSION_ID;fd=20:socket:[70010]
+t1	6410	1100	1000	S	node	6410	3070	6400	9100	-	-	1200	300	11	60000	10000	~/app.slice/app-Hyprland-foot-3e4f5a6b.scope	/usr/bin/node	node /users/user/code/acme-web/node_modules/.bin/next dev	cwd=/users/user/code/acme-web;env=CLAUDECODE,CLAUDE_CODE_SESSION_ID;fd=20:socket:[70010]
+both	3080	3000	1000	S	zsh	3080	3080	6500	9200	30	10	30	10	1	2000	1500	~/app.slice/app-Hyprland-foot-3e4f5a6b.scope	/usr/bin/zsh	-zsh	cwd=/users/user/src/tool
+both	6500	3080	1000	S	opencode	6500	3080	6500	9250	800	200	800	200	9	50000	9000	~/app.slice/app-Hyprland-foot-3e4f5a6b.scope	/usr/bin/opencode	opencode	cwd=/users/user/src/tool;fd=12:socket:[70040]
+both	6505	6500	1000	S	mirqab	6500	3080	6500	9300	20	10	20	10	2	3000	2000	~/app.slice/app-Hyprland-foot-3e4f5a6b.scope	/usr/bin/mirqab	mirqab mcp	cwd=/users/user/src/tool
+both	3090	3000	1000	S	zsh	3090	3090	6600	9400	30	10	30	10	1	2000	1500	~/app.slice/app-Hyprland-foot-3e4f5a6b.scope	/usr/bin/zsh	-zsh	-
+both	6600	3090	1000	S	python3	6600	3090	6600	9450	100	20	100	20	1	6000	2500	~/app.slice/app-Hyprland-foot-3e4f5a6b.scope	/usr/bin/python3	python3 -m http.server --bind 0.0.0.0 8000	fd=5:socket:[70060]
+both	3095	3000	1000	S	zsh	3095	3095	6610	9500	30	10	30	10	1	2000	1500	~/app.slice/app-Hyprland-foot-3e4f5a6b.scope	/usr/bin/zsh	-zsh	cwd=/users/user/src/api
+both	6610	3095	1000	S	node	6610	3095	6610	9550	600	100	600	100	7	40000	8000	~/app.slice/app-Hyprland-foot-3e4f5a6b.scope	/usr/bin/node	node server.js	cwd=/users/user/src/api;fd=18:socket:[70070];fd=19:socket:[70071]
