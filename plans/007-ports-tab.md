@@ -71,7 +71,8 @@ below are the plan as written on 2026-11-13.
 11. **The lite view**: `params.lite: true` gives counts only, and while
     every subscriber is lite the sampler reads the socket tables alone.
     The tray, the sidebar badge and the bar item use it.
-12. **`exposedCount` counts your own processes only.** A root listener
+12. **`exposedCount` counts your own sockets only** (rows whose owner is
+    you, including one whose process was not found). A root listener
     carries the `exposed` pill in its row but does not colour the badge
     or the tray: you cannot act on it.
 13. **The MCP `Ctx` is small** (the socket and the `via` tag): plan 006
