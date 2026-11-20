@@ -247,7 +247,7 @@ fn top_apps_and_what_is_process_read_the_fixture() {
         keys(&groups[0]),
         ["cpu", "id", "kind", "name", "procs", "rssBytes", "top"]
     );
-    assert_eq!(top["structuredContent"]["totals"]["groups"], 24);
+    assert_eq!(top["structuredContent"]["totals"]["groups"], 28);
     assert_eq!(top["structuredContent"]["sort"], "mem");
     let text = top["content"][0]["text"].as_str().unwrap();
     assert!(text.contains("Example Browser"), "{text}");

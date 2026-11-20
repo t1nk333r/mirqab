@@ -199,10 +199,10 @@ fn each_grouping_rule_picks_the_expected_group() {
     for g in &d.groups {
         assert!(!g.pids.contains(&2) && !g.pids.contains(&3), "{}", g.id);
     }
-    assert_eq!(d.totals.procs, 44);
+    assert_eq!(d.totals.procs, 54);
     assert_eq!(d.totals.cores, Some(16));
-    assert_eq!(d.totals.groups, 24);
-    assert_eq!(d.groups.iter().map(|g| g.procs).sum::<u32>(), 44);
+    assert_eq!(d.totals.groups, 28);
+    assert_eq!(d.groups.iter().map(|g| g.procs).sum::<u32>(), 54);
 }
 
 #[test]
@@ -294,12 +294,12 @@ fn views_sort_limit_and_expand() {
     let mem = apps::view(&full, &json!({"sort": "mem", "limit": 2}));
     assert_eq!(names(&mem), ["cargo", "Example Browser", "System"]);
     // The count before the limit, so a reader can tell the list was cut.
-    assert_eq!(mem["totals"]["groups"], 24);
+    assert_eq!(mem["totals"]["groups"], 28);
     assert_eq!(mem["groups"].as_array().unwrap().len(), 3);
     let name = apps::view(&full, &json!({"sort": "name", "limit": 3}));
     assert_eq!(names(&name), ["Calculator", "cargo", "devserver", "System"]);
     let default = apps::view(&full, &Value::Null);
-    assert_eq!(default["groups"].as_array().unwrap().len(), 24);
+    assert_eq!(default["groups"].as_array().unwrap().len(), 28);
     assert!(
         default["groups"]
             .as_array()
@@ -1051,7 +1051,7 @@ fn the_top_apps_row_names_the_heaviest_and_only_when_it_says_something() {
     assert_eq!(row["mem"][0], json!(["cargo", 1_710_080_000_u64]));
     assert_eq!(row["mem"][1][0], "Example Browser");
     assert_eq!(row["mem"][2][0], "Hyprland");
-    assert_eq!(row["procs"], 44);
+    assert_eq!(row["procs"], 53);
     assert_eq!(
         row.as_object().unwrap().keys().collect::<Vec<_>>(),
         ["cpu", "mem", "procs"],

@@ -1,0 +1,3 @@
+DEVTYPE=wireguard
+INTERFACE=vpn0
+IFINDEX=5

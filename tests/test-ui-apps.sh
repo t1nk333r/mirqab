@@ -65,7 +65,7 @@ act_log() { cat "$MIRQAB_ACT_LOG"; }
 apps
 is "only the Apps page was built" '["apps"]' "$(q '.pages | tojson')"
 is "no focus source: no row is tagged" 0 "$(q '[.. | objects | select(.visible and .text? == "busy while not in use")] | length')"
-is "the golden frame's 24 groups" 24 "$(wc -w <<<"$(groups)")"
+is "the golden frame's 28 groups" 28 "$(wc -w <<<"$(groups)")"
 like "System is listed" "$(groups)" "apps-group:system"
 is "System last" "apps-group:system" "$(awk '{ print $NF }' <<<"$(groups)")"
 # The fixture's icon name is in no theme: the kind's glyph stands in

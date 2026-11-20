@@ -9,7 +9,87 @@
 - **Depends on**: 001, 005, 006
 - **Category**: tab
 - **Planned at**: 2026-11-13, from the owner
-- **State**: PLANNED
+- **State**: IN PROGRESS (2026-11-20). Six parts (below), each its own
+  pull request. Part 1a (the `ports` stream, who listens where, `mirqab
+  ports` and `mirqab port`) is built; parts 1b, 2a, 2b, 3 and 4 are not.
+
+## Owner decisions (2026-11-20)
+
+The four questions of the implementation brief (2026-11-20), each
+answered with its recommendation:
+
+1. **Stop on a Docker-published port** runs `docker stop -t 5 -- <id>`
+   when `docker ps` works for the user: the Docker daemon the user may
+   already use does it, and mirqab signals nothing of root's. A user who
+   cannot run `docker ps` sees `denied` and no Stop (part 2a).
+2. **The tray's attention for exposed ports is on by default**: lite
+   (counts only), your own processes only (root's `sshd` and Docker's
+   proxies never trigger it), and gated by the idle bench (part 4).
+3. **The MCP tools give a port's project name and framework only**,
+   never its path (part 1b).
+4. **Other agents' left-behind servers are left to plan 008**, which adds
+   their markers; until then the page's empty attention state says so
+   (part 3).
+
+## Decisions that differ from the text below (2026-11-20)
+
+The implementation brief changed the design in these ways; the sections
+below are the plan as written on 2026-11-13.
+
+1. **Six pull requests** (the part list below), not one.
+2. **Open, Copy URL and Reveal folder belong to the interface**, through
+   GTK (`gtk::UriLauncher`, the display's clipboard, `gtk::FileLauncher`):
+   the daemon is a user service with no display. `ports.open`,
+   `ports.copy` and `ports.reveal` are not actions; `mirqab port N`
+   prints the URL.
+3. **The QR code is a query**, `get ports.qr {port}`: it changes nothing,
+   so it has no `dryRun` and no `confirm`.
+4. **Stop is two actions, `ports.stop` and `ports.kill`**, as
+   `apps.quit` and `apps.kill` are (a plan is bound to its action's
+   name); `mirqab kill PORT --force` picks `ports.kill`.
+5. **Stop resolves a port to processes and hands them to plan 006's
+   engine** (`actions::Subject::Port`): the refusals, the guard, the
+   plans and the `action` event are the existing code paths.
+6. **A container is stopped through its runtime**, `docker stop` or
+   `podman stop`, never by signalling inside it.
+7. **"What probably restarted it" is told by the client after the
+   fact**: the CLI reads `get ports` once 3 s after a confirmed stop and
+   the page reads the next frame; the daemon's reply returns at once.
+8. **`family` became `families`** (`[4]`, `[6]` or `[4, 6]`); an
+   owner's `0.0.0.0` and `::` sockets (or `127.0.0.1` and `::1`) fold
+   into one row.
+9. **Addresses are classified with `getifaddrs`** (`sys::ifaddrs`) on
+   the machine and `run/mirqab-test/ifaddrs.json` under a fixture root,
+   the interface's kind from `sys/class/net/<name>/`. Rejected:
+   `proc/net/fib_trie` (no interface per address), netlink (more
+   `unsafe`), `ip -j addr` (a process per refresh).
+10. **`docker ps` and the system snapshot's `ss` are read through the
+    action `Sender`**: the real one runs them, a fixture root's answers
+    from files under the root. No stub binaries (the "Tests and
+    fixtures" text names stub `docker`, `pkexec`, `ss`, `xdg-open` and
+    `wl-copy`; none is needed).
+11. **The lite view**: `params.lite: true` gives counts only, and while
+    every subscriber is lite the sampler reads the socket tables alone.
+    The tray, the sidebar badge and the bar item use it.
+12. **`exposedCount` counts your own processes only.** A root listener
+    carries the `exposed` pill in its row but does not colour the badge
+    or the tray: you cannot act on it.
+13. **The MCP `Ctx` is small** (the socket and the `via` tag): plan 006
+    part 2 moved plans, the ancestry walk, the clock and every `Root`
+    read into the daemon (checklist step 6).
+14. **The new fixture processes join `root-desktop`**, not a new tree,
+    so one imagined machine serves every tab.
+
+## Parts
+
+| Part | What | State |
+|------|------|-------|
+| 1a | The `ports` stream: the socket tables, the owner map, scopes, the lite view; `mirqab ports`, `mirqab port N` (basic) | built (below) |
+| 1b | Project, framework, launcher, containers (`docker ps`); `mirqab port N` in full; MCP `list_ports`, `whats_on_port` | planned |
+| 2a | Stop and force stop a port (`ports.stop`, `ports.kill`, `mirqab kill`); the system snapshot (`ports.system`, `mirqab ports --system`) | planned |
+| 2b | `kill_port`, the first MCP tool that acts: `Ctx`, strict arguments, `via: "mcp"`, the intent row | planned |
+| 3 | The page, its rows and the `ports.list` card; the shared act flow | planned |
+| 4 | QR for the phone, the system section, the sidebar badge, the tray's attention, `mirqab bar ports` | planned |
 
 ## Problem
 
@@ -233,12 +313,197 @@ place of `getifaddrs` when under a fixture root).
 
 ## Unverified
 
-- `/proc/net/tcp6` address byte order (four host-order 32-bit words):
-  confirm with a listener on `::1` and record the row as a fixture.
-- Whether `environ` of a re-parented process stays readable (it should:
-  same uid): confirm with a process started by an agent that then exits.
-- `docker ps` JSON field names on the installed Docker version: record a
-  scrubbed sample.
-- PolicyKit shows `pkexec /usr/bin/ss` with a sensible prompt without a
-  custom policy file; if the prompt is poor, ship
-  `dist/polkit/org.mirqab.ports.policy` with a description.
+Resolved on the development machine on 2026-11-20 (read-only, except one
+throwaway `python3 -m http.server --bind ::1` the planner started and
+ended by its own pid; addresses are loopback, names scrubbed):
+
+- **`/proc/net/tcp6` byte order: resolved.** The listener on `[::1]:48811`
+  printed as
+  `00000000000000000000000001000000:BEAB 00000000000000000000000000000000:0000 0A … 1000 0 13212575 …`:
+  four 32-bit words in address order, each the in-memory `u32` printed
+  with `%08X` (little-endian here, so the last word `01000000` is
+  `00 00 00 01`); the port is big-endian hex (`BEAB` = 48811); the
+  process's fd link `socket:[13212575]` matched the inode column.
+  `0000000000000000FFFF00000100007F` is `::ffff:127.0.0.1`; in
+  `/proc/net/tcp`, `0100007F:1F90` is 127.0.0.1:8080 and `00000000:0016`
+  is 0.0.0.0:22. The header line is
+  `  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode`
+  (`udp` adds `ref pointer drops`), and a bound UDP socket is state `07`
+  (the stub resolver, `3500007F:0035`). `/proc/sys/net/ipv6/bindv6only`
+  is 0. The fixture's tables follow this layout
+  (`tests/fixtures/root-desktop/proc/net/`).
+- **`environ` of a re-parented process: resolved.** All 12 children of
+  the user manager were read: every same-uid process answered (22 to 197
+  variable names) except the manager's own `(sd-pam)`, which is
+  non-dumpable (its `exe` link is refused too). The reader treats an
+  unreadable `environ` as "no markers" (part 1b). The names the plan
+  relies on, `CLAUDECODE` and `CLAUDE_CODE_SESSION_ID`, are present in an
+  agent's environment.
+- **`docker ps --format '{{json .}}'`: resolved.** Docker 29.9.2, the
+  user in the `docker` group; fields `Command, CreatedAt, HealthStatus,
+  ID, Image, Labels, LocalVolumes, Mounts, Names, Networks, Platform,
+  Ports, RunningFor, Size, State, Status`; `ID` is 12 hex characters;
+  `Ports` reads `0.0.0.0:8088->80/tcp, [::]:8088->80/tcp`, or empty for a
+  container that publishes nothing (part 1b).
+- **`ss -Hltnp`'s shape** (for part 2a's parser): five columns and a
+  sixth `users:(("NAME",pid=N,fd=M))` only for the caller's own sockets.
+- **Interface kinds under `sys/class/net`** (names scrubbed): bridges
+  have `DEVTYPE=bridge` and a `bridge/` directory; a bridge's ports a
+  `brport/`; loopback is `type` 772; physical interfaces have `device/`;
+  a tun interface is `type` 65534 with `tun_flags`; a wireless one has
+  `DEVTYPE=wlan`, `device/` and `wireless/`.
+- **Still open, an owner check after part 2a:** whether PolicyKit shows
+  `pkexec /usr/bin/ss` with a sensible prompt. No policy for `ss` exists
+  under `/usr/share/polkit-1/actions`, so it will be `pkexec`'s generic
+  prompt, and the daemon has no login session of its own (polkit's
+  `sd_uid_get_display` should tie it to the owner's); if the prompt is
+  poor, `dist/polkit/org.mirqab.ports.policy` is the next step.
+
+## As built (part 1a)
+
+Part 1a (2026-11-20): the `ports` stream, who listens where, and the
+read commands, as the brief's §3.1, §3.2 and part 1a describe, with the
+owner's decisions above. What was built, with where it lives:
+
+- **The stream** (`crates/mirqab-proto/src/stream.rs:30`, added to
+  `STREAMS` at `:12`): `PortsData` (`:382`) with `ports`, `exposedCount`,
+  `leftBehindCount`, `total`, `udp`, `docker` and `system`; `PortRow`
+  (`:404`), with `families` in place of the plan's `family`; the part 1b
+  shapes `PortProject`, `PortShell`, `PortLauncher` and `ContainerRef`,
+  always null in 1a; `SystemPorts` (`:483`), never loaded in 1a; and
+  `PortsLite` (`:505`). Golden: `tests/golden/ports.json` (`get ports
+  {"udp": true}` on `root-desktop`, 13 rows).
+- **The sampler** (`crates/mirqab-core/src/samplers/ports/mod.rs`),
+  registered after `process` in its own slot (`server.rs:391`). `listen`
+  builds the sender once (`server.rs:388`) and hands the same `Arc` to
+  `Ports::new` and `Actions::new` (`:433`); part 1a keeps it unused
+  (`#[expect(dead_code)]`, `mod.rs:182`, so part 1b must remove the
+  attribute when it reads `docker ps`). Every 5 s, never `live`. Params
+  (`accepts`, `mod.rs:45`): `udp` and `lite`, booleans, nothing else.
+  `wants` (`:495`) records whether anyone asked for UDP and whether every
+  subscriber is lite. Each tick (`measure`, `:302`): the tables; with a
+  subscriber that is not lite, the owner map, rebuilt (`rebuild`, `:270`)
+  only when the user's listening inodes differ from the last build or a
+  mapped process's `stat` is gone or has another start time (`stale`,
+  `:247`, which otherwise refreshes the mapped processes' `statm`);
+  then the interface table (`table`, `:226`) and the fold (`fold`,
+  `:352`). A `get` that is not lite rebuilds (`snapshot`, `:506`);
+  `idle` (`:521`) drops the process cache, the map and the table;
+  `status` (`:528`) adds `ports: {owners, rebuilds}`. The view (`:428`)
+  takes the UDP rows out for a subscriber that did not ask, counts per
+  view, and shapes the lite view.
+- **The tables** (`samplers/ports/procnet.rs`): `parse` (`:83`) keeps
+  state `0A` (TCP) or `07` (UDP) and skips a line it cannot read;
+  `address` (`:62`) reads each 32-bit word with `to_ne_bytes`, as the
+  kernel prints it, and gives a v4-mapped IPv6 address as the IPv4 one;
+  `read` (`:106`) reads `udp` and `udp6` only when asked.
+- **Scopes** (`samplers/ports/ifaces.rs`): loopback, unspecified and
+  link-local by the address (`intrinsic`, `:60`), anything else by the
+  interface that holds it (`Table::read`, `:131`: `sys::ifaddrs` on the
+  host, `run/mirqab-test/ifaddrs.json` under a fixture root) and that
+  interface's kind (`kind`, `:96`, from `sys/class/net/<name>/`). The
+  table is read only while some bind address needs it, again when that
+  set changes, and at most once a minute otherwise. Interface names stay
+  in the daemon.
+- **`sys::ifaddrs`** (`crates/mirqab-core/src/sys.rs:245`): `getifaddrs`,
+  IPv4 and IPv6 only, the list freed by a guard (`IfAddrs`, `:232`) on
+  every path; three `unsafe` blocks, each with its `// SAFETY:`. Unit
+  test `ifaddrs_lists_the_loopback` (`:319`).
+- **The owner map** (`samplers/ports/owner.rs`): `socket_inodes` (`:12`)
+  reads a process's `fd/` links; `owners_of` (`:42`) scans the user's
+  processes in pid order and stops after the process in which the last
+  wanted inode turned up. The walk is `procfs::walk` with the sampler's
+  own `procfs::Cache`, so the `apps` lock is never taken.
+- **Rows**: one per port, protocol and owner; an owner's `0.0.0.0` and
+  `::` sockets, or `127.0.0.1` and `::1`, fold into one row named by the
+  IPv4 address (`bind_key`, `mod.rs:147`), and a lone `::` is `[4, 6]`
+  unless `proc/sys/net/ipv6/bindv6only` is 1 (`families_of`, `:167`).
+  `label` (`:71`): an interpreter's script or `-m` module stands for the
+  program, joined by the next argument when it is a word (`next dev`,
+  `http.server`, `manage.py runserver`, `vite`), cut to 40 characters and
+  made `plain`. `uptimeSec` is `procfs::age_secs`
+  (`samplers/apps/procfs.rs:259`), which the inspector now uses for
+  `ageSec` too (`inspect.rs:466`). `url` (`mod.rs:118`) is
+  `http://localhost:<port>`, `https` for 443 and 8443.
+- **The CLI** (`crates/mirqab/src/ports.rs`, dispatched at `main.rs:114`):
+  `mirqab ports [--udp] [--json]` (`ports_lines`, `:54`: columns PORT,
+  PROTO, BIND, REACH, PROCESS, PROJECT, LAUNCHER, UP, then one `exposed:`
+  line per exposed row of yours) and `mirqab port PORT [--proto tcp|udp]
+  [--json]` (`port_lines`, `:85`: Port, Reach in words, Process, Label,
+  Up, URL; part 1b's fields appear once the daemon fills them; exit 1
+  "nothing listens on port N/tcp"). The strings are in `strings.rs`'s
+  "Ports (plan 007)" section (`:2014`) and two `CLI_COMMANDS` entries
+  (`:106`, `:114`); `docs/cli.md` is regenerated.
+- **Fixtures**: ten processes in `tests/fixtures/procs.tsv` (four
+  terminal sessions, an agent, its dev server, an agent that listens,
+  the MCP server as a future caller), socket `fd=` links added to 1300
+  and 3020, and `tools/mkfixture.sh`'s new `env=NAME,NAME` extra, which
+  writes `environ` as `NAME=MARKERVALUE` (`tools/mkfixture.sh:89`,
+  `:163`); the hand-written tables, `bindv6only`, the interface table,
+  `sys/class/net/` and three `package.json` files in both trees
+  (`tests/fixtures/README.md`). The `apps` golden and the group counts
+  went from 24 to 28 groups (four `session:` groups) and 44 to 54 (t0) or
+  53 (t1) processes: `crates/mirqab-core/tests/apps.rs`,
+  `crates/mirqab-view/tests/apps.rs`, `crates/mirqab/tests/mcp.rs`,
+  `tests/test-ui-apps.sh`. The new processes use no CPU between the two
+  trees, so no rate assertion moved.
+- **Docs**: architecture §5.2 (the params and `status.ports`) and §5.3
+  (the `ports` paragraph, with the `IPV6_V6ONLY` limit and "exposed" as a
+  claim about the bind address only); `README.md`.
+
+Tests (2026-11-20): `crates/mirqab-core/tests/ports.rs` 9 (new:
+`tcp_rows_parse_both_families_and_only_listeners` `:137`,
+`udp_rows_are_bound_sockets_and_only_when_asked` `:185`,
+`a_dual_stack_listener_is_one_row_marked_both` `:216`,
+`each_bind_address_gets_its_scope` `:249`,
+`inodes_map_to_the_processes_that_hold_them_and_root_has_no_pid` `:303`,
+`the_owner_map_is_rebuilt_only_when_the_inode_set_changes` `:340`,
+`the_lite_view_reads_no_fd_and_gives_counts` `:383`,
+`uptime_rss_and_label_come_from_the_owner` `:414`,
+`the_stream_matches_its_golden` `:460`); `tests/protocol.rs` 28 → 29
+(`ports_params_are_strict` `:1046`; the hello test names `ports`);
+`mirqab-core` unit tests 70 → 76 (the params, the label, the URL, the
+address words, the intrinsic scopes, `ifaddrs`); `mirqab` unit tests
+20 → 22; `tests/test-cli.sh` 231 checks (new: `ports --json` 11 TCP rows,
+`--udp` 13, the table's port, process, reach and root row, the exposed
+line for 8000 and none for root's 22, `port 3000`'s and `port 8000`'s
+Reach, root's port with no process, `--proto udp`, exit 1 for port 1,
+64 for `abc`, 70000 and `--proto sctp`, `ports` in `status` with no
+subscriber before and after, `ports` and `port` in `--help`, `help` and
+the completions). Each new test was checked by breaking the code it
+covers (the PR lists the mutations).
+
+Cost (2026-11-20, release build, the development machine,
+`tools/bench-idle.sh --subscribe ports`): 0.000 % of one core over 60 s,
+7.8 MiB, 233 context switches; with `--procs 400` (432 processes, 8
+clones of the 47 user processes) 0.033 %, 8.1 MiB, 268 context
+switches. Both under the brief's 1 % (and the 0.3 % idle row). The CI
+line and the §9.1 row come with part 4, with the tray's subscription.
+
+Deviations from the brief, each with its reason:
+
+- **The fd scan keeps the holders found by the time every inode is
+  found**, as the brief's "stop the scan" says, rather than every holder
+  ("keep them all"): the two cannot both hold. A forked server's
+  workers share the parent's socket inode, and the parent, met first in
+  pid order, is the row; listing every worker would repeat one port per
+  worker. Part 2a's `owners_of` for a stop may scan without stopping.
+- **A scope `other`**: the brief's interface kinds include `other` (a
+  veth, a dummy, a bridge's port), which its scope list and its
+  sentences left out. It is a scope of its own, exposed, with its own
+  sentence and REACH word.
+- **The lite view's `total` counts your rows**, not every row: part 4's
+  badge shows "`total` of your rows" (7 on the fixture), and the lite view
+  has nothing else to give it. The full view's `total` counts every row
+  it shows, as §3.1 says.
+- **`mirqab port` reads TCP unless `--proto udp`**, as `kill` will.
+- **No `.git/HEAD` in the fixture projects**: git refuses to track a
+  path with a `.git` component, so part 1b's project test must make the
+  marker in a scratch copy, or rely on `package.json`.
+- **The project trees' `package.json` files are added now** (the brief
+  allowed it), so the trees change once.
+
+Known limits: a socket that set `IPV6_V6ONLY` itself shows as both
+families (the table does not say; overstating reach is the safe
+direction); the scope of an address on the loopback interface that is
+not 127/8 or `::1` is `local`.

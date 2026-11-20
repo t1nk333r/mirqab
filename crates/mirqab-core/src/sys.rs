@@ -1,7 +1,8 @@
 //! The few system calls std does not wrap: the peer's uid and pid on a Unix
 //! socket, this process's uid, adopting a socket systemd passed in, polling
 //! stdout for a closed reader, the boot-time clock, signalling a process
-//! through a pidfd, and a Unix-socket connect that cannot hang (plan 006). Each `unsafe` block is one libc call
+//! through a pidfd, a Unix-socket connect that cannot hang (plan 006), and
+//! the machine's interface addresses (plan 007). Each `unsafe` block is one libc call
 //! with its contract stated; nothing else in the daemon uses `unsafe`
 //! (CLAUDE.md "Style").
 #![allow(unsafe_code)]
@@ -227,6 +228,67 @@ pub fn connect_timeout(path: &Path, timeout: Duration) -> std::io::Result<UnixSt
     Ok(stream)
 }
 
+/// Frees the list `getifaddrs` gave, whichever way `ifaddrs` returns.
+struct IfAddrs(*mut libc::ifaddrs);
+
+impl Drop for IfAddrs {
+    fn drop(&mut self) {
+        // SAFETY: the pointer is the head getifaddrs returned, freed exactly
+        // once, here; nothing reads the list after the guard drops.
+        unsafe { libc::freeifaddrs(self.0) }
+    }
+}
+
+/// Every IPv4 and IPv6 address of every interface, with the interface's
+/// name (getifaddrs(3)): what the `ports` stream classifies a bind address
+/// by (plan 007). The names never leave the daemon.
+pub fn ifaddrs() -> std::io::Result<Vec<(String, std::net::IpAddr)>> {
+    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+    let mut head: *mut libc::ifaddrs = std::ptr::null_mut();
+    // SAFETY: `head` is a live stack pointer getifaddrs writes the list's
+    // head to; on success the list is ours until freeifaddrs.
+    if unsafe { libc::getifaddrs(&mut head) } != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    let list = IfAddrs(head);
+    let mut out = Vec::new();
+    let mut cur = list.0;
+    while !cur.is_null() {
+        // SAFETY: `cur` is a non-null node of the list getifaddrs built,
+        // alive until `list` drops; each node's name is a NUL-terminated
+        // string and its `ifa_addr`, when not null, points to a sockaddr
+        // whose family says which sockaddr type it is (getifaddrs(3)).
+        let (next, entry) = unsafe {
+            let ifa = &*cur;
+            let name = std::ffi::CStr::from_ptr(ifa.ifa_name)
+                .to_string_lossy()
+                .into_owned();
+            let addr = if ifa.ifa_addr.is_null() {
+                None
+            } else {
+                match i32::from((*ifa.ifa_addr).sa_family) {
+                    libc::AF_INET => {
+                        let sin = &*ifa.ifa_addr.cast::<libc::sockaddr_in>();
+                        Some(IpAddr::V4(Ipv4Addr::from(
+                            sin.sin_addr.s_addr.to_ne_bytes(),
+                        )))
+                    }
+                    libc::AF_INET6 => {
+                        let sin6 = &*ifa.ifa_addr.cast::<libc::sockaddr_in6>();
+                        Some(IpAddr::V6(Ipv6Addr::from(sin6.sin6_addr.s6_addr)))
+                    }
+                    _ => None,
+                }
+            };
+            (ifa.ifa_next, addr.map(|a| (name, a)))
+        };
+        out.extend(entry);
+        cur = next;
+    }
+    drop(list);
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -251,6 +313,16 @@ mod tests {
         stop_tx.send(()).unwrap();
         t.join().unwrap();
         assert!(pidfd_open(std::process::id()).is_ok());
+    }
+
+    #[test]
+    fn ifaddrs_lists_the_loopback() {
+        let all = ifaddrs().expect("getifaddrs");
+        assert!(
+            all.iter().any(|(_, a)| a.is_loopback()),
+            "no loopback address among {} entries",
+            all.len()
+        );
     }
 
     #[test]

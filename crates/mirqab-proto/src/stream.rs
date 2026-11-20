@@ -9,7 +9,7 @@ pub const SELF: &str = "self";
 pub const UI: &str = "ui";
 
 /// Every stream the protocol defines so far.
-pub const STREAMS: &[&str] = &["apps", "process", "self", "system", "ui"];
+pub const STREAMS: &[&str] = &["apps", "ports", "process", "self", "system", "ui"];
 pub const SYSTEM: &str = "system";
 pub const APPS: &str = "apps";
 /// `get apps.inspect {pid}`: one process explained (plan 006). A request
@@ -25,6 +25,9 @@ pub const APPS_KILL: &str = "apps.kill";
 pub const PROCESS: &str = "process";
 /// The most distinct pids the `process` stream reads in one tick.
 pub const PROCESS_MAX_PIDS: usize = 8;
+/// What listens on which port, who started it, and whether the network
+/// can reach it (plan 007). Every 5 s, never `live`.
+pub const PORTS: &str = "ports";
 
 /// The `self` stream: what mirqab costs (plan 001).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -369,6 +372,142 @@ pub struct ProcessData {
     pub threads: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub state: Option<String>,
+}
+
+/// The `ports` stream (plan 007): one row per listening socket and owner.
+/// `params` are `udp` (bool: also bound UDP sockets) and `lite` (bool:
+/// the counts only, [`PortsLite`]), nothing else.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct PortsData {
+    /// Sorted by port, then protocol, then pid.
+    pub ports: Vec<PortRow>,
+    /// Your rows (`owner` `you`) that the network can reach: root's and
+    /// other users' exposed rows carry the pill but are not counted.
+    pub exposed_count: u32,
+    /// Your rows whose launcher's session ended (an agent that exited).
+    pub left_behind_count: u32,
+    /// Every row in this view.
+    pub total: u32,
+    /// Whether UDP rows are in this view.
+    pub udp: bool,
+    /// What `docker ps` answered: `ok`, `absent`, `denied`, `failed`, or
+    /// `off` while lite.
+    pub docker: String,
+    /// The system snapshot of root's listeners, loaded on request.
+    pub system: SystemPorts,
+}
+
+/// One listening socket and the process that holds it.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct PortRow {
+    pub port: u16,
+    /// `tcp` or `udp`.
+    pub proto: String,
+    /// The bound address: `127.0.0.1`, `0.0.0.0`, `::`; the IPv4 one when
+    /// an IPv4 and an IPv6 socket of one owner fold into one row.
+    pub bind: String,
+    /// `[4]`, `[6]` or `[4, 6]`.
+    pub families: Vec<u8>,
+    /// `local`, `all`, `lan`, `bridge`, `vpn`, `link`, `other` or
+    /// `unknown`.
+    pub scope: String,
+    /// Whether anything but this machine can connect: `scope != local`.
+    pub exposed: bool,
+    /// `you`, `root`, `other` or `docker`.
+    pub owner: String,
+    pub uid: Option<u32>,
+    /// The process holding the socket, for your rows only, when found.
+    pub pid: Option<u32>,
+    /// Its start time (clock ticks after boot), with the pid its identity.
+    pub start: Option<u64>,
+    /// The process's name (`comm`, or the program's when cut short).
+    pub process: Option<String>,
+    /// The name and the first argument that says what it serves
+    /// (`next dev`, `http.server`), never the whole command line.
+    pub label: Option<String>,
+    pub rss_bytes: Option<u64>,
+    pub uptime_sec: Option<u64>,
+    pub project: Option<PortProject>,
+    pub shell: Option<PortShell>,
+    pub launcher: Option<PortLauncher>,
+    pub container: Option<ContainerRef>,
+    /// The systemd user unit that runs it.
+    pub unit: Option<String>,
+    /// `http://localhost:<port>`, `https` for 443 and 8443; never probed.
+    pub url: String,
+}
+
+/// The project folder a process runs in (plan 007, part 1b).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct PortProject {
+    pub name: String,
+    /// With `~` for the home directory.
+    pub path: String,
+    pub framework: Option<String>,
+}
+
+/// The nearest shell above a process (plan 007, part 1b).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct PortShell {
+    pub name: String,
+    pub pid: u32,
+}
+
+/// What started a process (plan 007, part 1b): `terminal`, `editor`,
+/// `agent`, `service`, `container` or `unknown`.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct PortLauncher {
+    pub kind: String,
+    pub name: Option<String>,
+    pub session_ended: bool,
+}
+
+/// A container that publishes a port (plan 007, part 1b).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct ContainerRef {
+    pub id: String,
+    pub name: Option<String>,
+    pub image: Option<String>,
+}
+
+/// Root's listeners with their processes, read once on request (plan 007,
+/// part 2a); `loaded` false until then.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct SystemPorts {
+    pub loaded: bool,
+    /// Unix seconds of the snapshot.
+    pub at: Option<i64>,
+    pub ports: Vec<SystemPort>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct SystemPort {
+    pub port: u16,
+    pub proto: String,
+    pub bind: String,
+    pub families: Vec<u8>,
+    pub process: Option<String>,
+    pub pid: Option<u32>,
+}
+
+/// The `ports` stream with `lite: true`: counts only, for a badge, the
+/// tray and a bar item. `total` counts your rows.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct PortsLite {
+    pub lite: bool,
+    pub total: u32,
+    pub exposed_count: u32,
+    pub left_behind_count: u32,
+    pub udp: bool,
 }
 
 /// `get apps.inspect {pid}` (plan 006, "Inspector"). A field the daemon
