@@ -354,6 +354,9 @@ Rules:
   `unknown-stream`, `unavailable`, `refused`, `needs-confirm`,
   `needs-helper`, `failed`. An error may carry `data` beside its
   `message` (a `needs-confirm` reply's plan); it is omitted when empty.
+- A line that is not a valid request is answered `bad-request` with the
+  line's `id` when it is a JSON object whose `id` is a whole number, else
+  with id 0. A line longer than 1 MiB closes that connection only.
 
 ### 5.3 Streams and samplers
 

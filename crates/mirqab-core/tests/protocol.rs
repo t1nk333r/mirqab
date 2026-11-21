@@ -442,6 +442,78 @@ fn bad_json_is_answered_not_fatal() {
 }
 
 #[test]
+fn a_bad_request_with_a_usable_id_is_answered_with_that_id() {
+    // Audit 2026-11-21, L16: the reply carried id 0, so the caller waited
+    // for its timeout.
+    let d = start("badid");
+    let mut c = Client::connect(&d);
+    c.hello();
+    c.stream.write_all(b"{\"id\":7,\"method\":5}\n").unwrap();
+    match c.frame() {
+        Some(ServerFrame::Reply(r)) => {
+            assert_eq!(r.id, 7);
+            assert_eq!(r.error.unwrap().code.as_str(), "bad-request");
+        }
+        other => panic!("expected an error reply, got {other:?}"),
+    }
+    // An id that is not a whole number is not guessed at.
+    c.stream.write_all(b"{\"id\":\"x\",\"method\":5}\n").unwrap();
+    match c.frame() {
+        Some(ServerFrame::Reply(r)) => assert_eq!(r.id, 0),
+        other => panic!("expected an error reply, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_request_split_over_two_writes_is_one_request() {
+    // Audit 2026-11-21, L17: read_lines joins the halves.
+    let d = start("split");
+    let mut c = Client::connect(&d);
+    c.hello();
+    c.stream.write_all(b"{\"id\":3,\"meth").unwrap();
+    c.stream.flush().unwrap();
+    std::thread::sleep(Duration::from_millis(100));
+    c.stream.write_all(b"od\":\"status\"}\r\n").unwrap();
+    match c.frame() {
+        Some(ServerFrame::Reply(r)) => {
+            assert_eq!(r.id, 3);
+            assert!(r.error.is_none(), "{:?}", r.error);
+        }
+        other => panic!("expected the status reply, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_line_over_a_mebibyte_closes_only_that_connection() {
+    // Audit 2026-11-21, L17: MAX_LINE without a newline ends the reader;
+    // another client is still served.
+    let d = start("longline");
+    let mut long = Client::connect(&d);
+    let mut other = Client::connect(&d);
+    long.hello();
+    other.hello();
+    let chunk = vec![b'x'; 64 * 1024];
+    let mut closed = false;
+    for _ in 0..64 {
+        if long.stream.write_all(&chunk).is_err() {
+            closed = true;
+            break;
+        }
+    }
+    // Past 1 MiB the daemon stops reading and shuts the socket: a read
+    // sees the end (or a reset), not a timeout and never a reply.
+    if !closed {
+        let mut line = String::new();
+        match long.reader.read_line(&mut line) {
+            Ok(0) => {}
+            Err(e) if e.kind() == ErrorKind::ConnectionReset => {}
+            other => panic!("the connection was still open: {other:?} {line}"),
+        }
+    }
+    assert!(other.call("status", None, Value::Null).is_ok());
+}
+
+#[test]
 fn the_interface_hears_actions_and_config_changes() {
     let d = start("ui");
     let mut ui = Client::connect(&d);

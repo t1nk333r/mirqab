@@ -853,9 +853,16 @@ impl Inner {
         read_lines(&conn, |line| {
             match serde_json::from_slice::<Request>(line) {
                 Ok(req) => self.dispatch(id, req),
+                // A line that is an object with a whole-number id is
+                // answered with that id, so its caller does not wait for a
+                // timeout (audit 2026-11-21, L16); anything else gets 0.
                 Err(e) => self.reply(
                     id,
-                    Reply::err(0, Code::BadRequest, strings::bad_json(&e.to_string())),
+                    Reply::err(
+                        bad_request_id(line),
+                        Code::BadRequest,
+                        strings::bad_json(&e.to_string()),
+                    ),
                 ),
             }
         });
@@ -1572,6 +1579,15 @@ fn caller_for(root: &Root, peer: Option<u32>, test: Option<u32>) -> Option<u32> 
 
 /// A handler already queued its reply.
 struct Replied;
+
+/// The id of a line that is not a valid request: its `id` when the line is
+/// a JSON object whose `id` is a whole number, else 0.
+fn bad_request_id(line: &[u8]) -> u64 {
+    serde_json::from_slice::<Value>(line)
+        .ok()
+        .and_then(|v| v.get("id").and_then(Value::as_u64))
+        .unwrap_or(0)
+}
 
 /// The params a view reads: the request's, without the ones the server
 /// itself takes, so two subscribers that differ only in interval share one
