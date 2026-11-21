@@ -28,6 +28,7 @@ Read `docs/architecture.md` first: it is the contract the plans build to.
 | 020 | Packaging and release | M8 | P2 | S | 001–005 | PLANNED |
 | 021 | Tray icon on any bar | M2 | P1 | S | 004 | DONE |
 | 022 | A real window by default | M2 | P1 | S | 001 004 | DONE |
+| 023 | Audit of 2026-11-21 | — | P1 | M | 001–007 | IN REVIEW |
 
 ## Milestones
 
