@@ -377,14 +377,19 @@ refusing every act while the history file cannot be opened, was not
 taken.
 
 **11. The command line.**
-`mirqab quit <pid|name> [-y] [--force] [--dry-run] [--json]`.
+`mirqab quit <pid|name> [-y] [--force] [--dry-run] [--json]`, and
+`mirqab quit --group <id> …`.
 
 - A number is a pid. Anything else is a group name, matched whole and
   case-insensitively against the `apps` view. A name `mirqab apps` shows
   cut (`strings::APPS_NAME_WIDTH` less one character, then `…`) is taken
   as a prefix; a shorter cut names nothing (audit 2026-11-21, L46). No
   match: exit 1. Several
-  matches: print them with their ids and pids, exit 1; never guess.
+  matches: print them with their ids and pids, exit 1; never guess. The
+  message names `--group ID`, which sends `{"group": id}`, the subject the
+  daemon already took for a name, so every process of that group is
+  planned; a pid of it would signal that process alone unless it is in a
+  user service (audit 2026-11-21, L47).
 - `--force` selects `apps.kill`.
 - Flow: call without `confirm`; print the `wouldDo` and `skipped` lines;
   `confirm::ask`; call again with the plan. `--dry-run` sends `dryRun` and

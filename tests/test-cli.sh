@@ -233,6 +233,34 @@ capture "$BIN/mirqab" quit python3 -y
 status_is "a name two apps share exits 1" 1 "$STATUS"
 like "and lists both" "$OUTPUT" "session:3050"
 like "with their pids" "$OUTPUT" "scope:app-Hyprland-script-1a2b3c4d  pids 7500"
+# Either is then quit by its id with --group, every process of it, not
+# by a pid that would signal that process alone (audit 2026-11-21, L47).
+like "and says to choose one with --group" "$OUTPUT" "with --group ID"
+unlike "not by a pid of it" "$OUTPUT" "by a pid"
+capture "$BIN/mirqab" quit --group scope:app-Hyprland-script-1a2b3c4d --dry-run
+status_is "quit --group --dry-run exits 0" 0 "$STATUS"
+like "and plans that group" "$OUTPUT" "7500  python3"
+is "a dry run by group sends nothing" "" "$(act_log)"
+capture "$BIN/mirqab" quit --group scope:app-Hyprland-script-1a2b3c4d -y
+status_is "quit --group -y exits 0" 0 "$STATUS"
+is "--group quits the group it names" "TERM 7500 36000" "$(act_log)"
+: >"$MIRQAB_ACT_LOG"
+capture "$BIN/mirqab" quit --group "scope:app-Hyprland-browser.sh-5650fedc" -y
+status_is "quit --group on a group of five exits 0" 0 "$STATUS"
+is "--group quits every process of it, its main process first" "TERM 2001 5010
+TERM 2000 5000
+TERM 2010 5100
+TERM 2011 5200
+TERM 2012 5300" "$(act_log)"
+: >"$MIRQAB_ACT_LOG"
+capture "$BIN/mirqab" quit --group scope:app-none-0 -y
+status_is "an unknown group exits 1" 1 "$STATUS"
+like "and says so" "$OUTPUT" "no app group scope:app-none-0"
+capture "$BIN/mirqab" quit --group
+status_is "--group needs an id" 64 "$STATUS"
+capture "$BIN/mirqab" quit 2001 --group scope:app-Hyprland-script-1a2b3c4d
+status_is "--group and a target together are a usage error" 64 "$STATUS"
+is "nothing was sent for them" "" "$(act_log)"
 capture "$BIN/mirqab" quit Hyprland --dry-run
 status_is "a group with a refused member exits 0" 0 "$STATUS"
 like "and lists that member as left alone" "$OUTPUT" "left alone    1050  Hyprland: pid 1050 is the session's compositor"

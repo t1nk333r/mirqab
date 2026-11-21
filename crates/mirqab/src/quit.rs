@@ -1,6 +1,6 @@
-//! `mirqab quit PID|NAME [-y] [--force] [--dry-run] [--json]` (plan 006,
-//! part 2): Quit (SIGTERM) or, with `--force`, Force quit (SIGKILL), on a
-//! process or an app of the `apps` view.
+//! `mirqab quit PID|NAME|--group ID [-y] [--force] [--dry-run] [--json]`
+//! (plan 006, part 2): Quit (SIGTERM) or, with `--force`, Force quit
+//! (SIGKILL), on a process or an app of the `apps` view.
 //!
 //! Always two calls to the daemon: the first returns `needs-confirm` with
 //! a plan and the `wouldDo` list, which is printed and confirmed (plan
@@ -185,22 +185,31 @@ pub fn run(args: Args) -> ExitCode {
     };
     let (mut yes, mut force, mut dry_run, mut json_out) = (false, false, false, false);
     let mut target: Option<&str> = None;
-    for a in &args.rest {
+    let mut group: Option<&str> = None;
+    let mut it = args.rest.iter();
+    while let Some(a) = it.next() {
         match a.as_str() {
             "-y" => yes = true,
             "--force" => force = true,
             "--dry-run" => dry_run = true,
             "--json" => json_out = true,
+            // One app by its id, when several share a name (audit
+            // 2026-11-21, L47); the daemon resolves it, every process of it.
+            "--group" if group.is_none() => match it.next().map(String::as_str) {
+                Some(id) if !id.is_empty() && !id.starts_with('-') => group = Some(id),
+                _ => return usage(&strings::missing_value("--group")),
+            },
             s if target.is_none() && !s.starts_with('-') => target = Some(s),
             other => return usage(&strings::unknown_option(other)),
         }
     }
-    let Some(target) = target else {
-        return usage(&strings::command_help("quit").unwrap_or_default());
-    };
-    let subject = match subject(&socket, target) {
-        Ok(s) => s,
-        Err(code) => return code,
+    let subject = match (target, group) {
+        (None, Some(id)) => json!({ "group": id }),
+        (Some(target), None) => match subject(&socket, target) {
+            Ok(s) => s,
+            Err(code) => return code,
+        },
+        _ => return usage(&strings::command_help("quit").unwrap_or_default()),
     };
     let name = if force { APPS_KILL } else { APPS_QUIT };
     let header = if force {
