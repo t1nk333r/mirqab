@@ -165,7 +165,7 @@ machine with haseen and is not a CI gate here.
 |------|--------|
 | `crates/mirqab/tests/tray.rs` | Registers once the watcher appears; re-registers after the watcher restarts; `Activate` produces a `ui` toggle event; the tooltip read causes one `get`, and no subscription exists afterwards; `tray.enabled=false` registers nothing |
 | `tests/test-bar.sh` | Each item's one-shot output in the three formats against `root-desktop`; `--watch` prints nothing while the text is unchanged between the base and `.t1` fixtures swapped under it; interval below 2 s is raised; a closed pipe ends the process; `--list` matches the table |
-| `tests/test-contrib.sh` | `contrib/haseen/mirqab.bar/manifest.json` parses, `Widget.qml` passes `qmllint` when that tool is installed (skipped with a note otherwise; not installed in CI), the Waybar snippets are valid JSON |
+| `tests/test-contrib.sh` | `contrib/haseen/mirqab.bar/manifest.json` parses, `Widget.qml` passes `qmllint` when that tool is installed (skipped with a note otherwise; CI's `test` job installs `qt6-declarative` and fails without it, audit 2026-11-21 L63), the Waybar snippets are valid JSON |
 | `tools/bench-idle.sh --tray` | With the tray registered and no window, the daemon stays in the idle budget |
 
 ## Acceptance

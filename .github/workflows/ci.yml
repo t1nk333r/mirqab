@@ -7,9 +7,9 @@
 #   docs    tools/check-docs.sh
 #   secrets tools/secrets.sh: gitleaks over every commit plus the privacy
 #           patterns (needs full history)
-# Every job runs in an Arch container, the distribution mirqab targets. lint
-# and test run the gates as an unprivileged user; docs and secrets only read
-# the checkout and run as the container's root. Actions are pinned by SHA.
+# Every job runs in an Arch container, the distribution mirqab targets, and
+# runs its gate as an unprivileged user, ci, who owns the checkout (so git
+# needs no safe.directory exception). Actions are pinned by SHA.
 #
 # Adapted from haseen .github/workflows/ci.yml (MIT, (c) 2026 t1nk33r;
 # NOTICE.md).
@@ -80,7 +80,9 @@ jobs:
           # zsh and fish: tests/test-cli.sh parses their completion scripts.
           # python-gobject: tests/test-ui-apps.sh builds a D-Bus CommandLine
           # call with GLib to prove --do is refused without MIRQAB_TEST.
-          pacman -Syu --noconfirm --needed "${pkgs[@]}" zsh fish python-gobject
+          # qt6-declarative: /usr/lib/qt6/bin/qmllint, which tests/test-contrib.sh
+          # runs on contrib/haseen's Widget.qml (it fails without it here).
+          pacman -Syu --noconfirm --needed "${pkgs[@]}" zsh fish python-gobject qt6-declarative
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # The pull request's merge base must be in the clone.
@@ -112,7 +114,9 @@ jobs:
         # registered (fails, not skips, without dbus-daemon), with a live
         # subscription, and the apps walk at 400 processes (plan 006, part
         # 4), best of three 60 s runs on this noisy shared runner. On a
-        # pull request only when it touches crates/.
+        # pull request only when it touches what the benchmark builds or
+        # reads: the crates, the workspace's manifest, lock file and
+        # toolchain, the benchmark and the fixture it runs on.
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
@@ -120,9 +124,12 @@ jobs:
               # Its own statement, so a git error fails the step instead of
               # skipping the gate. As ci, who owns the checkout: git refuses
               # a repository owned by another user (dubious ownership).
-              changed="$(runuser -u ci -- git diff --name-only "$BASE_SHA" HEAD -- crates/)"
+              inputs=(crates/ Cargo.toml Cargo.lock rust-toolchain.toml
+                  tools/bench-idle.sh tools/mkfixture.sh
+                  tests/fixtures/root-desktop/ tests/fixtures/procs.tsv)
+              changed="$(runuser -u ci -- git diff --name-only "$BASE_SHA" HEAD -- "${inputs[@]}")"
               if [[ -z $changed ]]; then
-                  echo "no change under crates/: skipped"
+                  echo "no change to the benchmark's inputs: skipped"
                   exit 0
               fi
           fi
@@ -141,10 +148,12 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
-      - name: tools/check-docs.sh
+      - name: Unprivileged user
         run: |
-          git config --global --add safe.directory "$GITHUB_WORKSPACE"
-          tools/check-docs.sh
+          useradd -m ci
+          chown -R ci:ci "$GITHUB_WORKSPACE"
+      - name: tools/check-docs.sh
+        run: runuser -u ci -- env CI=1 HOME=/home/ci tools/check-docs.sh
 
   secrets:
     runs-on: ubuntu-latest
@@ -155,7 +164,10 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
-      - name: tools/secrets.sh
+      - name: Unprivileged user
+        # The whole clone, every object of the full history included.
         run: |
-          git config --global --add safe.directory "$GITHUB_WORKSPACE"
-          tools/secrets.sh
+          useradd -m ci
+          chown -R ci:ci "$GITHUB_WORKSPACE"
+      - name: tools/secrets.sh
+        run: runuser -u ci -- env CI=1 HOME=/home/ci tools/secrets.sh

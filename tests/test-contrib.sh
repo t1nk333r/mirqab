@@ -1,7 +1,7 @@
 # tests/test-contrib.sh — the files under contrib/ (plan 004, Tests): the
 # haseen widget's manifest parses and names its entry, Widget.qml passes
-# qmllint where that tool is installed, and the Waybar snippets are valid
-# JSON naming only items `mirqab bar` knows.
+# qmllint where that tool is installed (in CI it must be), and the Waybar
+# snippets are valid JSON naming only items `mirqab bar` knows.
 # mirqab:covers contrib/**
 
 sandbox
@@ -12,12 +12,19 @@ is "the manifest parses" true "$(jq -r '.schemaVersion == 1 and .id == "mirqab.b
 is "its bar-widget entry exists" true "$(test -f "$REPO/contrib/haseen/mirqab.bar/$(jq -r '.entry["bar-widget"]' "$M")" && echo true)"
 known="$("$BIN/mirqab" bar --list | awk '{print $1}' | xargs)"
 like "its default item is one mirqab knows" " $known " " $(jq -r '.settings.item.default' "$M") "
-QMLLINT="$(command -v qmllint || command -v /usr/lib/qt6/bin/qmllint || true)"
+# QMLLINT names the binary (empty: none). CI installs qt6-declarative, so
+# there a missing qmllint fails rather than skipping the only check
+# Widget.qml has (audit 2026-11-21, L63).
+QMLLINT="${QMLLINT-$(command -v qmllint || command -v /usr/lib/qt6/bin/qmllint || true)}"
 if [[ -n $QMLLINT ]]; then
-    # haseen's qs.Haseen modules are not here, so import warnings are
-    # expected; a syntax error is not.
+    # haseen's qs.Haseen modules are not here, so [import] and
+    # [unqualified] warnings are expected; qmllint exits 0 on warnings and
+    # non-zero on an error, a syntax error among them.
     capture "$QMLLINT" "$REPO/contrib/haseen/mirqab.bar/Widget.qml"
+    status_is "qmllint finds no error in Widget.qml" 0 "$STATUS"
     unlike "Widget.qml has no syntax error" "$OUTPUT" "[syntax]"
+elif [[ -n ${CI:-} ]]; then
+    not_ok "qmllint is installed (qt6-declarative)"
 else
     echo "# qmllint is not installed: Widget.qml not linted" >&2
     ok
