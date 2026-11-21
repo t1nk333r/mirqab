@@ -2521,26 +2521,68 @@ path would otherwise become its controlling terminal on open. Test:
 (a child copy of the test binary starts a session, opens a fresh
 pseudo-terminal through `read_regular_prefix`, and checks `/dev/tty`).
 
-Audit 2026-11-21, L7: `O_NONBLOCK` does not stop an open on FUSE from
-waiting on its server, so a process whose root sat on a hung FUSE mount
-stalled the walk under the sampler lock. `procfs::read_flatpak_info` first
-reads `proc/<pid>/mountinfo` (the kernel answers it; no filesystem is
-asked) and opens `.flatpak-info` only when mountinfo lists at least one
-mount at `/` and none of the mounts at `/` or at `/.flatpak-info` has a
-type starting `fuse` (`procfs::flatpak_info_off_fuse`). The kernel omits
-every mount the process's root cannot reach, so a process chrooted into
-a directory of a FUSE mount has no line at `/` at all; review of L7
-found that an earlier version, which looked only for a FUSE line, let
-that case through. A real Flatpak still passes: bubblewrap pivots onto
-a tmpfs `/` (checked on the development machine on 2026-11-21: the one
-line at `/` in a running Flatpak app's mountinfo has root `/newroot` and
-type `tmpfs`). A missing mountinfo (the fixtures have none) is no
-objection. This costs one more read per process that reaches the
-`.flatpak-info` check, once in the process's life (`Info` is cached).
-Test: `tests/apps.rs`, `flatpak_info_is_not_opened_through_a_fuse_root`
-(FUSE at `/`, at `/.flatpak-info`, and beside another `/`; a mountinfo
-with no mount at `/` and an empty one are skipped; ext4 at `/`, FUSE at
-`/home`, and no mountinfo are read).
+Audit 2026-11-21, L7: `O_NONBLOCK` does not stop an open (or a lookup) on
+FUSE from waiting on its server, so a process whose root sat on a hung
+FUSE mount stalled the walk under the sampler lock. The fix pins what it
+asks about. `Root::read_regular_prefix_in` opens `proc/<pid>/root` with
+`O_PATH` (following that link jumps to the root's dentry and calls no
+filesystem), takes its mount id from the `mnt_id:` line of
+`/proc/self/fdinfo/<fd>` (the kernel prints it from the descriptor; no
+filesystem is asked, unlike `fstatfs` or a `statx` that may refresh
+attributes), and clears it before `.flatpak-info` is looked up. The file
+is then opened `O_PATH|O_NOFOLLOW` through `/proc/self/fd/<rootfd>`, its
+mount id cleared too (a file can be a mount of its own), checked to be a
+regular file, and reopened for reading through its own descriptor with
+`O_NONBLOCK|O_NOCTTY`. Because every step holds a descriptor, a
+`pivot_root` or a mount between a check and the read changes nothing that
+was checked. `procfs::read_flatpak_info` clears a mount id only when the
+process's `mountinfo` lists it (field 1) as a `tmpfs`
+(`procfs::tmpfs_mount`). On the live machine a mountinfo that cannot be
+read clears nothing; a fixture without one (the fixtures have none) is
+read as before through `read_regular_prefix`. This costs one more read
+per process that reaches the `.flatpak-info` check, once in the process's
+life (`Info` is cached), plus two `fdinfo` reads.
+
+Why tmpfs only: bubblewrap builds every Flatpak root on a tmpfs. Checked
+on the development machine on 2026-11-21: for a running Flatpak app, the
+`O_PATH` descriptors of its root and of its `.flatpak-info` carry the same
+mount id, and its mountinfo lists that id at `/` with root `/newroot` and
+type `tmpfs`. Rejected options:
+
+- Looking for a FUSE line at `/` or `/.flatpak-info` in mountinfo (the
+  first fix). The kernel omits mounts the root cannot reach, so a process
+  chrooted into a directory of a FUSE mount has no line at `/` at all.
+- Requiring a mount at `/` and no FUSE among the mounts at `/` (the
+  second fix, rejected in delta review). A process in its own user and
+  mount namespace can chroot below a FUSE mount and mount a tmpfs over its
+  own `/`: mountinfo then lists only that tmpfs, but a chroot root does not
+  follow an overmount, so `proc/<pid>/root` still resolves to the FUSE
+  directory. Mount points prove nothing; the pinned mount id does. The
+  reviewer confirmed on this machine that the `O_PATH` descriptor's
+  `mnt_id` in that setup is absent from the process's mountinfo, so the
+  id check refuses it. Reading mountinfo before an unpinned open also left
+  a race with `pivot_root`.
+- Clearing any type that does not start with `fuse`, as the review
+  suggested. An overlay with a FUSE lower layer is not `fuse*` but looks
+  its names up on the FUSE server; only Flatpak roots matter here, and
+  they are tmpfs.
+- `statx(STATX_MNT_ID, AT_STATX_DONT_SYNC)` for the mount id. It works,
+  but it reaches the filesystem's `getattr`, where `fdinfo` does not, and
+  needs `unsafe` for a call std does not wrap.
+
+Tests: `root.rs`, `a_pinned_read_asks_about_the_directory_mount_before_the_name`
+(a refused root mount is refused before the name is looked up),
+`a_pinned_read_reads_a_regular_file_on_a_cleared_mount`,
+`a_pinned_read_refuses_what_is_not_a_regular_file` (a FIFO, a symlink, a
+directory, and a name that is not one component) and
+`a_pinned_read_does_not_leave_a_fixture_tree`; `tests/apps.rs`,
+`flatpak_info_is_not_opened_through_a_fuse_root`, whose fixture mountinfo
+names the scratch tree's real mount id (`Root::mount_id`): FUSE, overlay
+or ext4 for the root's mount, a tmpfs at `/` that is not the root's mount
+(the review's bypass), the root's mount not listed, a line without a type
+and an empty mountinfo are skipped; a tmpfs root's mount, wherever it is
+mounted and with FUSE elsewhere, and no mountinfo at all are read. The
+bypass row failed against the second fix before this one.
 
 **15. The session bus by command name (owner question 1).** See the
 question; if the owner says yes, `guard::SESSION_BUS_COMMS = ["dbus-daemon",

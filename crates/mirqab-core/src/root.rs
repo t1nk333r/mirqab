@@ -115,6 +115,20 @@ impl Root {
         Ok(buf)
     }
 
+    /// The id of the mount `rel` resolves to, the number in field 1 of
+    /// `proc/<pid>/mountinfo`. `rel` is opened with O_PATH, which calls no
+    /// filesystem's open, and the id comes from `fdinfo`, which the kernel
+    /// answers from the descriptor (see `pinned_mount_id`). A test uses it
+    /// to write a fixture mountinfo that names the scratch tree's mount.
+    pub fn mount_id(&self, rel: &str) -> io::Result<u64> {
+        use std::os::unix::fs::OpenOptionsExt;
+        let f = std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_PATH)
+            .open(self.path(rel)?)?;
+        pinned_mount_id(&f)
+    }
+
     /// At most the first `n` bytes of `rel` when it is a regular file, and
     /// an error for anything else: a FIFO, a socket, a device, a directory
     /// or a symlink as the last component (plan 006, part 4, decision 14).
@@ -155,6 +169,109 @@ impl Root {
         file.take(n as u64).read_to_end(&mut buf)?;
         Ok(buf)
     }
+
+    /// At most the first `n` bytes of `name` inside the directory `dir`
+    /// resolves to (`proc/<pid>/root`), when it is a regular file on a
+    /// mount `clear` accepts by id (audit 2026-11-21, L7). A process
+    /// controls its own root, and an open or a lookup on a FUSE mount waits
+    /// on its server, O_NONBLOCK or not, so nothing on an uncleared mount
+    /// is asked anything:
+    ///
+    /// 1. `dir` is opened with O_PATH. Following `proc/<pid>/root` jumps to
+    ///    the root's dentry and calls no filesystem; it is also the root
+    ///    itself, where a mount placed over it is not (a chroot root does
+    ///    not follow an overmount).
+    /// 2. Its mount id goes to `clear` before `name` is looked up in it.
+    /// 3. `name`, one component, is opened O_PATH|O_NOFOLLOW through that
+    ///    pinned descriptor (`/proc/self/fd/N/name`), and its mount id is
+    ///    cleared too, since a file can be a mount of its own.
+    /// 4. Only then is it checked to be a regular file (no FIFO, socket,
+    ///    device, directory or symlink) and reopened for reading through
+    ///    its own pinned descriptor, with O_NONBLOCK and O_NOCTTY as in
+    ///    `read_regular_prefix`.
+    ///
+    /// Every step holds a descriptor, so a `pivot_root` or a mount between
+    /// a check and the read changes nothing that was checked. On a fixture
+    /// root the descriptors are real too, and `dir` must stay inside the
+    /// tree.
+    pub fn read_regular_prefix_in(
+        &self,
+        dir: &str,
+        name: &str,
+        n: usize,
+        clear: impl Fn(u64) -> bool,
+    ) -> io::Result<Vec<u8>> {
+        use std::io::Read;
+        use std::os::fd::AsRawFd;
+        use std::os::unix::fs::OpenOptionsExt;
+        if name.is_empty() || name == "." || name == ".." || name.contains('/') {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("not one name: {name:?}"),
+            ));
+        }
+        let path = self.path(dir)?;
+        if !self.is_host() {
+            let real = std::fs::canonicalize(&path)?;
+            let base = std::fs::canonicalize(&self.base)?;
+            if !real.starts_with(&base) {
+                return Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    format!("link leaves the root: {dir}"),
+                ));
+            }
+        }
+        let open = |p: &Path, flags: libc::c_int| {
+            std::fs::OpenOptions::new()
+                .read(true)
+                .custom_flags(flags)
+                .open(p)
+        };
+        let check = |f: &std::fs::File, what: &str| -> io::Result<u64> {
+            let id = pinned_mount_id(f)?;
+            if clear(id) {
+                Ok(id)
+            } else {
+                Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    format!("{what} is not on a cleared mount"),
+                ))
+            }
+        };
+        let dir_fd = open(&path, libc::O_PATH | libc::O_DIRECTORY)?;
+        check(&dir_fd, dir)?;
+        let fd_path = |f: &std::fs::File| PathBuf::from(format!("/proc/self/fd/{}", f.as_raw_fd()));
+        let file = open(
+            &fd_path(&dir_fd).join(name),
+            libc::O_PATH | libc::O_NOFOLLOW,
+        )?;
+        check(&file, name)?;
+        if !file.metadata()?.is_file() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("not a regular file: {dir}/{name}"),
+            ));
+        }
+        let reader = open(&fd_path(&file), libc::O_NONBLOCK | libc::O_NOCTTY)?;
+        let mut buf = Vec::with_capacity(n.min(64 * 1024));
+        reader.take(n as u64).read_to_end(&mut buf)?;
+        Ok(buf)
+    }
+}
+
+/// The id of the mount the descriptor `f` sits on, from the `mnt_id:`
+/// line of this process's `fdinfo` for it (Linux 3.15 and later). The
+/// kernel prints it from the descriptor itself: unlike `fstatfs`, or a
+/// `statx` that may refresh attributes, no filesystem is asked, so a hung
+/// FUSE server cannot hold the call. These are our own descriptors, not
+/// state of the machine, so they are read here on a fixture root too.
+fn pinned_mount_id(f: &std::fs::File) -> io::Result<u64> {
+    use std::os::fd::AsRawFd;
+    let info = std::fs::read_to_string(format!("/proc/self/fdinfo/{}", f.as_raw_fd()))?;
+    info.lines()
+        .find_map(|l| l.strip_prefix("mnt_id:"))
+        .and_then(|v| v.trim().parse().ok())
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "fdinfo has no mnt_id"))
 }
 
 #[cfg(test)]
@@ -180,6 +297,94 @@ mod tests {
         assert!(r.path("../etc/passwd").is_err());
         assert!(r.path("proc/../../x").is_err());
         assert!(r.path("/etc/passwd").is_err());
+    }
+
+    /// A scratch tree under `${TMPDIR:-/tmp}`, removed on drop (through
+    /// `act`, the one module that removes files).
+    struct Scratch(std::path::PathBuf);
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = crate::act::remove_path(&self.0, false);
+        }
+    }
+    fn scratch(tag: &str) -> Scratch {
+        let d = std::env::temp_dir().join(format!(
+            "mirqab-root-{tag}-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = crate::act::remove_path(&d, false);
+        std::fs::create_dir_all(d.join("proc/1/root")).unwrap();
+        Scratch(d)
+    }
+
+    #[test]
+    fn a_pinned_read_asks_about_the_directory_mount_before_the_name() {
+        // Audit 2026-11-21, L7: the directory's mount is cleared before
+        // anything inside it is looked up, so a refusal comes before the
+        // lookup that a FUSE server would answer: a missing name is
+        // refused, not "not found".
+        let s = scratch("pin-order");
+        let r = Root::new(&s.0);
+        let mnt = r.mount_id("proc/1/root").unwrap();
+        let asked = std::cell::RefCell::new(Vec::new());
+        let e = r
+            .read_regular_prefix_in("proc/1/root", "absent", 16, |id| {
+                asked.borrow_mut().push(id);
+                false
+            })
+            .unwrap_err();
+        assert_eq!(e.kind(), std::io::ErrorKind::PermissionDenied, "{e}");
+        assert_eq!(*asked.borrow(), [mnt]);
+    }
+
+    #[test]
+    fn a_pinned_read_reads_a_regular_file_on_a_cleared_mount() {
+        let s = scratch("pin-read");
+        std::fs::write(s.0.join("proc/1/root/info"), "abcdef").unwrap();
+        let r = Root::new(&s.0);
+        let mnt = r.mount_id("proc/1/root").unwrap();
+        assert_eq!(r.mount_id("proc/1/root/info").unwrap(), mnt);
+        let got = r.read_regular_prefix_in("proc/1/root", "info", 4, |id| id == mnt);
+        assert_eq!(got.unwrap(), b"abcd");
+    }
+
+    #[test]
+    fn a_pinned_read_refuses_what_is_not_a_regular_file() {
+        let s = scratch("pin-kinds");
+        let dir = s.0.join("proc/1/root");
+        let fifo = dir.join("fifo");
+        let made = crate::exec::run(
+            &["mkfifo", &fifo.to_string_lossy()],
+            None,
+            std::time::Duration::from_secs(5),
+        )
+        .unwrap();
+        assert!(made.success(), "{made:?}");
+        std::fs::write(dir.join("real"), "x").unwrap();
+        std::os::unix::fs::symlink("real", dir.join("link")).unwrap();
+        std::fs::create_dir(dir.join("sub")).unwrap();
+        std::fs::write(dir.join("sub/real"), "x").unwrap();
+        let r = Root::new(&s.0);
+        for name in ["fifo", "link", "sub", "sub/real", "..", ".", ""] {
+            let e = r
+                .read_regular_prefix_in("proc/1/root", name, 4, |_| true)
+                .unwrap_err();
+            assert_eq!(e.kind(), std::io::ErrorKind::InvalidInput, "{name}: {e}");
+        }
+    }
+
+    #[test]
+    fn a_pinned_read_does_not_leave_a_fixture_tree() {
+        let s = scratch("pin-out");
+        let out = scratch("pin-out-target");
+        std::fs::write(out.0.join("info"), "x").unwrap();
+        std::fs::create_dir(s.0.join("proc/2")).unwrap();
+        std::os::unix::fs::symlink(&out.0, s.0.join("proc/2/root")).unwrap();
+        let e = Root::new(&s.0)
+            .read_regular_prefix_in("proc/2/root", "info", 4, |_| true)
+            .unwrap_err();
+        assert_eq!(e.kind(), std::io::ErrorKind::PermissionDenied, "{e}");
     }
 
     /// Set in the environment of the child that `opening_a_tty_does_not_

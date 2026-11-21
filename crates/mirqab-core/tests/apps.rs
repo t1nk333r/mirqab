@@ -1373,41 +1373,57 @@ fn flatpak_info_is_not_opened_through_a_fuse_root() {
     // Audit 2026-11-21, L7: O_NONBLOCK does not stop an open on a FUSE
     // mount from waiting on its server, so a process whose root (or whose
     // `/.flatpak-info`) is on a hung FUSE mount would stall the walk under
-    // the sampler lock. Its mountinfo says so before anything is opened,
-    // and a mountinfo with no mount at `/` (a chroot below a mount) says
-    // nothing either way, so the file is not opened then too.
+    // the sampler lock. The root is pinned with O_PATH and its mount id
+    // looked up in the process's mountinfo: only a listed tmpfs clears it
+    // (a Flatpak's root is one). Mount points do not matter; the id does. The
+    // review of the first fix found a process that chroots below a FUSE
+    // mount and puts a tmpfs over its own `/`: mountinfo then shows only
+    // that tmpfs at `/`, but its root is still the directory beneath.
     let s = bare_root("fuse");
+    let root = Root::new(&s.0);
+    // The scratch tree is on one real mount; the fixture's mountinfo
+    // names it by its real id, and other mounts by an id that is not it.
+    let mnt = root.mount_id("proc").unwrap();
+    let other = if mnt == 7 { 8 } else { 7 };
     let info = "[Application]\nname=org.example.Notes\n";
-    let ext4 = "21 1 254:1 / / rw,relatime shared:1 - ext4 none rw\n";
     let rows = [
+        // The root's own mount is FUSE.
         (
             9500,
-            "21 1 0:40 / / rw,nosuid shared:1 - fuse.sshfs example:/ rw\n".to_string(),
+            format!("{mnt} 1 0:40 / / rw - fuse.sshfs example:/ rw\n"),
         ),
-        (
-            9501,
-            format!(
-                "{ext4}30 21 0:41 / /.flatpak-info ro,nosuid shared:2 - fuse.portal portal ro\n"
-            ),
-        ),
-        // Any FUSE mount at `/` counts, under another one or not:
-        // mountinfo does not say which of them is the process's root.
         (
             9502,
-            format!("20 1 0:40 / / rw shared:1 - fuse.sshfs example:/ rw\n{ext4}"),
+            format!(
+                "{other} 1 254:1 / / rw - ext4 none rw\n{mnt} {other} 0:40 / / rw - fuse example rw\n"
+            ),
         ),
-        (9503, ext4.to_string()),
-        // FUSE elsewhere is no objection.
+        // The review's bypass: a tmpfs over `/` that is not the root's mount.
+        (9508, format!("{other} 1 0:44 / / rw - tmpfs tmpfs rw\n")),
+        // A chroot below a mount: the root's mount is not listed at all.
+        (9506, format!("{other} 1 0:5 / /proc rw - proc proc rw\n")),
+        (9507, String::new()),
+        // A line for the root's mount without a type is no clearance.
+        (9509, format!("{mnt} 1 0:40 / / rw\n")),
+        // Nor is any type but tmpfs: an overlay can have a FUSE lower layer.
+        (9510, format!("{mnt} 1 0:45 / / rw - overlay overlay rw\n")),
+        (9511, format!("{mnt} 1 254:1 / / rw - ext4 none rw\n")),
+        // Cleared: the root's mount is listed as a tmpfs, wherever it is
+        // mounted, and FUSE elsewhere is no objection.
+        (
+            9503,
+            format!("{mnt} 1 0:44 /newroot / rw - tmpfs tmpfs rw\n"),
+        ),
         (
             9504,
-            format!("{ext4}31 21 0:42 / /home rw - fuse.sshfs example:/ rw\n"),
+            format!(
+                "{mnt} 1 0:44 / / rw - tmpfs tmpfs rw\n{other} {mnt} 0:42 / /home rw - fuse.sshfs example:/ rw\n"
+            ),
         ),
-        // A process chrooted into a subdirectory of a FUSE mount: the
-        // kernel leaves out every mount its root cannot reach, that one
-        // included, so nothing is listed at `/` and nothing says the root
-        // is safe to open.
-        (9506, "40 21 0:5 / /proc rw - proc proc rw\n".to_string()),
-        (9507, String::new()),
+        (
+            9512,
+            format!("{mnt} 1 0:44 / /srv\\040x rw shared:3 - tmpfs tmpfs rw\n"),
+        ),
     ];
     for (pid, mounts) in &rows {
         let p = own_proc(&s.0, *pid, "notes");
@@ -1415,12 +1431,12 @@ fn flatpak_info_is_not_opened_through_a_fuse_root() {
         std::fs::write(p.join("root/.flatpak-info"), info).unwrap();
         std::fs::write(p.join("mountinfo"), mounts).unwrap();
     }
-    // No mountinfo at all (a fixture without one) still reads the file.
+    // No mountinfo at all (a fixture without one) still reads the file;
+    // on the live machine that would be an objection.
     let p = own_proc(&s.0, 9505, "notes");
     std::fs::create_dir_all(p.join("root")).unwrap();
     std::fs::write(p.join("root/.flatpak-info"), info).unwrap();
 
-    let root = Root::new(&s.0);
     let mut a = Apps::with_pacman(s.0.join("pacman").to_string_lossy());
     a.probe(&root).unwrap();
     let d = data(a.sample(&root, Instant::now()));
@@ -1432,12 +1448,12 @@ fn flatpak_info_is_not_opened_through_a_fuse_root() {
             .kind
             .clone()
     };
-    for pid in [9500, 9501, 9502, 9506, 9507] {
+    for pid in [9500, 9502, 9506, 9507, 9508, 9509, 9510, 9511] {
         assert_ne!(kind(pid), "flatpak", "{pid}");
         let v = inspect(&mut a, &root, pid);
         assert!(v.get("flatpak").is_none(), "{pid}: {v}");
     }
-    for pid in [9503, 9504, 9505] {
+    for pid in [9503, 9504, 9505, 9512] {
         assert_eq!(kind(pid), "flatpak", "{pid}");
         let v = inspect(&mut a, &root, pid);
         assert_eq!(v["flatpak"], "org.example.Notes", "{pid}: {v}");

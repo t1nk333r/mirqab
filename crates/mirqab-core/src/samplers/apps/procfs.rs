@@ -155,45 +155,47 @@ const FLATPAK_INFO_MAX: usize = 4096;
 /// The Flatpak app id of the process at `dir` (`proc/<pid>`), from its
 /// root's `.flatpak-info`, read only when that is a regular file (plan
 /// 006, part 4, decision 14; D7 of PR #16): the process controls its own
-/// root, and a FIFO there would stall the walk. Nor is it opened unless
-/// the process's mountinfo shows that path off FUSE (audit 2026-11-21,
-/// L7): O_NONBLOCK does not stop an open on FUSE from waiting on its
-/// server, and a hung server would hold the walk under the sampler lock.
-/// Reading mountinfo asks the kernel only. A missing mountinfo (a fixture
-/// without one) is no objection.
+/// root, and a FIFO there would stall the walk.
+///
+/// Nor is anything there opened or looked up unless the root, and the
+/// file, sit on a tmpfs (audit 2026-11-21, L7). An open or a lookup on
+/// FUSE waits on its server, O_NONBLOCK or not, and a hung server would
+/// hold the walk under the sampler lock. `Root::read_regular_prefix_in`
+/// pins the root and the file with O_PATH descriptors and hands each one's
+/// mount id to `tmpfs_mount`, which finds it in the process's own
+/// mountinfo; the mount points that mountinfo lists prove nothing, since a
+/// chroot root does not follow a mount placed over it. bubblewrap builds
+/// every Flatpak root on a tmpfs, and `.flatpak-info` is on it, so tmpfs is
+/// the one type cleared: denying only `fuse*` would pass an overlay with a
+/// FUSE lower layer. On the live machine a mountinfo that cannot be read
+/// clears nothing; a fixture without one is read as before.
 pub fn read_flatpak_info(root: &Root, dir: &str) -> Option<String> {
-    if read_text(root, &format!("{dir}/mountinfo")).is_some_and(|t| !flatpak_info_off_fuse(&t)) {
-        return None;
-    }
-    let bytes = root
-        .read_regular_prefix(&format!("{dir}/root/.flatpak-info"), FLATPAK_INFO_MAX)
-        .ok()?;
+    let bytes = match read_text(root, &format!("{dir}/mountinfo")) {
+        Some(mounts) => root
+            .read_regular_prefix_in(
+                &format!("{dir}/root"),
+                ".flatpak-info",
+                FLATPAK_INFO_MAX,
+                |id| tmpfs_mount(&mounts, id),
+            )
+            .ok()?,
+        None if !root.is_host() => root
+            .read_regular_prefix(&format!("{dir}/root/.flatpak-info"), FLATPAK_INFO_MAX)
+            .ok()?,
+        None => return None,
+    };
     flatpak_info(&String::from_utf8_lossy(&bytes))
 }
 
-/// Whether a process's `mountinfo` lists at least one mount at `/` and no
-/// FUSE filesystem (`fuse`, `fuseblk`, `fuse.<subtype>`) at `/` or at
-/// `/.flatpak-info`. The kernel lists only the mounts reachable from the
-/// process's root, so a process chrooted below a mount point (into a
-/// directory of a FUSE mount, say) has no line at `/`, and then mountinfo
-/// cannot say what its root is on: that is no clearance. Any mount at `/`
-/// counts, since mountinfo does not say which of several is the root. A
-/// real Flatpak passes: bubblewrap pivots onto a tmpfs `/`. The mount
-/// point is field 5; the type follows the ` - ` separator. Spaces inside
+/// Whether `mountinfo` lists the mount with id `id` (field 1) as a tmpfs.
+/// The type is the first field after the ` - ` separator; spaces inside
 /// fields are escaped as `\040`, so neither split can be fooled by a name.
-pub fn flatpak_info_off_fuse(mountinfo: &str) -> bool {
-    let mut at_root = false;
-    for l in mountinfo.lines() {
-        let point = l.split(' ').nth(4);
-        let fstype = l.split(" - ").nth(1).and_then(|r| r.split(' ').next());
-        at_root |= point == Some("/");
-        if matches!(point, Some("/" | "/.flatpak-info"))
-            && fstype.is_none_or(|t| t.starts_with("fuse"))
-        {
-            return false;
-        }
-    }
-    at_root
+/// A mount that is not listed, or a line without a type, is not cleared.
+pub fn tmpfs_mount(mountinfo: &str, id: u64) -> bool {
+    mountinfo.lines().any(|l| {
+        let mine = l.split(' ').next().and_then(|v| v.parse::<u64>().ok()) == Some(id);
+        mine && l.split(" - ").nth(1).and_then(|r| r.split(' ').next()) == Some("tmpfs")
+    })
 }
 
 /// One account of `etc/passwd`.
