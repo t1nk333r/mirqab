@@ -13,7 +13,8 @@
 //! asked with its start time is `failed` once it names another process
 //! (S4), and a session bus outside any bus unit is refused by its command
 //! name (owner, 2026-11-14, Q1). Audit: a confirmation refused when the
-//! unit its target is stopped through is not the one the plan showed.
+//! unit its target is stopped through is not the one the plan showed And a fixture process
+//! whose pid is the test's own is not taken for the daemon.
 
 use mirqab_core::Root;
 use mirqab_core::act::{self, Recording, Sender, Signal, Target};
@@ -308,6 +309,36 @@ fn targets_are_re_computed_at_the_second_call() {
     assert_eq!(pids(&v["skipped"]), [7000]);
     assert_eq!(v["skipped"][0]["reason"], "started after the confirmation");
     assert!(rec.lines().is_empty(), "the new 7000 is not signalled");
+}
+
+#[test]
+fn a_fixture_process_that_shares_the_test_daemons_pid_is_not_the_daemon() {
+    // On a fixture root the daemon is `proc/self` of the tree, not the
+    // process running the test: a fixture pid equal to the real one used
+    // to be left out as "the daemon" (seen in CI, where a container's
+    // small pids met the fixture's browser at 2011).
+    let me = std::process::id();
+    let d = scratch("ownpid");
+    let proc = d.0.join("proc");
+    if !proc.join(me.to_string()).exists() {
+        copy_tree(&proc.join("2011"), &proc.join(me.to_string()));
+        let stat = std::fs::read_to_string(proc.join("2011/stat")).unwrap();
+        let stat = stat.replacen("2011 ", &format!("{me} "), 1);
+        std::fs::write(proc.join(format!("{me}/stat")), stat).unwrap();
+    }
+    let root = Root::new(&d.0);
+    let (a, _) = recorded();
+    let v = dry(&a, &root, group(BROWSER)).unwrap();
+    assert!(
+        !pids(&v["skipped"]).contains(&u64::from(me)),
+        "{}",
+        v["skipped"]
+    );
+    assert!(
+        pids(&v["wouldDo"]).contains(&u64::from(me)),
+        "{}",
+        v["wouldDo"]
+    );
 }
 
 #[test]

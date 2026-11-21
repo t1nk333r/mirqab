@@ -1389,7 +1389,12 @@ with where it lives:
   (`crates/mirqab-core/src/root.rs:30`).
 - **Refusals** (`act::refusal`, `act.rs:228`), checked when the plan is
   made and again inside `act::signal`: pid ≤ 1; the daemon
-  (`std::process::id()` and `proc/self/stat` under the root); a kernel
+  (`std::process::id()` on the live root, and `proc/self/stat` under the
+  root; on a fixture root only the latter since 2026-11-21: a CI
+  container's daemon ran as pid 2011, the fixture browser's content
+  process, which a quit by name then left out as the daemon;
+  `a_fixture_process_that_shares_the_test_daemons_pid_is_not_the_daemon`
+  in `tests/actions.rs`); a kernel
   thread (`PF_KTHREAD`, before the uid so the message says so); any of the
   four `Uid:` numbers not the user's; a cgroup outside
   `/user.slice/user-<uid>.slice/`; `user@<uid>.service/init.scope`; and
