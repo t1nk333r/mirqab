@@ -364,7 +364,10 @@ delivered, and the stream shows the result.
 **10. Every act is recorded.** One `event` row per redeemed plan, kind
 `action`, through `history.rs:285`:
 `{"action":"apps.quit","target":{"group":"…"}|{"pid":N},"caller":{"pid":N,"name":"zsh"},"results":[{"pid":N,"name":"…","signal":"TERM","result":"done|gone|failed|skipped"}],"unit":"…"}`.
-Names are `comm`; no command lines. A dry run and a `needs-confirm` reply
+Names are `comm`; no command lines. Every process the reply lists as
+skipped has a `skipped` result, a unit's processes that all started since
+the plan included (audit 2026-11-21, L27; test
+`a_unit_whose_processes_all_started_since_is_recorded_as_skipped`). A dry run and a `needs-confirm` reply
 write nothing. With no history file (`Options.history` is `None`), or one
 that cannot be opened or written, the action still runs, and the redeem
 reply's `"recorded": false` says the row is missing; `mirqab quit` then

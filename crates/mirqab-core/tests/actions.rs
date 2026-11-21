@@ -1262,3 +1262,50 @@ fn a_plan_expires_when_the_confirmation_reaches_it_not_when_it_arrived() {
     assert!(rec.lines().is_empty(), "nothing sent");
     assert_eq!(a.live_plans(), 0, "the plan is spent");
 }
+
+#[test]
+fn a_unit_whose_processes_all_started_since_is_recorded_as_skipped() {
+    // Audit 2026-11-21, L27: a unit is not stopped when every process in
+    // it started after the plan; each is skipped, and the `action` event
+    // says so for each, as it does for a signal.
+    let s = scratch("unitlate");
+    let root = Root::new(&s.0);
+    let hist = scratch("unitlatehistory");
+    let history = Mutex::new(History::open(&hist.0.join("history.db"), 0).unwrap());
+    let (a, rec) = recorded();
+    let data = plan(&a, &root, Action::Quit, pid(1300));
+    assert_eq!(data["wouldDo"][0]["unit"], SYNC, "{data}");
+    // 1300 is another process now: the same pid, a later start.
+    let stat = s.0.join("proc/1300/stat");
+    let text = std::fs::read_to_string(&stat).unwrap();
+    std::fs::write(&stat, text.replace(" 8 0 2600 ", " 8 0 9999 ")).unwrap();
+    let v = confirm(
+        &a,
+        &root,
+        Action::Quit,
+        pid(1300),
+        data["plan"].as_str().unwrap(),
+        Some(&history),
+    )
+    .unwrap();
+    assert!(rec.lines().is_empty(), "nothing ran: {:?}", rec.lines());
+    assert_eq!(pids(&v["skipped"]), [1300]);
+    let rows = history
+        .lock()
+        .unwrap()
+        .events(Some("action"), 0, i64::MAX)
+        .unwrap();
+    let results = &rows[0]["data"]["results"];
+    let late: Vec<&Value> = results
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|r| r["result"] == "skipped")
+        .collect();
+    assert_eq!(
+        late,
+        [&json!({"pid": 1300, "name": "example-sync", "signal": "TERM", "result": "skipped"})],
+        "{results}"
+    );
+    assert!(rows[0]["data"].get("unit").is_none(), "no unit was stopped");
+}

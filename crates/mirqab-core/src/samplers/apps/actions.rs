@@ -1005,6 +1005,9 @@ impl Actions {
                     // is still there; systemd ends what joined it since too.
                     if !procs.iter().any(|(t, _)| redeemed.kept.contains(t)) {
                         for (t, name) in procs {
+                            // In the event too, as for a signal (audit
+                            // 2026-11-21, L27).
+                            results.push(json!({"pid": t.pid, "name": name, "signal": sig.name(), "result": "skipped"}));
                             skipped.push(Skip {
                                 pid: t.pid,
                                 name: name.clone(),
