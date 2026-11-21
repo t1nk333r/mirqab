@@ -307,7 +307,8 @@ so once in the footer.
   otherwise refuses to start rather than bind a socket of its own. Run by
   hand, the daemon prints `ready <socket path>` on stdout once it listens.
   A client connects only after that line or after the unit is active, and
-  retries with a backoff (250 ms doubling to 4 s) if the daemon restarts.
+  retries with a backoff (2 s doubling to 30 s, so a missing daemon costs
+  no polling under 2 s; §9.2) if the daemon restarts.
 - The interface reads the socket on GLib's main loop (`gio`'s Unix socket
   client and a line reader), not on a thread of its own.
 
@@ -532,7 +533,9 @@ to a daemon:
   `act.rs` and `exec.rs`.
 - The strings `sudo` and `pkexec` appear in exactly one file,
   `crates/mirqab/src/elevate.rs`, which only ever runs the fixed commands
-  listed in §8. Check: `grep -rn 'sudo\|pkexec' crates tools dist | grep -v elevate.rs`.
+  listed in §8. Check: `grep -rnwE 'sudo|pkexec' crates dist | grep -v elevate.rs`
+  prints nothing (the rule `tools/lint.sh` runs; `tools/` is not
+  searched, because the lint script names both words to grep for them).
 - An action on one process may name it by `{"pid": N}` or by
   `{"pid": N, "start": S}`, the start time a row of the `apps` frame
   lists; when the pid's process started at another time the action is
@@ -881,7 +884,8 @@ Sizes are in em of the base font so the fractional-scale case works.
   binary and loaded with a `GtkCssProvider`. Rules in it refer to
   `var(--…)` only. The app's own tokens (`--mirqab-series-1` to `-6`,
   `--mirqab-grid`, `--mirqab-meter-track`, `--mirqab-map-land`,
-  `--mirqab-map-night`) are declared once, at the top of that file.
+  `--mirqab-map-night`) are declared once, in the token table below; the
+  stylesheet's `mirqab:tokens` block holds no colour.
 - **The token table.** `crates/mirqab-view/src/theme.rs` lists every
   token with its default. It is the only Rust file with a colour literal.
   From it the interface generates a second, small stylesheet that sets the
@@ -1304,7 +1308,10 @@ tools/secrets.sh          # gitleaks over history, plus the privacy patterns of 
   unmarked timers, string literals in widget calls); and the coverage
   check that every source file is matched by some test's
   `# mirqab:covers`. The one QML file set, `contrib/haseen/`, is checked
-  with `qmllint` only when that tool is installed; it is not a gate.
+  with `qmllint` by `tests/test-contrib.sh`: an error fails it, the
+  warnings for haseen's modules (not importable here) do not. CI's
+  `test` job installs `qt6-declarative` for it; elsewhere the check is
+  skipped with a note when the tool is missing.
 - Tests never read the live machine. Rust tests take a `Root` fixture;
   shell tests run with a stub `PATH`, a temporary `HOME` and
   `XDG_RUNTIME_DIR`. The interface is tested as §7.5 describes: view
@@ -1332,12 +1339,13 @@ jobs whose names are exactly the required checks:
 | Job | Runs |
 |-----|------|
 | `lint` | `tools/lint.sh` |
-| `test` | On a pull request `tests/run.sh --affected origin/main`; on a push to `main` `tests/run.sh` (everything). Then `tools/bench-idle.sh` when `crates/` changed |
+| `test` | On a pull request `tests/run.sh --affected --committed <base>`, `<base>` being the pull request's base commit; on a push to `main` `tests/run.sh` (everything). Then `tools/bench-idle.sh`, on a pull request only when it changes `crates/`, `Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml`, `tools/bench-idle.sh`, `tools/mkfixture.sh`, `tests/fixtures/root-desktop/` or `tests/fixtures/procs.tsv` |
 | `docs` | `tools/check-docs.sh` |
 | `secrets` | `tools/secrets.sh` (full history: the checkout uses `fetch-depth: 0`) |
 
 All four run on `pull_request` and on `push` to `main`, in an
-`archlinux:latest` container as an unprivileged user, with every action
+`archlinux:latest` container as an unprivileged user (`ci`, created in
+the job and given the checkout), with every action
 pinned by commit SHA and `permissions: contents: read`. The `test` job
 installs `gtk4`, `libadwaita` and `gtk4-layer-shell` and starts Broadway
 through `tests/lib.sh`. Plan 020 adds a second file,

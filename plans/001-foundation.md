@@ -475,7 +475,19 @@ sandbox, export `GDK_BACKEND=broadway`, `BROADWAY_DISPLAY=:N`,
    addresses, `100.64.0.0/10` addresses, coordinates with more than two
    decimals, `sk-…`/`ghp_…` shapes, and a `tools/secrets-deny.txt` of
    literal strings (kept empty in the repository; the owner's machines add
-   their hostnames locally through `MIRQAB_SECRETS_DENY`).
+   their hostnames locally through `MIRQAB_SECRETS_DENY`). (Audit of
+   2026-11-21, L60: also IPv6 addresses outside `::`, `::1`,
+   `2001:db8::/32`, IPv4-mapped allowed ones and a small-identifier
+   `fe80::/9` such as `fe80::1`; and the hexadecimal addresses in
+   `tests/fixtures/**/proc/net/{tcp,tcp6,udp,udp6}`, decoded and held to
+   the same ranges. On review, `fe80::/9` means `fe80` to `feff` with
+   words 2 to 7 zero, so `febf::1` and `fec0::1` pass and a subnet or
+   middle-word identifier is flagged; multicast is flagged, as the
+   repository uses none; an address joined to a word by `:`, `_` or `.`
+   (a word ending in hex digits such as `inet6` or `src` included), or
+   followed by one colon, is still read; `tests/test-secrets.sh`
+   "a link-local address with non-zero middle words is flagged" through
+   "an address followed by a colon is flagged".)
 10. `.github/workflows/ci.yml`, the only workflow this plan adds. Triggers:
     `pull_request` and `push` to `main`. `permissions: contents: read`.
     Container `archlinux:latest`; install `base-devel rust pkgconf gtk4
@@ -511,7 +523,10 @@ Phase A as built (2026-11-13), where it differs from the steps above:
   on the development machine.
 - All four CI jobs run in the `archlinux:latest` container; `docs` and
   `secrets` install only `git` (and `gawk`, `gitleaks`) and, since they
-  only read the checkout, run as the container's root.
+  only read the checkout, run as the container's root. (Audit of
+  2026-11-21, L64: they now run as the `ci` user too, like `lint` and
+  `test`; the pull request's `test` runs `--affected --committed` with
+  the event's base commit, not `origin/main`.)
 - Step 6's `--why` is not a flag: the selector prints its reasons to
   stderr unless `--quiet`. `--paths-for TEST` prints the changed paths that
   select one test (or `all`); `tests/test-rust.sh` uses it, so any path
