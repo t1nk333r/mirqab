@@ -567,6 +567,25 @@ fn open_error(pid: u32, e: &std::io::Error) -> ActError {
     }
 }
 
+/// Runs a command the user asked for and confirmed in the CLI (`mirqab
+/// mcp-config --write` runs the agent's own `mcp add`), through exec.rs.
+/// Its `wouldDo` entry is `{"run": argv}`; a run adds the command's
+/// `stdout`. A non-zero exit is `Failed` with its stderr.
+pub fn run_command(argv: &[&str], timeout: Duration, dry_run: bool) -> Result<Value, ActError> {
+    let mut entry = json!({ "run": argv });
+    if dry_run {
+        return Ok(entry);
+    }
+    match exec::run(argv, None, timeout) {
+        Ok(out) if out.success() => {
+            entry["stdout"] = Value::String(out.stdout);
+            Ok(entry)
+        }
+        Ok(out) => Err(ActError::Failed(out.stderr.trim().to_string())),
+        Err(e) => Err(ActError::Failed(e.to_string())),
+    }
+}
+
 /// Removes a file, or a directory and everything in it.
 pub fn remove_path(path: &Path, dry_run: bool) -> Result<Value, ActError> {
     let entry = json!({"remove": path.display().to_string()});
@@ -627,6 +646,28 @@ mod tests {
         let _ = remove_path(&d, false);
         std::fs::create_dir_all(&d).unwrap();
         d
+    }
+
+    #[test]
+    fn a_command_runs_only_without_dry_run() {
+        let d = scratch("run");
+        let f = d.join("made");
+        let path = f.display().to_string();
+        let argv = ["touch", path.as_str()];
+        let w = run_command(&argv, Duration::from_secs(5), true).unwrap();
+        assert_eq!(w["run"], json!(argv));
+        assert!(!f.exists(), "a dry run runs nothing");
+        run_command(&argv, Duration::from_secs(5), false).unwrap();
+        assert!(f.exists(), "a real run runs it");
+        let said = run_command(&["sh", "-c", "echo said"], Duration::from_secs(5), false).unwrap();
+        assert_eq!(said["stdout"], "said\n");
+        let failed = run_command(
+            &["sh", "-c", "echo nope >&2; exit 3"],
+            Duration::from_secs(5),
+            false,
+        );
+        assert_eq!(failed, Err(ActError::Failed("nope".into())));
+        let _ = remove_path(&d, false);
     }
 
     #[test]

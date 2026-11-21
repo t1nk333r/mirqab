@@ -525,7 +525,9 @@ to a daemon:
 - Every action accepts `dryRun: true` and returns `wouldDo` without
   changing anything. Every mutating CLI command takes `--dry-run`.
 - All mutation goes through `crates/mirqab-core/src/act.rs` (signals,
-  file removal, D-Bus calls that change state, helper requests). Lint
+  file removal, D-Bus calls that change state, helper requests, and the
+  one command the CLI runs for the user, `mcp-config --write`'s client
+  command, through `act::run_command`). Lint
   greps for `kill(`, `remove_file`, `remove_dir`, `Command::new` outside
   `act.rs` and `exec.rs`.
 - The strings `sudo` and `pkexec` appear in exactly one file,

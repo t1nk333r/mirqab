@@ -35,6 +35,24 @@ impl Drop for Daemon {
 }
 
 fn start(name: &str) -> Daemon {
+    start_on(name, Sock::Default)
+}
+
+/// Where a test daemon listens.
+#[derive(PartialEq)]
+enum Sock {
+    /// `$XDG_RUNTIME_DIR/mirqab/daemon.sock`, which the shared mirqab-ui
+    /// unit dials.
+    Default,
+    /// Another socket, given with `--socket`.
+    Flag,
+    /// Another socket, given in `$MIRQAB_SOCKET`, which the unit does not
+    /// see either.
+    Env,
+}
+
+/// A daemon on the default socket or on another one (`Sock`).
+fn start_on(name: &str, at: Sock) -> Daemon {
     // Under /tmp, not $TMPDIR: a socket path must stay under 108 bytes.
     let dir = PathBuf::from("/tmp").join(format!("mqc-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
@@ -63,7 +81,26 @@ fn start(name: &str) -> Daemon {
         bin.display(),
         std::env::var("PATH").unwrap_or_default()
     );
-    let mut child = mirqab_cmd()
+    let socket = if at != Sock::Default {
+        let alt = dir.join("alt");
+        std::fs::create_dir_all(&alt).unwrap();
+        std::fs::set_permissions(&alt, std::fs::Permissions::from_mode(0o700)).unwrap();
+        alt.join("daemon.sock")
+    } else {
+        run.join("mirqab/daemon.sock")
+    };
+    let mut cmd = mirqab_cmd();
+    cmd.env_remove("MIRQAB_SOCKET");
+    match at {
+        Sock::Default => {}
+        Sock::Flag => {
+            cmd.arg("--socket").arg(&socket);
+        }
+        Sock::Env => {
+            cmd.env("MIRQAB_SOCKET", &socket);
+        }
+    }
+    let mut child = cmd
         .args(["daemon", "--root"])
         .arg(&fixture)
         .env("XDG_RUNTIME_DIR", &run)
@@ -77,7 +114,6 @@ fn start(name: &str) -> Daemon {
         .env("STUB_FAIL", dir.join("fail"))
         .env("MIRQAB_TEST", "1")
         .env("MIRQAB_UI_START_MS", "2000")
-        .env_remove("MIRQAB_SOCKET")
         .env_remove("NOTIFY_SOCKET")
         .stdout(Stdio::piped())
         .spawn()
@@ -86,7 +122,6 @@ fn start(name: &str) -> Daemon {
     BufReader::new(child.stdout.take().unwrap())
         .read_line(&mut ready)
         .unwrap();
-    let socket = run.join("mirqab/daemon.sock");
     assert_eq!(ready.trim(), format!("ready {}", socket.display()));
     Daemon { child, dir, socket }
 }
@@ -213,6 +248,59 @@ fn open_starts_the_interface_and_queues_the_event() {
     // With the interface attached, no second start.
     assert!(mirqab(&d, &["open"]).status.success());
     assert_eq!(stub_log(&d).lines().count(), 1);
+}
+
+#[test]
+fn open_on_another_socket_names_the_command_and_starts_no_unit() {
+    // The shared mirqab-ui unit dials the default socket: starting it for a
+    // daemon on another one would wait out the start and fail, or attach
+    // to another daemon (audit 2026-11-21).
+    let d = start_on("other", Sock::Flag);
+    let out = output_within(
+        mirqab_cmd()
+            .arg("--socket")
+            .arg(&d.socket)
+            .args(["open", "system"]),
+    );
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(1), "{err}");
+    assert!(
+        err.contains(&format!("mirqab-ui --socket {}", d.socket.display())),
+        "{err}"
+    );
+    assert_eq!(stub_log(&d), "", "no unit was started");
+    // An interface started by hand on that socket gets the window events.
+    let mut lines = attach(&d, Duration::from_secs(5));
+    assert!(mirqab(&d, &["open", "system"]).status.success());
+    assert!(
+        lines
+            .next()
+            .unwrap()
+            .unwrap()
+            .contains("\"event\":\"show\"")
+    );
+    assert_eq!(stub_log(&d), "");
+}
+
+#[test]
+fn open_on_a_socket_named_in_the_environment_starts_no_unit() {
+    // The unit runs in the user manager's environment, which normally has
+    // no $MIRQAB_SOCKET: a daemon started from a shell with it set is on a
+    // socket the unit would not dial either (review of audit 2026-11-21).
+    let d = start_on("envsock", Sock::Env);
+    let out = output_within(
+        mirqab_cmd()
+            .arg("--socket")
+            .arg(&d.socket)
+            .args(["open", "system"]),
+    );
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(1), "{err}");
+    assert!(
+        err.contains(&format!("mirqab-ui --socket {}", d.socket.display())),
+        "{err}"
+    );
+    assert_eq!(stub_log(&d), "", "no unit was started");
 }
 
 /// Connects as the interface; returns the line reader after the subscribe

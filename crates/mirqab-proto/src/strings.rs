@@ -63,7 +63,7 @@ pub const CLI_COMMANDS: &[CliCommand] = &[
             ),
             ("history --list", "the series history keeps"),
         ],
-        help: "Prints the average and peak of each bucket of stored minutes. The range is 1h (default), 24h, 7d or 30d. --list names the series history keeps.",
+        help: "Prints the average and peak of each bucket of stored minutes. The range is 1h (default), 24h, 7d or 30d. --list names the series history keeps. A series it does not keep exits 1, with --json too, where its entry is null.",
     },
     CliCommand {
         name: "load",
@@ -664,6 +664,23 @@ pub fn no_such_series(key: &str) -> String {
     format!("mirqab: history keeps no series named {key}")
 }
 
+/// One bucket of `mirqab history`: unix time, series, average, peak, unit.
+pub fn history_row(time: i64, key: &str, avg: f64, max: f64, unit: &str) -> String {
+    format!("{time}\t{key}\tavg {avg:.2}\tmax {max:.2}\t{unit}")
+}
+
+/// A stream `mirqab status` lists as unavailable, and why.
+pub fn status_unavailable(stream: &str, why: &str) -> String {
+    format!("unavailable {stream}: {why}")
+}
+
+/// Why a CLI command found no daemon: the socket closed under it.
+pub const CONNECTION_CLOSED: &str = "the connection closed";
+/// The socket a CLI command would have used, when there is none to name.
+pub const DEFAULT_SOCKET_HINT: &str = "$XDG_RUNTIME_DIR/mirqab/daemon.sock";
+/// Why there is no socket to name.
+pub const NO_RUNTIME_DIR_WHY: &str = "XDG_RUNTIME_DIR is not set";
+
 pub fn output_failed(why: &str) -> String {
     format!("mirqab: could not write the output: {why}")
 }
@@ -757,6 +774,14 @@ pub fn ready(socket: &str) -> String {
 pub fn interface_start_failed(why: &str) -> String {
     format!(
         "could not start mirqab-ui.service ({why}); is the unit installed in ~/.config/systemd/user? If you just copied it, run: systemctl --user daemon-reload"
+    )
+}
+
+/// An open asked of a daemon on a socket other than the default: the
+/// shared mirqab-ui unit would dial the default one, so it is not started.
+pub fn interface_other_socket(socket: &str) -> String {
+    format!(
+        "this daemon listens on {socket}, not the default socket that mirqab-ui.service dials; start the window with: mirqab-ui --socket {socket}"
     )
 }
 

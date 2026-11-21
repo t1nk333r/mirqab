@@ -7,7 +7,7 @@
 
 use crate::confirm::{self, Answer};
 use crate::{Args, EXIT_CONFIRM, EXIT_FAILED, EXIT_USAGE};
-use mirqab_core::exec;
+use mirqab_core::act;
 use mirqab_core::proto::strings;
 use serde_json::json;
 use std::process::ExitCode;
@@ -82,14 +82,11 @@ pub fn run(args: Args) -> ExitCode {
     match confirm::ask(&[argv.join(" ")], yes, dry_run) {
         Answer::DryRun => ExitCode::SUCCESS,
         Answer::No => ExitCode::from(EXIT_CONFIRM),
-        Answer::Go => match exec::run(argv, None, Duration::from_secs(60)) {
-            Ok(out) if out.success() => {
-                crate::out::print(&out.stdout);
+        // Through act.rs like every other change (architecture §5.4).
+        Answer::Go => match act::run_command(argv, Duration::from_secs(60), false) {
+            Ok(done) => {
+                crate::out::print(done["stdout"].as_str().unwrap_or(""));
                 ExitCode::SUCCESS
-            }
-            Ok(out) => {
-                crate::out::err(&strings::mcp_config_failed(out.stderr.trim()));
-                ExitCode::from(EXIT_FAILED)
             }
             Err(e) => {
                 crate::out::err(&strings::mcp_config_failed(&e.to_string()));
