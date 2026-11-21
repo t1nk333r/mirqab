@@ -155,14 +155,14 @@ const FLATPAK_INFO_MAX: usize = 4096;
 /// The Flatpak app id of the process at `dir` (`proc/<pid>`), from its
 /// root's `.flatpak-info`, read only when that is a regular file (plan
 /// 006, part 4, decision 14; D7 of PR #16): the process controls its own
-/// root, and a FIFO there would stall the walk. Nor is it opened when the
-/// process's mountinfo puts a FUSE filesystem on that path (audit
-/// 2026-11-21, L7): O_NONBLOCK does not stop an open on FUSE from waiting
-/// on its server, and a hung server would hold the walk under the sampler
-/// lock. Reading mountinfo asks the kernel only. A missing mountinfo (a
-/// fixture without one) is no objection.
+/// root, and a FIFO there would stall the walk. Nor is it opened unless
+/// the process's mountinfo shows that path off FUSE (audit 2026-11-21,
+/// L7): O_NONBLOCK does not stop an open on FUSE from waiting on its
+/// server, and a hung server would hold the walk under the sampler lock.
+/// Reading mountinfo asks the kernel only. A missing mountinfo (a fixture
+/// without one) is no objection.
 pub fn read_flatpak_info(root: &Root, dir: &str) -> Option<String> {
-    if read_text(root, &format!("{dir}/mountinfo")).is_some_and(|t| fuse_on_flatpak_info(&t)) {
+    if read_text(root, &format!("{dir}/mountinfo")).is_some_and(|t| !flatpak_info_off_fuse(&t)) {
         return None;
     }
     let bytes = root
@@ -171,20 +171,29 @@ pub fn read_flatpak_info(root: &Root, dir: &str) -> Option<String> {
     flatpak_info(&String::from_utf8_lossy(&bytes))
 }
 
-/// Whether a process's `mountinfo` has a FUSE filesystem (`fuse`,
-/// `fuseblk`, `fuse.<subtype>`) mounted at `/` or at `/.flatpak-info`,
-/// the two mounts an open of its root's `.flatpak-info` can reach. Any
-/// mount at `/` counts, since mountinfo does not say which of several is
-/// the process's root. The mount point is field 5; the type follows the
-/// ` - ` separator. Spaces inside fields are escaped as `\040`, so neither
-/// split can be fooled by a name.
-pub fn fuse_on_flatpak_info(mountinfo: &str) -> bool {
-    mountinfo.lines().any(|l| {
+/// Whether a process's `mountinfo` lists at least one mount at `/` and no
+/// FUSE filesystem (`fuse`, `fuseblk`, `fuse.<subtype>`) at `/` or at
+/// `/.flatpak-info`. The kernel lists only the mounts reachable from the
+/// process's root, so a process chrooted below a mount point (into a
+/// directory of a FUSE mount, say) has no line at `/`, and then mountinfo
+/// cannot say what its root is on: that is no clearance. Any mount at `/`
+/// counts, since mountinfo does not say which of several is the root. A
+/// real Flatpak passes: bubblewrap pivots onto a tmpfs `/`. The mount
+/// point is field 5; the type follows the ` - ` separator. Spaces inside
+/// fields are escaped as `\040`, so neither split can be fooled by a name.
+pub fn flatpak_info_off_fuse(mountinfo: &str) -> bool {
+    let mut at_root = false;
+    for l in mountinfo.lines() {
         let point = l.split(' ').nth(4);
         let fstype = l.split(" - ").nth(1).and_then(|r| r.split(' ').next());
-        matches!(point, Some("/" | "/.flatpak-info"))
-            && fstype.is_some_and(|t| t.starts_with("fuse"))
-    })
+        at_root |= point == Some("/");
+        if matches!(point, Some("/" | "/.flatpak-info"))
+            && fstype.is_none_or(|t| t.starts_with("fuse"))
+        {
+            return false;
+        }
+    }
+    at_root
 }
 
 /// One account of `etc/passwd`.

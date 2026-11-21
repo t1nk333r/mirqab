@@ -1373,7 +1373,9 @@ fn flatpak_info_is_not_opened_through_a_fuse_root() {
     // Audit 2026-11-21, L7: O_NONBLOCK does not stop an open on a FUSE
     // mount from waiting on its server, so a process whose root (or whose
     // `/.flatpak-info`) is on a hung FUSE mount would stall the walk under
-    // the sampler lock. Its mountinfo says so before anything is opened.
+    // the sampler lock. Its mountinfo says so before anything is opened,
+    // and a mountinfo with no mount at `/` (a chroot below a mount) says
+    // nothing either way, so the file is not opened then too.
     let s = bare_root("fuse");
     let info = "[Application]\nname=org.example.Notes\n";
     let ext4 = "21 1 254:1 / / rw,relatime shared:1 - ext4 none rw\n";
@@ -1395,10 +1397,17 @@ fn flatpak_info_is_not_opened_through_a_fuse_root() {
             format!("20 1 0:40 / / rw shared:1 - fuse.sshfs example:/ rw\n{ext4}"),
         ),
         (9503, ext4.to_string()),
+        // FUSE elsewhere is no objection.
         (
             9504,
-            "21 1 0:42 / /home rw - fuse.sshfs example:/ rw\n".to_string(),
+            format!("{ext4}31 21 0:42 / /home rw - fuse.sshfs example:/ rw\n"),
         ),
+        // A process chrooted into a subdirectory of a FUSE mount: the
+        // kernel leaves out every mount its root cannot reach, that one
+        // included, so nothing is listed at `/` and nothing says the root
+        // is safe to open.
+        (9506, "40 21 0:5 / /proc rw - proc proc rw\n".to_string()),
+        (9507, String::new()),
     ];
     for (pid, mounts) in &rows {
         let p = own_proc(&s.0, *pid, "notes");
@@ -1423,7 +1432,7 @@ fn flatpak_info_is_not_opened_through_a_fuse_root() {
             .kind
             .clone()
     };
-    for pid in [9500, 9501, 9502] {
+    for pid in [9500, 9501, 9502, 9506, 9507] {
         assert_ne!(kind(pid), "flatpak", "{pid}");
         let v = inspect(&mut a, &root, pid);
         assert!(v.get("flatpak").is_none(), "{pid}: {v}");

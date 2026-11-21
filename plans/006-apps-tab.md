@@ -2525,11 +2525,22 @@ Audit 2026-11-21, L7: `O_NONBLOCK` does not stop an open on FUSE from
 waiting on its server, so a process whose root sat on a hung FUSE mount
 stalled the walk under the sampler lock. `procfs::read_flatpak_info` first
 reads `proc/<pid>/mountinfo` (the kernel answers it; no filesystem is
-asked) and skips `.flatpak-info` when any mount at `/` or at
-`/.flatpak-info` has a type starting `fuse`; a missing mountinfo is no
+asked) and opens `.flatpak-info` only when mountinfo lists at least one
+mount at `/` and none of the mounts at `/` or at `/.flatpak-info` has a
+type starting `fuse` (`procfs::flatpak_info_off_fuse`). The kernel omits
+every mount the process's root cannot reach, so a process chrooted into
+a directory of a FUSE mount has no line at `/` at all; review of L7
+found that an earlier version, which looked only for a FUSE line, let
+that case through. A real Flatpak still passes: bubblewrap pivots onto
+a tmpfs `/` (checked on the development machine on 2026-11-21: the one
+line at `/` in a running Flatpak app's mountinfo has root `/newroot` and
+type `tmpfs`). A missing mountinfo (the fixtures have none) is no
 objection. This costs one more read per process that reaches the
 `.flatpak-info` check, once in the process's life (`Info` is cached).
-Test: `tests/apps.rs`, `flatpak_info_is_not_opened_through_a_fuse_root`.
+Test: `tests/apps.rs`, `flatpak_info_is_not_opened_through_a_fuse_root`
+(FUSE at `/`, at `/.flatpak-info`, and beside another `/`; a mountinfo
+with no mount at `/` and an empty one are skipped; ext4 at `/`, FUSE at
+`/home`, and no mountinfo are read).
 
 **15. The session bus by command name (owner question 1).** See the
 question; if the owner says yes, `guard::SESSION_BUS_COMMS = ["dbus-daemon",
