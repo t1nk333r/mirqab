@@ -39,6 +39,12 @@ for c in daemon status open toggle close history ports port help; do
     status_is "help $c exits 0" 0 "$STATUS"
 done
 
+# `--mcp` is the other spelling of `mcp`, so its help is mcp's (audit
+# 2026-11-21, L43).
+capture "$BIN/mirqab" --mcp --help
+status_is "--mcp --help exits 0" 0 "$STATUS"
+like "--mcp --help prints mcp's usage" "$OUTPUT" "usage: mirqab mcp"
+
 # The daemon refuses a runtime dir that is missing.
 capture env -u XDG_RUNTIME_DIR "$BIN/mirqab" daemon
 status_is "the daemon needs XDG_RUNTIME_DIR" 1 "$STATUS"

@@ -83,6 +83,9 @@ fn main() -> ExitCode {
         (c, true) => Some(c.to_string()),
         _ => None,
     };
+    // `--mcp` is `mcp`'s other spelling, so its help is mcp's (audit
+    // 2026-11-21: `mirqab --mcp --help` was an unknown option).
+    let topic = topic.map(|t| if t == "--mcp" { "mcp".to_string() } else { t });
     if let Some(topic) = topic {
         if topic.is_empty() {
             out::print(&strings::cli_usage());
