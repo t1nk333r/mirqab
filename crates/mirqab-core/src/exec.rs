@@ -2,6 +2,7 @@
 //! `LC_ALL=C`, stdin closed unless given, and a timeout after which the child
 //! is killed. Tests put stubs first on `PATH`.
 
+use crate::proto::strings;
 use std::io::{Read, Write};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
@@ -31,8 +32,8 @@ pub enum ExecError {
 impl std::fmt::Display for ExecError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ExecError::Spawn(e) => write!(f, "cannot start: {e}"),
-            ExecError::Timeout => write!(f, "timed out"),
+            ExecError::Spawn(e) => f.write_str(&strings::cannot_start(&e.to_string())),
+            ExecError::Timeout => f.write_str(strings::TIMED_OUT),
             ExecError::Io(e) => write!(f, "{e}"),
         }
     }

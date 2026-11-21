@@ -731,8 +731,19 @@ Deferred:
 - Plan 005: clamp `history.query`'s `from` and `to` (a debug daemon panics
   the client thread on `i64::MIN`) and cap series and points; the CLI's
   exit codes for an unknown series or range, and `--dry-run` on `history`.
+  The clamp and the caps were done by the audit fixes in PR #26
+  (github.com/t1nk333r/mirqab/pull/26): `history::span` clamps to the 30 days kept and picks
+  the bucket for at most 360 points, `history_query` takes at most 64
+  distinct series, `history::minute` saturates
+  (`a_from_to_span_is_clamped_to_what_is_kept_and_bucketed_to_360_points` in
+  `crates/mirqab-core/tests/history.rs`,
+  `a_history_query_is_clamped_and_its_series_capped` in
+  `crates/mirqab-core/tests/protocol.rs`).
 - The first plan that writes events: create `history.db`, its directory
-  and the lock file 0600/0700.
+  and the lock file 0600/0700. Done by the audit fixes in PR #26
+  (`history::private_dir`, `private_file`, and
+  `lock_beside`'s mode; `the_file_and_its_directory_are_private` and
+  `the_history_file_its_directory_and_the_locks_are_private`).
 - Plan 020: a socket-activated service that finds the lock held by a
   hand-run daemon exits 1 and restarts until that daemon stops.
 

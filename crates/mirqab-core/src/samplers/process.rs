@@ -22,7 +22,7 @@ use crate::proto::stream::{PROCESS, PROCESS_MAX_PIDS, ProcessData};
 use crate::proto::strings;
 use crate::root::Root;
 use crate::sampler::{Accepts, Sampler, View};
-use crate::samplers::apps::{MAX_PRIMED, procfs, take_primed};
+use crate::samplers::apps::{MAX_PRIMED, PRIMED_MIN, procfs};
 use crate::selfcost;
 use serde_json::{Value, json};
 use std::collections::{HashMap, VecDeque};
@@ -123,6 +123,14 @@ fn usable(base: Option<&Base>, first: &[(u32, Reading)], now: Instant) -> bool {
     })
 }
 
+/// A first reading `prime` took for one `get`, with the pids that get
+/// asked for: a reading covers only those, so it serves no other get
+/// (audit: a leftover answered the next get of another pid with no rate).
+struct Primed {
+    pids: Vec<u32>,
+    base: Base,
+}
+
 fn round1(v: f64) -> f64 {
     (v * 10.0).round() / 10.0
 }
@@ -138,7 +146,7 @@ pub struct Process {
     base: Option<Base>,
     /// The first readings `prime` took, one per pending `get`, oldest
     /// first (review of PR #20, S1).
-    get_base: VecDeque<Base>,
+    get_base: VecDeque<Primed>,
 }
 
 impl Default for Process {
@@ -158,6 +166,21 @@ impl Process {
             base: None,
             get_base: VecDeque::new(),
         }
+    }
+
+    /// Primed readings queued (tests).
+    pub fn primed(&self) -> usize {
+        self.get_base.len()
+    }
+
+    /// Takes this get's primed reading: the oldest queued for the pids it
+    /// asks for. Readings past `LIVE_STALE` are dropped on the way; other
+    /// gets' readings stay queued for them.
+    fn take_mine(&mut self, now: Instant) -> Option<Base> {
+        self.get_base
+            .retain(|p| now.saturating_duration_since(p.base.at) <= LIVE_STALE);
+        let at = self.get_base.iter().position(|p| p.pids == self.want)?;
+        self.get_base.remove(at).map(|p| p.base)
     }
 
     fn read_all(&self, root: &Root) -> Vec<(u32, Reading)> {
@@ -296,25 +319,53 @@ impl Sampler for Process {
     /// `get`: the first reading, under the lock; half a second without it
     /// before `snapshot` (plan 006, part 4, decision 10). Nothing read, or
     /// a subscriber's baseline that serves, needs no wait (K7 of PR #18: a
-    /// missing pid answers at once).
+    /// missing pid answers at once). A baseline that serves is queued as
+    /// this get's reading too: a tick between the get's two locked steps
+    /// replaces it, and `snapshot` must not then wait holding the lock
+    /// (audit). Only one young enough to still serve half a second later
+    /// is; an older one gets a fresh reading and the wait, as it would
+    /// expire before `snapshot` and leave it to wait under the lock
+    /// (review of PR #26).
     fn prime(&mut self, root: &Root, now: Instant) -> Option<Duration> {
         let first = self.read_all(root);
-        if first.is_empty() || usable(self.base.as_ref(), &first, now) {
+        if first.is_empty() {
             return None;
         }
-        self.get_base.push_back(Base::of(&first, Instant::now()));
+        let (base, gap) = match self.base.as_ref() {
+            Some(b)
+                if usable(Some(b), &first, now)
+                    && now.saturating_duration_since(b.at) <= LIVE_STALE - SNAPSHOT_GAP =>
+            {
+                let ticks = first
+                    .iter()
+                    .filter_map(|(pid, r)| {
+                        let key = (*pid, r.stat.start);
+                        b.ticks.get(&key).map(|t| (key, *t))
+                    })
+                    .collect();
+                (Base { at: b.at, ticks }, None)
+            }
+            _ => (Base::of(&first, Instant::now()), Some(SNAPSHOT_GAP)),
+        };
+        self.get_base.push_back(Primed {
+            pids: self.want.clone(),
+            base,
+        });
         while self.get_base.len() > MAX_PRIMED {
             self.get_base.pop_front();
         }
-        Some(SNAPSHOT_GAP)
+        gap
     }
 
     /// `get`: against a subscriber's baseline when it is 1–10 s old and
     /// holds the process, without moving it, and never reading the pins;
-    /// otherwise against the oldest reading `prime` queued when it is
-    /// 250 ms to 10 s old, or a second reading of its own half a second
-    /// later. Nothing read is answered at once.
+    /// otherwise against the oldest reading `prime` queued for these pids
+    /// when it is 250 ms to 10 s old and holds the process, or a second
+    /// reading of its own half a second later. Nothing read is answered at
+    /// once. This get's primed reading is taken whichever answers, so none
+    /// is left for another get.
     fn snapshot(&mut self, root: &Root, now: Instant) -> Value {
+        let mine = self.take_mine(now);
         let first = self.read_all(root);
         if first.is_empty() {
             return self.data(&first, None, now, false);
@@ -322,13 +373,22 @@ impl Sampler for Process {
         if usable(self.base.as_ref(), &first, now) {
             return self.data(&first, self.base.as_ref(), now, false);
         }
-        if let Some(base) = take_primed(&mut self.get_base, now, |b| b.at) {
+        if let Some(base) = mine.filter(|b| {
+            now.saturating_duration_since(b.at) >= PRIMED_MIN
+                && first
+                    .iter()
+                    .all(|(pid, r)| b.ticks.contains_key(&(*pid, r.stat.start)))
+        }) {
             return self.data(&first, Some(&base), Instant::now(), false);
         }
         let base = Base::of(&first, Instant::now());
         std::thread::sleep(SNAPSHOT_GAP);
         let readings = self.read_all(root);
         self.data(&readings, Some(&base), Instant::now(), false)
+    }
+
+    fn narrows(&self) -> bool {
+        true
     }
 
     fn view(&self) -> Option<View> {
