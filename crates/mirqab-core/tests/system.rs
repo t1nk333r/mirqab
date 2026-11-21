@@ -4,8 +4,8 @@
 //! advice, and a minimal machine where every missing file is `None`. From
 //! the audit: the minute reads no disk sensor, and an awake dGPU is read
 //! at most every 10 s. From the audit of 2026-11-21: page counts are per
-//! minute whatever the gap, and a stub `nvidia-smi`'s temperature reaches
-//! the thermal word and `temp.gpu`.
+//! minute whatever the gap (none under 10 s), and a stub `nvidia-smi`'s
+//! temperature reaches the thermal word and `temp.gpu`.
 
 use mirqab_core::Root;
 use mirqab_core::proto::stream::{SystemData, Temp};
@@ -89,6 +89,32 @@ fn page_counts_are_per_minute_whatever_the_gap() {
     assert_eq!(get("page.out"), Some(2400));
     assert_eq!(get("swap.in"), Some(12));
     assert_eq!(get("swap.out"), Some(24));
+}
+
+#[test]
+fn page_counts_over_a_gap_under_ten_seconds_are_skipped() {
+    // Review of the L24 fix: a probe at :59 leaves the first minute about
+    // 1 s, and an NTP step can shorten an Instant gap; scaling either to
+    // 60 s would multiply a burst up to 60 times. Under 10 s the page and
+    // swap series are skipped; at 10 s they are scaled six times.
+    let get = |m: &[(&str, i64)], k: &str| m.iter().find(|(key, _)| *key == k).map(|(_, v)| *v);
+    for (secs, page_in) in [(1, None), (9, None), (10, Some(3600))] {
+        let t0 = Instant::now();
+        let mut s = System::new();
+        s.probe(&fixture("root-desktop")).unwrap();
+        s.minute_at(&fixture("root-desktop"), WALL, t0);
+        let m = s.minute_at(
+            &fixture("root-desktop.t1"),
+            WALL + 60,
+            t0 + Duration::from_secs(secs),
+        );
+        assert_eq!(get(&m, "page.in"), page_in, "{secs} s");
+        assert_eq!(get(&m, "swap.out").is_some(), page_in.is_some(), "{secs} s");
+        assert!(
+            get(&m, "cpu.total").is_some(),
+            "the other series stay: {secs} s"
+        );
+    }
 }
 
 #[test]

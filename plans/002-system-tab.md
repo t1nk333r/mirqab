@@ -249,6 +249,13 @@ Part 1 (2026-11-13), where it differs from the plan:
   pgpgin in KiB); `swap.in`/`swap.out` pages. The history's per-minute
   counts are scaled to 60 s from the minute's real gap (the first minute
   after start is shorter, a late tick up to 90 s; audit 2026-11-21, L24).
+  A gap under 10 s (`PAGE_GAP_MIN`: a start in a minute's last seconds,
+  or an Instant gap an NTP step left short) gives that minute no page or
+  swap point, since scaling it would multiply a burst up to 60 times; at
+  10 s the factor is at most 6 (review of the L24 fix). Tests:
+  `page_counts_are_per_minute_whatever_the_gap`,
+  `page_counts_over_a_gap_under_ten_seconds_are_skipped`
+  (`tests/system.rs`).
   The CLI prints Celsius;
   `units.temperature` reaches the CLI with plan 005.
 - The restart advice's pressure condition uses the sampler's own last 60
@@ -266,7 +273,9 @@ From the review of PR #7 (2026-11-13):
   is now a GPU sensor `nvidia.N` (no critical, so 95 °C) for the
   thermal word and `temp.gpu` (`System::nvidia_temps`); it is not added
   to the streamed `temps`, which stays hwmon's, so the stream's rows do
-  not change (only `thermal.hottest` may name `nvidia.N`). Test:
+  not change (only `thermal.hottest` may name `nvidia.N`, as its doc
+  comment in `stream.rs` says; `System::with_nvidia_smi` is
+  `#[doc(hidden)]`, for tests). Test:
   `an_nvidia_smi_temperature_reaches_the_thermal_word_and_temp_gpu`
   (`tests/system.rs`, a stub `nvidia-smi` passed to
   `System::with_nvidia_smi`).

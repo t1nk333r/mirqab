@@ -49,6 +49,12 @@ const DGPU_EVERY: Duration = Duration::from_secs(10);
 /// A baseline younger than this gives no useful rate; older than the
 /// minute gap, a stale one (review of PR #7).
 const BASELINE_MIN: Duration = Duration::from_secs(1);
+/// The shortest gap a minute's page and swap counts are scaled to 60 s
+/// from: at most six times. A shorter one (a start in a minute's last
+/// seconds, or an Instant gap an NTP step left short of the wall
+/// minute) would multiply a burst up to 60 times, so that minute has no
+/// page or swap point (review of the audit 2026-11-21 L24 fix).
+const PAGE_GAP_MIN: Duration = Duration::from_secs(10);
 /// How long `get` waits for a second reading when no baseline fits.
 const SNAPSHOT_GAP: Duration = Duration::from_millis(200);
 /// Restart advice (plan 002): uptime over 30 days, or over 7 with swap more
@@ -192,6 +198,7 @@ impl System {
     }
 
     /// `program` answers in place of `nvidia-smi`: tests pass a stub.
+    #[doc(hidden)]
     pub fn with_nvidia_smi(program: impl Into<String>) -> Self {
         System {
             nvidia_smi: Some(program.into()),
@@ -496,11 +503,11 @@ impl System {
         // what is left of the first minute after start, or up to 90 s for
         // a late tick: the count is scaled to 60 s rather than the minute
         // dropped, which would lose every first minute (audit 2026-11-21,
-        // L24).
+        // L24). Under `PAGE_GAP_MIN` the minute has no page or swap point.
         let gap = prev
             .as_ref()
             .map(|p| cur.at.saturating_duration_since(p.at))
-            .filter(|g| *g >= BASELINE_MIN);
+            .filter(|g| *g >= PAGE_GAP_MIN);
         if let (Some(p), Some(n), Some(gap)) = (prev.as_ref().and_then(|p| p.vm), cur.vm, gap) {
             let per_minute = |d: u64| d as f64 * 60.0 / gap.as_secs_f64();
             put("page.in", n.pgpgin.checked_sub(p.pgpgin).map(per_minute));
