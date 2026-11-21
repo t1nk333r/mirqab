@@ -1486,6 +1486,37 @@ fn the_minute_writer_writes_a_samplers_events() {
 /// The gaps between `n` consecutive `stream` events, with `busy` called
 /// between reads from another client.
 #[test]
+fn a_hand_edit_of_the_config_is_applied_and_announced() {
+    // Audit 2026-11-21, L10: a hand edit was read, but open live
+    // subscriptions kept the old floor and the interface was not told.
+    let d = start_with("cfgedit", Vec::new(), true, Some(Duration::from_secs(1)));
+    let mut ui = Client::connect(&d);
+    let mut c = Client::connect(&d);
+    ui.hello();
+    c.hello();
+    ui.call("subscribe", Some("ui"), json!({"role": "ui", "pid": 4321}))
+        .unwrap();
+    c.call(
+        "subscribe",
+        Some("self"),
+        json!({"interval": 1000, "live": true}),
+    )
+    .unwrap();
+    assert_eq!(c.interval("self"), 1000);
+    let path = d.dir.join("config/mirqab/config.json");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(&path, r#"{"live":{"intervalMs":3000}}"#).unwrap();
+    // The minute writer reads the file each period; nothing else asks.
+    assert_eq!(ui.event("ui").unwrap(), json!({"event": "config-changed"}));
+    assert_eq!(c.interval("self"), 3000);
+    // Read again unchanged, it is not announced again.
+    ui.stream
+        .set_read_timeout(Some(Duration::from_millis(1500)))
+        .unwrap();
+    assert!(ui.event("ui").is_none(), "announced twice");
+}
+
+#[test]
 fn a_history_query_is_clamped_and_its_series_capped() {
     // Plan 001, deferred to plan 005.
     let d = start_with("histclamp", Vec::new(), true, None);

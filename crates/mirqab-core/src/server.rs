@@ -685,11 +685,7 @@ fn history_loop(inner: Arc<Inner>) {
         };
         // The config as it is now: `trends.topApps` decides whether the
         // `apps` sampler walks for its row at all (plan 006, part 4).
-        let config = {
-            let mut c = lock(&inner.config);
-            c.refresh();
-            c.effective().clone()
-        };
+        let config = inner.with_config(|c| c.effective().clone());
         let mut values = Vec::new();
         let mut events = Vec::new();
         for slot in inner.slots.values() {
@@ -1187,9 +1183,7 @@ impl Inner {
             .and_then(Value::as_u64)
             .unwrap_or(slot.default_ms);
         let floor = if live && slot.live {
-            let mut c = lock(&self.config);
-            c.refresh();
-            c.live_interval_ms()
+            self.with_config(Config::live_interval_ms)
         } else {
             FLOOR_MS
         };
@@ -1369,8 +1363,8 @@ impl Inner {
         }
         let mut meter = Meter::new(&self.root, "proc/self");
         let cost = meter.read(&self.root, Instant::now());
-        let mut config = lock(&self.config);
-        config.refresh();
+        let (broken, problems) =
+            self.with_config(|c| (c.broken().map(str::to_string), c.problems().to_vec()));
         let mut out = json!({
             "version": crate::proto::VERSION,
             "protocol": PROTOCOL,
@@ -1386,8 +1380,8 @@ impl Inner {
                 "threads": cost.map(|c| c.threads).unwrap_or(0),
             },
             "config": {
-                "broken": config.broken(),
-                "problems": config.problems(),
+                "broken": broken,
+                "problems": problems,
             },
             "history": self.history_status(),
         });
@@ -1398,9 +1392,7 @@ impl Inner {
     }
 
     fn config_get(&self, req: &Request) -> Reply {
-        let mut config = lock(&self.config);
-        config.refresh();
-        match req.param("keys").and_then(Value::as_array) {
+        self.with_config(|config| match req.param("keys").and_then(Value::as_array) {
             None => Reply::ok(req.id, config.effective().clone()),
             Some(keys) => {
                 let mut out = serde_json::Map::new();
@@ -1409,7 +1401,25 @@ impl Inner {
                 }
                 Reply::ok(req.id, Value::Object(out))
             }
+        })
+    }
+
+    /// `f` over the config as it is on disk now. A hand edit found by the
+    /// re-read is then applied and announced as a `config.set` is: open
+    /// live subscriptions take the new floor and the interface hears
+    /// `config-changed` (audit 2026-11-21, L10). Both run after the config
+    /// lock is released; the caller must hold no lock of the state.
+    fn with_config<R>(&self, f: impl FnOnce(&Config) -> R) -> R {
+        let (out, changed) = {
+            let mut c = lock(&self.config);
+            let changed = c.refresh();
+            (f(&c), changed)
+        };
+        if changed {
+            self.refloor_live();
+            self.ui_event(&UiEvent::ConfigChanged);
         }
+        out
     }
 
     fn config_set(&self, req: &Request) -> Reply {
@@ -1440,13 +1450,10 @@ impl Inner {
     }
 
     /// Applies a changed `live.intervalMs` to the live subscriptions already
-    /// open, which got the old floor (review of phase B).
+    /// open, which got the old floor (review of phase B). The config was
+    /// just set or re-read: it is not read again here.
     fn refloor_live(&self) {
-        let floor = {
-            let mut c = lock(&self.config);
-            c.refresh();
-            c.live_interval_ms()
-        };
+        let floor = lock(&self.config).live_interval_ms();
         let mut woken = Vec::new();
         {
             let mut state = lock(&self.state);

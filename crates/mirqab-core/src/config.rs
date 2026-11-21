@@ -219,11 +219,16 @@ impl Config {
     }
 
     /// Re-reads the file when it changed on disk since the last read. Cheap:
-    /// one stat. Callers run it before answering from the config.
-    pub fn refresh(&mut self) {
-        if stamp(&self.path) != self.stamp {
-            self.read();
+    /// one stat. Callers run it before answering from the config. True when
+    /// the effective config changed, so a hand edit is applied and announced
+    /// as a `config.set` is (audit 2026-11-21, L10).
+    pub fn refresh(&mut self) -> bool {
+        if stamp(&self.path) == self.stamp {
+            return false;
         }
+        let before = std::mem::take(&mut self.effective);
+        self.read();
+        self.effective != before
     }
 
     pub fn effective(&self) -> &Value {
@@ -366,8 +371,16 @@ mod tests {
             r#"{"units":{"temperature":"f","clock":"24"},"live":{"intervalMs":3000}}"#,
         )
         .unwrap();
-        c.refresh();
+        assert!(c.refresh(), "a change is reported");
         assert_eq!(c.live_interval_ms(), 3000);
+        assert!(!c.refresh(), "and only once");
+        // Rewritten with the same values: read again, but nothing changed.
+        std::fs::write(
+            &p,
+            r#"{"live": {"intervalMs": 3000}, "units": {"temperature": "f", "clock": "24"}}"#,
+        )
+        .unwrap();
+        assert!(!c.refresh());
         act::remove_path(&d, false).unwrap();
     }
 
