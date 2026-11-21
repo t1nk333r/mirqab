@@ -715,7 +715,10 @@ history in the interface (gone when the window closes).
 One wakeup a minute, aligned to the minute, one transaction. This is the
 only work the daemon does with no subscribers. Woken just after a minute
 boundary, it labels the values with the minute that just ended, so the
-minute running now is never half-written in a query.
+minute running now is never half-written in a query. Woken more than 5 s
+past a boundary (after a suspend or a clock step), it writes nothing and
+sleeps to the next one, so no row is labelled with a minute it covers
+only in part.
 
 - **Counters** (CPU jiffies, network and disk bytes, paging counts, energy)
   are read once a minute and differenced, so the stored value is the true
@@ -732,7 +735,8 @@ minute running now is never half-written in a query.
   and differences against the previous minute's walk, so the first minute
   after start writes nothing; with one it reads its last sample.
 - A gap (suspend, daemon stopped) stores nothing; graphs draw a break.
-- Pruning runs once an hour: `DELETE … WHERE ts < now − 30 d` for `sample`
+- Pruning runs once an hour, and at once when the clock went back past
+  the last prune: `DELETE … WHERE ts < now − 30 d` for `sample`
   and `event`, 3 d for `top-apps` events, 90 d for `daily`.
 - Compaction runs once a day (`VACUUM`, then a truncating checkpoint):
   rows arrive series by series, so each series' run grows in the middle of

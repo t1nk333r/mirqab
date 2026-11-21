@@ -669,13 +669,20 @@ fn unix_now() -> i64 {
 fn history_loop(inner: Arc<Inner>) {
     let mut last_prune = 0;
     let period = inner.minute.as_millis().max(1);
-    loop {
-        let now = SystemTime::now()
+    let wall_ms = || {
+        SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .unwrap_or_default();
-        let into_minute = Duration::from_millis((now.as_millis() % period) as u64);
+            .unwrap_or_default()
+            .as_millis()
+    };
+    loop {
+        let into_minute = Duration::from_millis((wall_ms() % period) as u64);
         std::thread::sleep(inner.minute.saturating_sub(into_minute));
-        let ts = unix_now();
+        // Woken far from the boundary (a suspend, a clock step): sleep to
+        // it, and ask no sampler for its minute yet.
+        let Some(ts) = wake_ts(wall_ms(), period) else {
+            continue;
+        };
         // The config as it is now: `trends.topApps` decides whether the
         // `apps` sampler walks for its row at all (plan 006, part 4).
         let config = {
@@ -714,7 +721,7 @@ fn history_loop(inner: Arc<Inner>) {
                     failed(format!("history: the {kind} event was not written"), e);
                 }
             }
-            if ts - last_prune >= 3600 {
+            if prune_due(last_prune, ts) {
                 if let Err(e) = h.prune(ts) {
                     failed("history prune failed".into(), e);
                 }
@@ -737,6 +744,28 @@ fn history_loop(inner: Arc<Inner>) {
             recover_history(&mut h, ts);
         }
     }
+}
+
+/// How far past a boundary a wake may land and still be that minute's: 5 s,
+/// or half the period when it is shorter (a test's).
+const WAKE_SLACK_MS: u128 = 5000;
+
+/// The unix second the minute writer woke at, when it woke at most
+/// WAKE_SLACK_MS past a boundary of `period_ms`; None for a wake after a
+/// suspend or a clock step, or one a little early. Its values are labelled
+/// 30 s back, with the minute that just ended: a wake mid-minute would
+/// label the minute running (written over at the next wake) or write over
+/// the last one with part of a minute (audit 2026-11-21, L50).
+fn wake_ts(now_ms: u128, period_ms: u128) -> Option<i64> {
+    let slack = WAKE_SLACK_MS.min(period_ms / 2);
+    (now_ms % period_ms.max(1) <= slack).then(|| (now_ms / 1000) as i64)
+}
+
+/// Whether the hourly prune is due: an hour since the last, or the clock
+/// went back past it, which would otherwise postpone it by the step (audit
+/// 2026-11-21, L12).
+fn prune_due(last: i64, ts: i64) -> bool {
+    ts < last || ts - last >= 3600
 }
 
 /// Replaces a history file SQLite found corrupt while open, from the minute
@@ -1831,6 +1860,32 @@ mod tests {
             Some(3060)
         );
         assert_eq!(caller_for(&Root::new("/tmp/x"), Some(7), None), Some(7));
+    }
+
+    #[test]
+    fn pruning_is_due_hourly_and_after_the_clock_went_back() {
+        // Audit 2026-11-21, L12: a step back postponed it by the step.
+        assert!(prune_due(0, 1_000_000));
+        assert!(!prune_due(1_000_000, 1_000_000 + 3599));
+        assert!(prune_due(1_000_000, 1_000_000 + 3600));
+        assert!(prune_due(1_000_000, 1_000_000 - 1));
+    }
+
+    #[test]
+    fn a_wake_far_past_the_boundary_is_not_a_minute() {
+        // Audit 2026-11-21, L50: after a suspend or a clock step the sleep
+        // ends mid-minute, and a row labelled then is written over (or
+        // writes over the last one) with part of a minute.
+        let minute = 60_000;
+        let at = |s: u128| s * 1000;
+        assert_eq!(wake_ts(at(1_200) + 3, minute), Some(1_200));
+        assert_eq!(wake_ts(at(1_205), minute), Some(1_205));
+        assert_eq!(wake_ts(at(1_206), minute), None);
+        assert_eq!(wake_ts(at(1_230), minute), None);
+        assert_eq!(wake_ts(at(1_259) + 990, minute), None, "early: sleep on");
+        // A test's one-second period allows half of it.
+        assert_eq!(wake_ts(at(1_200) + 400, 1000), Some(1_200));
+        assert_eq!(wake_ts(at(1_200) + 600, 1000), None);
     }
 
     /// A scratch root whose `proc/self` has used `ticks` of CPU.
