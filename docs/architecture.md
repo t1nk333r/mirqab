@@ -614,9 +614,10 @@ uses `$HOME`, and refuses to start when that is not absolute either. The
 daemon is the only writer of `config.json`; the interface and CLI change
 settings through `config.set`,
 and every subscriber to `ui` gets a `config-changed` event. A hand edit
-is noticed at the next read (a request that reads the config, or the
-minute writer's wakeup) and treated the same way: open live subscriptions
-take a new `live.intervalMs` and `ui` gets `config-changed`. A config the
+is noticed at the next read (a request that reads the config, a
+`config.set` of any key, dry run included, or the minute writer's
+wakeup) and treated the same way: open live subscriptions take a new
+`live.intervalMs` and `ui` gets `config-changed`. A config the
 daemon cannot parse is left untouched, reported in `status`, and defaults
 are used: the app never rewrites a file the user broke by hand.
 

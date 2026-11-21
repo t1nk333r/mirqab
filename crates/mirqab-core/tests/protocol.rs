@@ -1555,6 +1555,63 @@ fn a_hand_edit_of_the_config_is_applied_and_announced() {
 }
 
 #[test]
+fn a_hand_edit_found_by_a_set_is_applied_and_announced() {
+    // Review of audit 2026-11-21, L10: `config.set` re-reads the file
+    // itself, dry run or not, so a hand edit it found was taken in without
+    // the new floor or `config-changed`. No minute writer: only the sets
+    // read the file here.
+    let d = start_with("cfgset", Vec::new(), false, None);
+    let mut ui = Client::connect(&d);
+    let mut c = Client::connect(&d);
+    ui.hello();
+    c.hello();
+    ui.call("subscribe", Some("ui"), json!({"role": "ui", "pid": 4321}))
+        .unwrap();
+    c.call(
+        "subscribe",
+        Some("self"),
+        json!({"interval": 1000, "live": true}),
+    )
+    .unwrap();
+    let path = d.dir.join("config/mirqab/config.json");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let edit = "{\"live\":{\"intervalMs\":3000}}";
+    std::fs::write(&path, edit).unwrap();
+    let dry = c
+        .call(
+            "config.set",
+            None,
+            json!({"key": "trends.topApps", "value": false, "dryRun": true}),
+        )
+        .unwrap();
+    assert!(dry["wouldDo"].is_array(), "{dry}");
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), edit, "dry run");
+    assert_eq!(ui.event("ui").unwrap(), json!({"event": "config-changed"}));
+    assert_eq!(c.interval("self"), 3000);
+    // A real set of another key carries the next hand edit too.
+    std::fs::write(&path, "{\"live\":{\"intervalMs\":4000}}").unwrap();
+    c.call(
+        "config.set",
+        None,
+        json!({"key": "trends.topApps", "value": false}),
+    )
+    .unwrap();
+    assert_eq!(ui.event("ui").unwrap(), json!({"event": "config-changed"}));
+    assert_eq!(c.interval("self"), 4000);
+    // A dry run that finds nothing new announces nothing.
+    c.call(
+        "config.set",
+        None,
+        json!({"key": "trends.topApps", "value": true, "dryRun": true}),
+    )
+    .unwrap();
+    ui.stream
+        .set_read_timeout(Some(Duration::from_millis(1500)))
+        .unwrap();
+    assert!(ui.event("ui").is_none(), "a plain dry run announced");
+}
+
+#[test]
 fn a_history_query_is_clamped_and_its_series_capped() {
     // Plan 001, deferred to plan 005.
     let d = start_with("histclamp", Vec::new(), true, None);

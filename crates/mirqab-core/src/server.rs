@@ -1445,16 +1445,27 @@ impl Inner {
             Ok(d) => d,
             Err(r) => return r,
         };
-        let result = lock(&self.config).set(key, value, dry_run);
+        // `set` re-reads the file, dry run or not, so it may take in a hand
+        // edit. That edit is applied and announced as one found by a read
+        // (`with_config`): compare the effective config around the set
+        // (review of audit 2026-11-21, L10).
+        let (result, changed, refloor) = {
+            let mut c = lock(&self.config);
+            let before = c.effective().clone();
+            let floor = c.live_interval_ms();
+            let result = c.set(key, value, dry_run);
+            let changed = *c.effective() != before;
+            (result, changed, c.live_interval_ms() != floor)
+        };
+        if refloor {
+            self.refloor_live();
+        }
+        if changed || (result.is_ok() && !dry_run) {
+            self.ui_event(&UiEvent::ConfigChanged);
+        }
         match result {
             Ok(entry) if dry_run => Reply::ok(req.id, json!({"wouldDo": [entry]})),
-            Ok(entry) => {
-                if key == "live.intervalMs" {
-                    self.refloor_live();
-                }
-                self.ui_event(&UiEvent::ConfigChanged);
-                Reply::ok(req.id, json!({"done": [entry]}))
-            }
+            Ok(entry) => Reply::ok(req.id, json!({"done": [entry]})),
             Err(SetError::Invalid(why)) => Reply::err(req.id, Code::BadRequest, why),
             Err(SetError::Broken(why)) => {
                 Reply::err(req.id, Code::Refused, strings::config_broken(&why))
