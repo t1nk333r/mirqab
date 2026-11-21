@@ -476,10 +476,13 @@ Streams: `system`, `apps`, `process`, `ports`, `agents`, `awake`, `disk`,
   (owner, 2026-11-13). A subscription with `live: true` may ask for
   **1000 ms**, the lowest interval anywhere. The interface sets `live`
   only from a graph widget that shows the live range and is mapped in a
-  visible window, and it drops the flag (by subscribing again without it,
-  or unsubscribing) when the graph is unmapped: the page changed, the
-  range picker left "live", or the window hid. A dropped connection drops
-  its flags.
+  visible window the compositor has not suspended, and it drops the flag
+  (by subscribing again without it, or unsubscribing) when the graph is
+  unmapped (the page changed, the range picker left "live", or the window
+  hid) and when its window is suspended (minimised or on a workspace out
+  of view, where GTK keeps it mapped; this needs the compositor to send
+  xdg_toplevel `suspended`, and is not yet checked on Hyprland). A
+  dropped connection drops its flags.
 - **Everything else keeps its own slower interval.** Without `live` the
   floor is **2000 ms** and a shorter request is raised to it. Bar items
   (default 5 s), the tray tooltip, `--watch` commands, rules, and cards

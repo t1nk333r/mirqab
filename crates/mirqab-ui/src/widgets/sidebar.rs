@@ -4,6 +4,7 @@
 
 use crate::widgets::badge;
 use crate::widgets::icon::icon;
+use crate::widgets::named_box;
 use gtk::prelude::*;
 use mirqab_proto::strings;
 use mirqab_view::shell::{Place, Tile};
@@ -24,7 +25,7 @@ pub struct Sidebar {
 
 impl Sidebar {
     pub fn new(on_select: impl Fn(&str) + 'static) -> Sidebar {
-        let column = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        let column = named_box(gtk::Orientation::Vertical, gtk::AccessibleRole::Navigation);
         column.update_property(&[gtk::accessible::Property::Label(strings::SIDEBAR)]);
         let root = gtk::ScrolledWindow::builder()
             .hscrollbar_policy(gtk::PolicyType::Never)

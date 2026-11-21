@@ -1,6 +1,7 @@
 //! The range buttons on a graph card: 2m (live), 1h, 24h, 7d, 30d
 //! (architecture §6.4).
 
+use crate::widgets::named_box;
 use gtk::prelude::*;
 use mirqab_proto::strings;
 use mirqab_view::graph::RANGES;
@@ -15,7 +16,7 @@ pub struct RangePicker {
 impl RangePicker {
     /// `on_change` runs with the new range when the user picks one.
     pub fn new(active: &str, on_change: impl Fn(&str) + 'static) -> RangePicker {
-        let root = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        let root = named_box(gtk::Orientation::Horizontal, gtk::AccessibleRole::Group);
         root.add_css_class("linked");
         root.update_property(&[gtk::accessible::Property::Label(strings::RANGE)]);
         let on_change = Rc::new(on_change);

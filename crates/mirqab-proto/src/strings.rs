@@ -690,6 +690,14 @@ pub fn no_daemon(socket: &str, why: &str) -> String {
     )
 }
 
+/// A request the daemon took but did not answer in time: it is running,
+/// so this is not "no daemon", and an action may still have run.
+pub fn daemon_no_answer(secs: u64) -> String {
+    format!(
+        "mirqab: the daemon did not answer within {secs} s; it is running, and a requested action may still have run"
+    )
+}
+
 pub fn daemon_error(code: &str, message: &str) -> String {
     format!("mirqab: {code}: {message}")
 }
@@ -722,14 +730,19 @@ pub fn ready(socket: &str) -> String {
     format!("ready {socket}")
 }
 
+/// `systemctl --user start` itself failed: the unit is missing or broken,
+/// or there is no user manager. A unit that cannot see the display still
+/// starts (it is Type=simple), so that hint is on the next message.
 pub fn interface_start_failed(why: &str) -> String {
     format!(
-        "could not start mirqab-ui.service ({why}); if the unit cannot see the display, run: systemctl --user import-environment WAYLAND_DISPLAY"
+        "could not start mirqab-ui.service ({why}); is the unit installed in ~/.config/systemd/user? If you just copied it, run: systemctl --user daemon-reload"
     )
 }
 
+/// The unit started and nothing attached: most often it cannot see the
+/// display, since GTK opens it after systemd reported the start.
 pub fn interface_did_not_attach() -> &'static str {
-    "mirqab-ui.service started but the interface did not connect within 5 s; see: journalctl --user -u mirqab-ui.service"
+    "mirqab-ui.service started but the interface did not connect within 5 s; if journalctl --user -u mirqab-ui.service says it cannot open the display, run: systemctl --user import-environment WAYLAND_DISPLAY"
 }
 
 pub fn config_broken(why: &str) -> String {
