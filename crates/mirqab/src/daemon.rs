@@ -82,7 +82,10 @@ pub fn run(args: Args) -> ExitCode {
     // real history (review of phase C, deferred to phase E).
     let (config_path, history) = match socket.parent().filter(|_| fixture) {
         Some(dir) => (dir.join("config.json"), dir.join("history.db")),
-        None => (Config::default_path(), History::default_path()),
+        None => match (Config::default_path(), History::default_path()) {
+            (Ok(config), Ok(history)) => (config, history),
+            (Err(why), _) | (_, Err(why)) => return fail(&why),
+        },
     };
     let config_path_for_tray = config_path.clone();
     let server = match server::listen(Options {

@@ -137,7 +137,10 @@ dropped.
 ### Streams added here
 
 `self`, every 2 s while subscribed (the footer is text, not a live graph;
-the stream accepts `live` for a pinned self-cost graph):
+the stream accepts `live` for a pinned self-cost graph). A `get self`
+reads CPU against a subscriber's baseline when one is 250 ms to 10 s old,
+without moving it, else over half a second of its own (audit 2026-11-21,
+L30: it moved the subscriber's baseline, and with none its CPU was 0):
 
 ```json
 {"daemon":{"cpu":0.1,"rssBytes":3145728,"threads":4},
@@ -149,6 +152,8 @@ the stream accepts `live` for a pinned self-cost graph):
 `{"event":"hide"}`, `{"event":"toggle","tab":null}`,
 `{"event":"config-changed"}`. A client that subscribes to `ui` with
 `params.role = "ui"` and its pid is the interface; the daemon remembers one.
+A `pid` that is not 1 to 2147483647 is not taken, and the client is not
+the interface (audit 2026-11-21, L37).
 
 `system` (core only; plan 002 defines the full shape):
 `{"cpu":{"percent":…},"mem":{"totalBytes":…,"availableBytes":…}}`.

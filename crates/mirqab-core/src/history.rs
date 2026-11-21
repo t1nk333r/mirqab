@@ -209,7 +209,10 @@ pub fn private_dir(dir: &Path, own: bool) -> Result<(), HistoryError> {
 /// mirqab owns only when it is the default one (`History::default_path`).
 pub fn private_dir_of(path: &Path) -> Result<(), HistoryError> {
     match path.parent() {
-        Some(dir) => private_dir(dir, History::default_path().parent() == Some(dir)),
+        Some(dir) => {
+            let default = History::default_path().ok();
+            private_dir(dir, default.as_deref().and_then(Path::parent) == Some(dir))
+        }
         None => Ok(()),
     }
 }
@@ -345,13 +348,15 @@ fn move_aside(path: &Path, now_unix: i64) -> std::io::Result<PathBuf> {
 
 impl History {
     /// `$XDG_STATE_HOME/mirqab/history.db`, else `~/.local/state/mirqab/history.db`.
-    pub fn default_path() -> PathBuf {
-        let base = std::env::var_os("XDG_STATE_HOME")
-            .filter(|v| !v.is_empty())
-            .map(PathBuf::from)
-            .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/state")))
-            .unwrap_or_else(|| PathBuf::from(".local/state"));
-        base.join("mirqab/history.db")
+    /// Err when neither is an absolute path (`config::xdg_base`).
+    pub fn default_path() -> Result<PathBuf, String> {
+        crate::config::xdg_base(
+            "XDG_STATE_HOME",
+            std::env::var_os("XDG_STATE_HOME"),
+            std::env::var_os("HOME"),
+            ".local/state",
+        )
+        .map(|b| b.join("mirqab/history.db"))
     }
 
     /// Opens or creates the file. One that cannot be opened is renamed
