@@ -855,8 +855,21 @@ fn the_dialog_goes_when_the_sheet_leaves_the_screen() {
         .expect("the second act's reply");
     first(needs_confirm("p3", would.clone()));
     assert_eq!(i.dialog(), None, "the first act's reply is dropped");
-    second(needs_confirm("p4", would));
+    second(needs_confirm("p4", would.clone()));
     assert!(i.dialog().is_some(), "the second act asks");
+    i.hidden();
+
+    // One act whose sheet hid and came back before its reply still asks.
+    fake.defer.set(true);
+    quit.emit_clicked();
+    fake.defer.set(false);
+    let only = fake.held.borrow_mut().take().expect("the act's reply");
+    win.0.set_visible(false);
+    settle("the sheet is unmapped", || !i.root.is_mapped());
+    win.0.present();
+    settle("the sheet is mapped again", || i.root.is_mapped());
+    only(needs_confirm("p5", would));
+    assert!(i.dialog().is_some(), "a lone act's late reply asks");
     drop(win);
 }
 

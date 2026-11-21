@@ -78,10 +78,11 @@ pub struct Inspector {
     dialog: RefCell<Option<adw::AlertDialog>>,
     /// An act's first call is out: one act in flight (review of PR #19).
     busy: Cell<bool>,
-    /// Bumped when the sheet hides or the selection changes, so a plan
-    /// reply for an act begun before is dropped: hiding frees Quit while
-    /// that reply is out, and a second act's reply would open a second
-    /// dialog over the first (review of PR #24).
+    /// Bumped when an act starts or the selection changes, so only the
+    /// latest act's plan reply opens a dialog: hiding frees Quit while a
+    /// reply is out, and a second act's reply would open a second dialog
+    /// over the first (review of PR #24). A reply that comes back while
+    /// the sheet is off screen is dropped by `confirm`.
     acts: Cell<u64>,
     /// The outcome of the last act on the selected row, for the page to
     /// take when the row goes (review of PR #19, B1).
@@ -301,7 +302,6 @@ impl Inspector {
     /// The sheet went off screen: an open dialog is closed, sending
     /// nothing, and Quit and Force quit are free again.
     pub fn hidden(&self) {
-        self.acts.set(self.acts.get() + 1);
         self.close_dialog();
     }
 
@@ -552,7 +552,8 @@ impl Inspector {
         };
         let weak = self.weak();
         let key = sel.key;
-        let act = self.acts.get();
+        let act = self.acts.get() + 1;
+        self.acts.set(act);
         let reply: Reply = Box::new(move |r| {
             let Some(i) = weak.upgrade() else { return };
             if i.acts.get() != act || i.sel.borrow().as_ref().map(|s| s.key) != Some(key) {
