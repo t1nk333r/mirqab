@@ -1766,8 +1766,16 @@ Deviations from the brief, each with its reason:
   the ninth subscriber gets; it gets `capped: true`, not a false `gone`.
 - **`name` is `comm`.** The `apps` list's name may come from `cmdline`
   when `comm` was cut short (also when the cut at byte 15 splits a UTF-8
-  character, whose stray byte reads as U+FFFD; audit 2026-11-21, L5); the
-  stream reads `stat` and `statm` only, as designed.
+  character, whose stray bytes read as one U+FFFD; audit 2026-11-21, L5);
+  the stream reads `stat` and `statm` only, as designed. *Review of the
+  L5 fix:* only one trailing U+FFFD is dropped, and the 12 to 14 bytes
+  before it must hold no other U+FFFD, since a replaced byte makes the
+  decoded length differ from the kernel's: five invalid bytes, or nine
+  letters and two invalid bytes, decode to 15 bytes but were never cut,
+  and keep their name. Tests:
+  `display_name_survives_a_name_cut_inside_a_character`,
+  `display_name_keeps_a_name_the_kernel_did_not_cut`
+  (`samplers/apps/procfs.rs`).
 - **A `get process` goes through `wants`.** `snapshot` takes no params,
   so the `get` hands its own over first; the next tick hands the
   subscribers' back. A `get` never moves the pins or the baseline, and
