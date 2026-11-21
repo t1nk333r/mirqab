@@ -99,6 +99,15 @@ impl Drop for Daemon {
     }
 }
 
+/// A scratch directory, removed when dropped: a failed assertion too.
+struct Scratch(PathBuf);
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
 fn start(name: &str) -> Daemon {
     // Under /tmp, not $TMPDIR: a socket path must stay under 108 bytes.
     let dir = PathBuf::from("/tmp").join(format!("mqp-{name}-{}", std::process::id()));
@@ -201,8 +210,10 @@ fn a_socket_directory_others_can_reach_or_a_symlink_is_refused() {
     // Audit 2026-11-21, L36: an existing directory was taken whatever its
     // owner, mode or kind (architecture §5.1: 0700).
     use std::os::unix::fs::PermissionsExt;
-    let dir = PathBuf::from("/tmp").join(format!("mqp-sockdir-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
+    let scratch =
+        Scratch(PathBuf::from("/tmp").join(format!("mqp-sockdir-{}", std::process::id())));
+    let dir = &scratch.0;
+    let _ = std::fs::remove_dir_all(dir);
     let open_dir = dir.join("open");
     std::fs::create_dir_all(&open_dir).unwrap();
     std::fs::set_permissions(&open_dir, std::fs::Permissions::from_mode(0o777)).unwrap();
@@ -231,7 +242,6 @@ fn a_socket_directory_others_can_reach_or_a_symlink_is_refused() {
     let mode = std::fs::metadata(&open_dir).unwrap().permissions().mode() & 0o777;
     assert_eq!(mode, 0o777, "the user's directory is left as it was");
     assert!(listen("private").is_ok());
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]

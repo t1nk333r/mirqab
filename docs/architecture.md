@@ -388,14 +388,14 @@ Streams: `system`, `apps`, `process`, `ports`, `agents`, `awake`, `disk`,
   they name. When a stream is left with no subscriber, the sampler is
   told once, within an interval (`Sampler::idle`), and forgets and stops
   what it kept for the earlier subscribers. A `get` of a stream nobody
-  subscribes to tells it too, right after the get's snapshot. No sampler sleeps or asks
-  another program while holding its lock, except the `apps` sampler:
-  its focus source waits on the compositor under the lock, up to 1.5 s
-  once when the page opens (two connects and a request) and up to 0.5 s
-  when it closes (a request's deadline), and its `get` sleeps 500 ms
-  under the lock only when no primed reading fits. A `get` whose rates
-  need two readings takes the
-  first in `Sampler::prime`, which returns the wait and queues the
+  subscribes to tells it too, right after the get's snapshot. No sampler
+  sleeps or asks another program while holding its lock, except the
+  `apps` sampler: its focus source waits on the compositor under the
+  lock, up to 1.5 s once when the page opens (two connects and a
+  request) and up to 0.5 s when it closes (a request's deadline), and
+  its `get` sleeps 500 ms under the lock only when no primed reading
+  fits. A `get` whose rates need two readings takes the first in
+  `Sampler::prime`, which returns the wait and queues the
   reading (one per pending `get`, served in order, used at 250 ms to
   10 s old), and the server sleeps it without the lock before
   `snapshot`; a query may answer

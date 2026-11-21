@@ -467,14 +467,24 @@ fn a_second_daemon_refuses_even_when_the_socket_file_is_gone() {
     assert!(String::from_utf8_lossy(&out.stderr).contains("already listens"));
 }
 
+/// A scratch directory, removed when dropped: a failed assertion too.
+struct Scratch(PathBuf);
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
 /// A scratch directory with a private `run`, for a daemon started by hand.
-fn scratch(name: &str) -> (PathBuf, PathBuf) {
+/// Under /tmp, not $TMPDIR: a socket path must stay under 108 bytes.
+fn scratch(name: &str) -> (Scratch, PathBuf) {
     let dir = PathBuf::from("/tmp").join(format!("mqc-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     let run = dir.join("run");
     std::fs::create_dir_all(&run).unwrap();
     std::fs::set_permissions(&run, std::fs::Permissions::from_mode(0o700)).unwrap();
-    (dir, run)
+    (Scratch(dir), run)
 }
 
 fn fixture_root() -> PathBuf {
@@ -485,7 +495,8 @@ fn fixture_root() -> PathBuf {
 fn socket_activation_without_a_socket_on_fd_3_is_refused() {
     // Audit 2026-11-21, L1: with fd 3 closed, the lock file took it and
     // was adopted as the listening socket.
-    let (dir, run) = scratch("noact");
+    let (scratch, run) = scratch("noact");
+    let dir = &scratch.0;
     let out = output_within(
         Command::new("sh")
             .arg("-c")
@@ -496,7 +507,7 @@ fn socket_activation_without_a_socket_on_fd_3_is_refused() {
             .env("XDG_RUNTIME_DIR", &run)
             .env("XDG_CONFIG_HOME", dir.join("config"))
             .env("XDG_STATE_HOME", dir.join("state"))
-            .env("HOME", &dir)
+            .env("HOME", dir)
             .env_remove("MIRQAB_SOCKET")
             .env_remove("NOTIFY_SOCKET"),
     );
@@ -507,7 +518,6 @@ fn socket_activation_without_a_socket_on_fd_3_is_refused() {
     assert_eq!(out.status.code(), Some(1), "{stdout}{stderr}");
     assert!(!stdout.contains("ready"), "it served: {stdout}");
     assert!(stderr.contains("LISTEN_FDS"), "{stderr}");
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -515,7 +525,8 @@ fn a_socket_systemd_passes_on_fd_3_is_adopted() {
     // The other side of L1: a listening Unix socket on fd 3 passes the
     // checks. python3 stands in for systemd: it binds, moves the socket to
     // fd 3 and execs the daemon with LISTEN_PID naming itself.
-    let (dir, run) = scratch("act");
+    let (scratch, run) = scratch("act");
+    let dir = scratch.0.clone();
     let socket = run.join("mirqab/daemon.sock");
     std::fs::create_dir_all(socket.parent().unwrap()).unwrap();
     std::fs::set_permissions(
