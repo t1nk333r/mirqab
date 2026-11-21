@@ -559,6 +559,14 @@ the brief's §9 records the amendments for later parts. Built in this PR:
 4. **`total` counts every row** in the lite view as in the full one
    (KEEP); there is no `yourCount`, and part 4's badge shows `total`,
    coloured by `exposedCount`. (The first build counted your rows there.)
+   *Corrected by the audit of 2026-11-21, L32:* the rows are not the full
+   view's while every subscriber is lite. The sampler then skips the
+   owner walk (`measure`, `samplers/ports/mod.rs`), so a row folds by
+   (port, proto, uid, bind) instead of by process: `total` and
+   `exposedCount` can be lower than the full view's (two processes of
+   one user on one port are one row), and `leftBehindCount` is 0, since
+   no row has a launcher. With a full subscriber as well, the lite counts
+   are the full view's. The `PortsLite` doc comment says so.
 5. **A row is `(port, proto, bind pair, owner)`** (KEEP the words and
    the test). DEFER: part 3's `RowKey` gains `bind`.
 6. **The interface table's refresh is tested** (KEEP).
