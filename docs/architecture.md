@@ -296,7 +296,9 @@ so once in the footer.
 
 - Path: `$XDG_RUNTIME_DIR/mirqab/daemon.sock`. Directory mode 0700, socket
   mode 0600. The daemon refuses to start if `XDG_RUNTIME_DIR` is unset or
-  not owned by the user.
+  not owned by the user, and if the socket's directory exists but is a
+  symlink, someone else's, or open to group or others; it never changes
+  the mode of a directory it did not make.
 - `SO_PEERCRED` is checked on accept: a peer with another uid is closed.
 - systemd units: `mirqab.socket` (`ListenStream=%t/mirqab/daemon.sock`,
   `SocketMode=0600`, `DirectoryMode=0700`) and `mirqab.service`

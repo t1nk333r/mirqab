@@ -32,7 +32,7 @@ use serde_json::{Value, json};
 use std::collections::{BTreeMap, VecDeque};
 use std::io::{ErrorKind, Read, Write};
 use std::net::Shutdown;
-use std::os::unix::fs::{DirBuilderExt, FileTypeExt, OpenOptionsExt, PermissionsExt};
+use std::os::unix::fs::{DirBuilderExt, FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{SyncSender, TrySendError, sync_channel};
@@ -424,6 +424,11 @@ impl Sampler for SelfSampler {
     }
 }
 
+/// The socket's directory, made 0700 (architecture §5.1). One that exists
+/// is used only when it is a directory of this user's, not a symlink, that
+/// no one else may enter: anyone who can write in it can replace the
+/// socket. It is refused, never chmodded: `--socket` may name a directory
+/// of the user's (audit 2026-11-21, L36).
 fn mkdir_private(dir: &Path) -> Result<(), String> {
     // Only the leaf mirqab owns is private; parents it has to make (a
     // fresh `~/.local/state`) get the default mode (review of PR #6).
@@ -432,7 +437,16 @@ fn mkdir_private(dir: &Path) -> Result<(), String> {
     }
     match std::fs::DirBuilder::new().mode(0o700).create(dir) {
         Ok(()) => Ok(()),
-        Err(e) if e.kind() == ErrorKind::AlreadyExists => Ok(()),
+        Err(e) if e.kind() == ErrorKind::AlreadyExists => {
+            let private = std::fs::symlink_metadata(dir).is_ok_and(|m| {
+                m.is_dir() && m.uid() == sys::uid() && m.permissions().mode() & 0o077 == 0
+            });
+            if private {
+                Ok(())
+            } else {
+                Err(strings::socket_dir_not_private(&dir.display().to_string()))
+            }
+        }
         Err(e) => Err(format!("mkdir {}: {e}", dir.display())),
     }
 }

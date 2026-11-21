@@ -197,6 +197,44 @@ impl Client {
 }
 
 #[test]
+fn a_socket_directory_others_can_reach_or_a_symlink_is_refused() {
+    // Audit 2026-11-21, L36: an existing directory was taken whatever its
+    // owner, mode or kind (architecture §5.1: 0700).
+    use std::os::unix::fs::PermissionsExt;
+    let dir = PathBuf::from("/tmp").join(format!("mqp-sockdir-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let open_dir = dir.join("open");
+    std::fs::create_dir_all(&open_dir).unwrap();
+    std::fs::set_permissions(&open_dir, std::fs::Permissions::from_mode(0o777)).unwrap();
+    let private = dir.join("private");
+    std::fs::create_dir_all(&private).unwrap();
+    std::fs::set_permissions(&private, std::fs::Permissions::from_mode(0o700)).unwrap();
+    std::os::unix::fs::symlink(&private, dir.join("link")).unwrap();
+    let listen = |sub: &str| {
+        server::listen(Options {
+            socket: dir.join(sub).join("daemon.sock"),
+            root: Root::new(fixture("root-desktop")),
+            config_path: dir.join("config.json"),
+            samplers: Vec::new(),
+            history: None,
+            minute_period: None,
+        })
+    };
+    for sub in ["open", "link"] {
+        match listen(sub) {
+            Err(server::ListenError::Failed(why)) => assert!(why.contains(sub), "{why}"),
+            Err(other) => panic!("{sub}: {other:?}"),
+            Ok(_) => panic!("{sub}: listened"),
+        }
+        assert!(!dir.join(sub).join("daemon.sock.lock").exists(), "{sub}");
+    }
+    let mode = std::fs::metadata(&open_dir).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode, 0o777, "the user's directory is left as it was");
+    assert!(listen("private").is_ok());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn hello_comes_first_with_the_capabilities() {
     let d = start("hello");
     let mut c = Client::connect(&d);

@@ -713,6 +713,12 @@ pub fn no_home_dir(var: &str) -> String {
     )
 }
 
+pub fn socket_dir_not_private(dir: &str) -> String {
+    format!(
+        "{dir} is not a private directory of this user's (mode 0700, not a symlink); refusing to put the socket there"
+    )
+}
+
 pub fn runtime_dir_not_ours(dir: &str) -> String {
     format!("mirqab: {dir} is not owned by this user; refusing to put the socket there")
 }
