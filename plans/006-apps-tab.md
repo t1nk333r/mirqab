@@ -1765,8 +1765,9 @@ Deviations from the brief, each with its reason:
 - **`capped`.** The brief caps the pids at eight but does not say what
   the ninth subscriber gets; it gets `capped: true`, not a false `gone`.
 - **`name` is `comm`.** The `apps` list's name may come from `cmdline`
-  when `comm` was cut short; the stream reads `stat` and `statm` only, as
-  designed.
+  when `comm` was cut short (also when the cut at byte 15 splits a UTF-8
+  character, whose stray byte reads as U+FFFD; audit 2026-11-21, L5); the
+  stream reads `stat` and `statm` only, as designed.
 - **A `get process` goes through `wants`.** `snapshot` takes no params,
   so the `get` hands its own over first; the next tick hands the
   subscribers' back. A `get` never moves the pins or the baseline, and

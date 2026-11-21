@@ -229,11 +229,14 @@ pub fn is_kernel(st: &Stat) -> bool {
 }
 
 /// The command name, or the program's file name when the kernel cut the
-/// name short (`devserver-worke` → `devserver-worker`).
+/// name short (`devserver-worke` → `devserver-worker`). The kernel cuts at
+/// byte 15, which may split a UTF-8 character; `read_text` turns the stray
+/// bytes into U+FFFD, so those are dropped before the prefix check (audit
+/// 2026-11-21, L5).
 pub fn display_name(comm: &str, cmdline: &[String]) -> String {
     if comm.len() >= COMM_MAX
         && let Some(base) = cmdline.first().map(|a| basename(a))
-        && base.starts_with(comm)
+        && base.starts_with(comm.trim_end_matches('\u{FFFD}'))
     {
         return base.to_string();
     }
@@ -419,5 +422,17 @@ mod tests {
             passwd("root:x:0:0::/root:/bin/sh\nbroken\nuser:x:1000:1000:U:/users/user:/bin/zsh\n");
         assert_eq!(users.len(), 2);
         assert_eq!(users[1].home, "/users/user");
+    }
+
+    #[test]
+    fn display_name_survives_a_name_cut_inside_a_character() {
+        // 14 ASCII bytes and the first byte of "é": what the kernel keeps of
+        // `abcdefghijklmné-x`, read through `read_text`'s lossy decoding.
+        let comm = String::from_utf8_lossy(b"abcdefghijklmn\xC3").into_owned();
+        let argv = ["/usr/bin/abcdefghijklmn\u{e9}-x".to_string()];
+        assert_eq!(display_name(&comm, &argv), "abcdefghijklmn\u{e9}-x");
+        let cut = ["/usr/bin/devserver-worker".to_string()];
+        assert_eq!(display_name("devserver-worke", &cut), "devserver-worker");
+        assert_eq!(display_name("short", &cut), "short");
     }
 }
