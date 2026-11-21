@@ -406,7 +406,8 @@ pub fn sender_for(root: &Root) -> Arc<dyn Sender> {
 #[derive(Debug, Clone, Default)]
 pub struct Guard {
     pub own_uid: u32,
-    /// This process and the pid `proc/self/stat` names under the root.
+    /// The pid `proc/self/stat` names under the root, and on the live root
+    /// this process too.
     pub daemon: Vec<u32>,
     pub refused: Vec<(u32, String)>,
 }
@@ -566,6 +567,25 @@ fn open_error(pid: u32, e: &std::io::Error) -> ActError {
     }
 }
 
+/// Runs a command the user asked for and confirmed in the CLI (`mirqab
+/// mcp-config --write` runs the agent's own `mcp add`), through exec.rs.
+/// Its `wouldDo` entry is `{"run": argv}`; a run adds the command's
+/// `stdout`. A non-zero exit is `Failed` with its stderr.
+pub fn run_command(argv: &[&str], timeout: Duration, dry_run: bool) -> Result<Value, ActError> {
+    let mut entry = json!({ "run": argv });
+    if dry_run {
+        return Ok(entry);
+    }
+    match exec::run(argv, None, timeout) {
+        Ok(out) if out.success() => {
+            entry["stdout"] = Value::String(out.stdout);
+            Ok(entry)
+        }
+        Ok(out) => Err(ActError::Failed(out.stderr.trim().to_string())),
+        Err(e) => Err(ActError::Failed(e.to_string())),
+    }
+}
+
 /// Removes a file, or a directory and everything in it.
 pub fn remove_path(path: &Path, dry_run: bool) -> Result<Value, ActError> {
     let entry = json!({"remove": path.display().to_string()});
@@ -609,11 +629,25 @@ pub fn write_file(path: &Path, contents: &[u8], dry_run: bool) -> Result<Value, 
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default();
     let tmp = path.with_file_name(format!(".{name}.{}.tmp", std::process::id()));
-    std::fs::write(&tmp, contents).map_err(fail)?;
-    std::fs::rename(&tmp, path).map_err(|e| {
-        let _ = std::fs::remove_file(&tmp);
-        fail(e)
-    })?;
+    // The bytes reach the disk before the rename makes them the file, or a
+    // crash could leave a 0-byte config.json, which `Config::read` marks
+    // broken and `config.set` then refuses (audit 2026-11-21, L8).
+    let written = std::fs::File::create(&tmp).and_then(|mut f| {
+        std::io::Write::write_all(&mut f, contents)?;
+        f.sync_all()
+    });
+    written
+        .and_then(|()| std::fs::rename(&tmp, path))
+        .map_err(|e| {
+            let _ = std::fs::remove_file(&tmp);
+            fail(e)
+        })?;
+    // And the rename itself. The new file is in place either way, and some
+    // filesystems refuse fsync on a directory, so a failure here is not one
+    // of the write.
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::File::open(dir).and_then(|d| d.sync_all());
+    }
     Ok(entry)
 }
 
@@ -626,6 +660,28 @@ mod tests {
         let _ = remove_path(&d, false);
         std::fs::create_dir_all(&d).unwrap();
         d
+    }
+
+    #[test]
+    fn a_command_runs_only_without_dry_run() {
+        let d = scratch("run");
+        let f = d.join("made");
+        let path = f.display().to_string();
+        let argv = ["touch", path.as_str()];
+        let w = run_command(&argv, Duration::from_secs(5), true).unwrap();
+        assert_eq!(w["run"], json!(argv));
+        assert!(!f.exists(), "a dry run runs nothing");
+        run_command(&argv, Duration::from_secs(5), false).unwrap();
+        assert!(f.exists(), "a real run runs it");
+        let said = run_command(&["sh", "-c", "echo said"], Duration::from_secs(5), false).unwrap();
+        assert_eq!(said["stdout"], "said\n");
+        let failed = run_command(
+            &["sh", "-c", "echo nope >&2; exit 3"],
+            Duration::from_secs(5),
+            false,
+        );
+        assert_eq!(failed, Err(ActError::Failed("nope".into())));
+        let _ = remove_path(&d, false);
     }
 
     #[test]
@@ -655,6 +711,29 @@ mod tests {
         );
         remove_path(&d.join("sub"), false).unwrap();
         assert!(!d.join("sub").exists());
+        remove_path(&d, false).unwrap();
+    }
+
+    #[test]
+    fn a_rewrite_replaces_the_contents_with_the_usual_mode() {
+        // Audit 2026-11-21, L8: the temporary is synced before the rename
+        // and the directory after it. A sync cannot be seen from here; what
+        // can is that the path still ends with the new bytes, a mode no
+        // different from a plain create's, and no temporary left behind.
+        use std::os::unix::fs::PermissionsExt;
+        let d = scratch("sync");
+        let f = d.join("config.json");
+        write_file(&f, b"{\"old\":true}", false).unwrap();
+        write_file(&f, b"{}", false).unwrap();
+        assert_eq!(std::fs::read_to_string(&f).unwrap(), "{}");
+        std::fs::write(d.join("plain"), "").unwrap();
+        let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o7777;
+        assert_eq!(mode(&f), mode(&d.join("plain")));
+        assert_eq!(
+            std::fs::read_dir(&d).unwrap().count(),
+            2,
+            "no temporary left"
+        );
         remove_path(&d, false).unwrap();
     }
 

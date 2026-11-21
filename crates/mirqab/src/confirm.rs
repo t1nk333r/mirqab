@@ -1,7 +1,8 @@
 //! The confirm flow of a command that changes something (plan 005): it
 //! prints what it will do; `--dry-run` stops there; `-y` goes ahead; with a
 //! terminal it asks `[y/N]`; with no terminal and no `-y` it does nothing,
-//! and the command exits 3.
+//! and the command exits 3. A stdout whose reader went away changes none of
+//! that: the command goes on and exits with its own code (`out::keep_going`).
 
 use crate::out;
 use mirqab_core::proto::strings;
@@ -30,6 +31,9 @@ pub fn ask_with(
     dry_run: bool,
     to_stderr: bool,
 ) -> Answer {
+    // A reader that goes away from here on does not end the command before
+    // it acts or decide its exit code (audit 2026-11-21, L40).
+    out::keep_going();
     let say = |text: &str| {
         if to_stderr {
             out::err(text)

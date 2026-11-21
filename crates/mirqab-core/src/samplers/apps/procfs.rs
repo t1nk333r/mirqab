@@ -156,11 +156,60 @@ const FLATPAK_INFO_MAX: usize = 4096;
 /// root's `.flatpak-info`, read only when that is a regular file (plan
 /// 006, part 4, decision 14; D7 of PR #16): the process controls its own
 /// root, and a FIFO there would stall the walk.
+///
+/// Nor is anything there opened or looked up unless the root, and the
+/// file, sit on a tmpfs (audit 2026-11-21, L7). An open or a lookup on
+/// FUSE waits on its server, O_NONBLOCK or not, and a hung server would
+/// hold the walk under the sampler lock. `Root::read_regular_prefix_in`
+/// pins the root and the file with O_PATH descriptors and asks `tmpfs_now`
+/// about each one's mount id; the mount points that mountinfo lists prove
+/// nothing, since a chroot root does not follow a mount placed over it.
+/// bubblewrap builds every Flatpak root on a tmpfs, and `.flatpak-info` is
+/// on one too (a bind mount of its own in the app's processes), so tmpfs
+/// is the one type cleared: denying only `fuse*` would pass an overlay
+/// with a FUSE lower layer. On the live machine a mountinfo that cannot be
+/// read clears nothing; a fixture without one is read as before.
 pub fn read_flatpak_info(root: &Root, dir: &str) -> Option<String> {
-    let bytes = root
-        .read_regular_prefix(&format!("{dir}/root/.flatpak-info"), FLATPAK_INFO_MAX)
-        .ok()?;
+    // Whether there is a mountinfo only picks the fixture path; what it
+    // says is read by `tmpfs_now`, after each pin.
+    let bytes = if root.is_host() || root.exists(&format!("{dir}/mountinfo")) {
+        root.read_regular_prefix_in(
+            &format!("{dir}/root"),
+            ".flatpak-info",
+            FLATPAK_INFO_MAX,
+            tmpfs_now(root, dir),
+        )
+        .ok()?
+    } else {
+        root.read_regular_prefix(&format!("{dir}/root/.flatpak-info"), FLATPAK_INFO_MAX)
+            .ok()?
+    };
     flatpak_info(&String::from_utf8_lossy(&bytes))
+}
+
+/// The `clear` of `read_flatpak_info`: whether the process at `dir`
+/// (`proc/<pid>`) has the mount with id `id` as a tmpfs, by its
+/// mountinfo read anew on each call, never from a copy. Linux hands a
+/// freed mount id straight back out, so a listing taken before a
+/// descriptor was pinned can describe another mount with the same id (a
+/// tmpfs unmounted and a FUSE mount made in its place). A listing taken
+/// after the pin cannot: while the descriptor holds its mount, no other
+/// live mount carries that id. A mountinfo that cannot be read clears
+/// nothing.
+pub fn tmpfs_now<'a>(root: &'a Root, dir: &str) -> impl Fn(u64) -> bool + 'a {
+    let rel = format!("{dir}/mountinfo");
+    move |id| read_text(root, &rel).is_some_and(|t| tmpfs_mount(&t, id))
+}
+
+/// Whether `mountinfo` lists the mount with id `id` (field 1) as a tmpfs.
+/// The type is the first field after the ` - ` separator; spaces inside
+/// fields are escaped as `\040`, so neither split can be fooled by a name.
+/// A mount that is not listed, or a line without a type, is not cleared.
+pub fn tmpfs_mount(mountinfo: &str, id: u64) -> bool {
+    mountinfo.lines().any(|l| {
+        let mine = l.split(' ').next().and_then(|v| v.parse::<u64>().ok()) == Some(id);
+        mine && l.split(" - ").nth(1).and_then(|r| r.split(' ').next()) == Some("tmpfs")
+    })
 }
 
 /// One account of `etc/passwd`.
@@ -230,10 +279,23 @@ pub fn is_kernel(st: &Stat) -> bool {
 
 /// The command name, or the program's file name when the kernel cut the
 /// name short (`devserver-worke` → `devserver-worker`).
+///
+/// The kernel cuts at byte 15, which may split a UTF-8 character;
+/// `read_text` turns its 1 to 3 stray bytes into one U+FFFD, so one
+/// trailing U+FFFD is dropped and the 12 to 14 bytes before it are the
+/// prefix (audit 2026-11-21, L5). The decoded length is the kernel's only
+/// where nothing else was replaced: a U+FFFD in the prefix may stand for a
+/// single byte, so such a name (five invalid bytes, or nine letters and two
+/// invalid bytes, each 15 bytes once decoded) is never taken as cut.
 pub fn display_name(comm: &str, cmdline: &[String]) -> String {
-    if comm.len() >= COMM_MAX
+    let (prefix, long) = match comm.strip_suffix('\u{FFFD}') {
+        Some(p) => (p, p.len() >= COMM_MAX - 3),
+        None => (comm, comm.len() >= COMM_MAX),
+    };
+    if long
+        && !prefix.contains('\u{FFFD}')
         && let Some(base) = cmdline.first().map(|a| basename(a))
-        && base.starts_with(comm)
+        && base.starts_with(prefix)
     {
         return base.to_string();
     }
@@ -419,5 +481,42 @@ mod tests {
             passwd("root:x:0:0::/root:/bin/sh\nbroken\nuser:x:1000:1000:U:/users/user:/bin/zsh\n");
         assert_eq!(users.len(), 2);
         assert_eq!(users[1].home, "/users/user");
+    }
+
+    #[test]
+    fn display_name_survives_a_name_cut_inside_a_character() {
+        // 14 ASCII bytes and the first byte of "é": what the kernel keeps of
+        // `abcdefghijklmné-x`, read through `read_text`'s lossy decoding.
+        let comm = String::from_utf8_lossy(b"abcdefghijklmn\xC3").into_owned();
+        let argv = ["/usr/bin/abcdefghijklmn\u{e9}-x".to_string()];
+        assert_eq!(display_name(&comm, &argv), "abcdefghijklmn\u{e9}-x");
+        let cut = ["/usr/bin/devserver-worker".to_string()];
+        assert_eq!(display_name("devserver-worke", &cut), "devserver-worker");
+        assert_eq!(display_name("short", &cut), "short");
+    }
+
+    #[test]
+    fn display_name_keeps_a_name_the_kernel_did_not_cut() {
+        // Review of the L5 fix: only one trailing U+FFFD is the cut
+        // character, and what is left must be the 12 to 14 bytes the
+        // kernel kept intact. Five invalid bytes decode to 15 bytes of
+        // U+FFFD; nine letters and two invalid bytes, also 15. Neither
+        // reached 15 bytes in the kernel, so argv[0] does not replace it.
+        let all_bad = String::from_utf8_lossy(b"\xFF\xFF\xFF\xFF\xFF").into_owned();
+        assert_eq!(all_bad.len(), 15);
+        let argv = ["/usr/bin/anything".to_string()];
+        assert_eq!(display_name(&all_bad, &argv), all_bad);
+        let short = String::from_utf8_lossy(b"abcdefghi\xFF\xFF").into_owned();
+        assert_eq!(short.len(), 15);
+        for arg in [
+            "/usr/bin/abcdefghi\u{FFFD}\u{FFFD}-x",
+            "/usr/bin/abcdefghijk",
+        ] {
+            assert_eq!(display_name(&short, &[arg.to_string()]), short, "{arg}");
+        }
+        // A genuine cut: 12 bytes and two of the three bytes of "€".
+        let cut = String::from_utf8_lossy(b"abcdefghijkl\xE2\x82").into_owned();
+        let argv = ["/usr/bin/abcdefghijkl\u{20AC}-x".to_string()];
+        assert_eq!(display_name(&cut, &argv), "abcdefghijkl\u{20AC}-x");
     }
 }

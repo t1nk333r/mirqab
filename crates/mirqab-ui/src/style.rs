@@ -6,6 +6,7 @@
 //! Custom-drawn widgets read colours from [`theme`] and redraw on
 //! [`on_change`].
 
+use crate::listeners::Listeners;
 use adw::prelude::*;
 use gtk::{gdk, gio, glib};
 use mirqab_view::config::SchemeChoice;
@@ -19,7 +20,7 @@ const BASE: &str = include_str!("../resources/style.css");
 
 thread_local! {
     static CURRENT: RefCell<Rc<Theme>> = RefCell::new(Rc::new(Theme::new(Scheme::Dark)));
-    static LISTENERS: RefCell<Vec<Box<dyn Fn() -> bool>>> = const { RefCell::new(Vec::new()) };
+    static LISTENERS: Listeners = const { Listeners::new() };
 }
 
 /// The theme in force.
@@ -27,10 +28,15 @@ pub fn theme() -> Rc<Theme> {
     CURRENT.with(|c| Rc::clone(&c.borrow()))
 }
 
-/// Runs `f` after every theme change until it returns false (its widget
-/// is gone). `f` should hold its widget weakly.
-pub fn on_change(f: impl Fn() -> bool + 'static) {
-    LISTENERS.with(|l| l.borrow_mut().push(Box::new(f)));
+/// Runs `f` with `owner` after every theme change while `owner` lives.
+pub fn on_change<W: IsA<glib::Object>>(owner: &W, f: impl Fn(&W) + 'static) {
+    LISTENERS.with(|l| l.add(owner, f));
+}
+
+/// Theme listeners held (tests).
+#[doc(hidden)]
+pub fn listener_count() -> usize {
+    LISTENERS.with(Listeners::len)
 }
 
 /// A colour token as a GDK colour, for drawing code.
@@ -162,15 +168,7 @@ impl Style {
         theme.problems.extend(unreadable);
         self.tokens.load_from_string(&theme.stylesheet());
         CURRENT.with(|c| *c.borrow_mut() = Rc::new(theme));
-        // Taken out while they run: a listener may add another.
-        let current = LISTENERS.with(|l| std::mem::take(&mut *l.borrow_mut()));
-        let kept: Vec<_> = current.into_iter().filter(|f| f()).collect();
-        LISTENERS.with(|l| {
-            let mut l = l.borrow_mut();
-            let added = std::mem::take(&mut *l);
-            *l = kept;
-            l.extend(added);
-        });
+        LISTENERS.with(Listeners::run);
     }
 
     /// What went wrong reading the theme files, for Settings.

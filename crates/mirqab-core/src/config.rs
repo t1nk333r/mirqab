@@ -162,6 +162,22 @@ fn stamp(path: &Path) -> Option<(std::time::SystemTime, u64)> {
     Some((m.modified().ok()?, m.len()))
 }
 
+/// An XDG base directory: `xdg`, the value of `var`, when it is an absolute
+/// path (the spec says a relative one is ignored), else `home`/`under_home`
+/// when `home` is absolute; else an error naming both, never a path
+/// relative to wherever the daemon was started (audit 2026-11-21, L9).
+pub fn xdg_base(
+    var: &str,
+    xdg: Option<std::ffi::OsString>,
+    home: Option<std::ffi::OsString>,
+    under_home: &str,
+) -> Result<PathBuf, String> {
+    let absolute = |v: Option<std::ffi::OsString>| v.map(PathBuf::from).filter(|p| p.is_absolute());
+    absolute(xdg)
+        .or_else(|| absolute(home).map(|h| h.join(under_home)))
+        .ok_or_else(|| strings::no_home_dir(var))
+}
+
 #[derive(Debug, PartialEq)]
 pub enum SetError {
     Invalid(String),
@@ -172,13 +188,15 @@ pub enum SetError {
 
 impl Config {
     /// `$XDG_CONFIG_HOME/mirqab/config.json`, else `~/.config/mirqab/config.json`.
-    pub fn default_path() -> PathBuf {
-        let base = std::env::var_os("XDG_CONFIG_HOME")
-            .filter(|v| !v.is_empty())
-            .map(PathBuf::from)
-            .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
-            .unwrap_or_else(|| PathBuf::from(".config"));
-        base.join("mirqab/config.json")
+    /// Err when neither is an absolute path (`xdg_base`).
+    pub fn default_path() -> Result<PathBuf, String> {
+        xdg_base(
+            "XDG_CONFIG_HOME",
+            std::env::var_os("XDG_CONFIG_HOME"),
+            std::env::var_os("HOME"),
+            ".config",
+        )
+        .map(|b| b.join("mirqab/config.json"))
     }
 
     pub fn load(path: &Path) -> Config {
@@ -219,11 +237,16 @@ impl Config {
     }
 
     /// Re-reads the file when it changed on disk since the last read. Cheap:
-    /// one stat. Callers run it before answering from the config.
-    pub fn refresh(&mut self) {
-        if stamp(&self.path) != self.stamp {
-            self.read();
+    /// one stat. Callers run it before answering from the config. True when
+    /// the effective config changed, so a hand edit is applied and announced
+    /// as a `config.set` is (audit 2026-11-21, L10).
+    pub fn refresh(&mut self) -> bool {
+        if stamp(&self.path) == self.stamp {
+            return false;
         }
+        let before = std::mem::take(&mut self.effective);
+        self.read();
+        self.effective != before
     }
 
     pub fn effective(&self) -> &Value {
@@ -288,6 +311,29 @@ mod tests {
         let _ = act::remove_path(&d, false);
         std::fs::create_dir_all(&d).unwrap();
         d
+    }
+
+    #[test]
+    fn only_an_absolute_base_directory_is_used() {
+        // Audit 2026-11-21, L9: the XDG spec says a relative path is
+        // ignored, and with no home the path was relative to the cwd.
+        let os = |s: &str| Some(std::ffi::OsString::from(s));
+        let base = |xdg, home| xdg_base("XDG_CONFIG_HOME", xdg, home, ".config");
+        assert_eq!(
+            base(os("rel"), os("/x"))
+                .unwrap()
+                .join("mirqab/config.json"),
+            PathBuf::from("/x/.config/mirqab/config.json")
+        );
+        assert_eq!(base(os("/c"), os("/x")), Ok(PathBuf::from("/c")));
+        assert_eq!(base(os(""), os("/x")), Ok(PathBuf::from("/x/.config")));
+        assert_eq!(base(None, os("/x")), Ok(PathBuf::from("/x/.config")));
+        let err = base(None, None).unwrap_err();
+        assert!(
+            err.contains("XDG_CONFIG_HOME") && err.contains("HOME"),
+            "{err}"
+        );
+        assert!(base(os("rel"), os("home")).is_err(), "a relative home too");
     }
 
     #[test]
@@ -366,8 +412,16 @@ mod tests {
             r#"{"units":{"temperature":"f","clock":"24"},"live":{"intervalMs":3000}}"#,
         )
         .unwrap();
-        c.refresh();
+        assert!(c.refresh(), "a change is reported");
         assert_eq!(c.live_interval_ms(), 3000);
+        assert!(!c.refresh(), "and only once");
+        // Rewritten with the same values: read again, but nothing changed.
+        std::fs::write(
+            &p,
+            r#"{"live": {"intervalMs": 3000}, "units": {"temperature": "f", "clock": "24"}}"#,
+        )
+        .unwrap();
+        assert!(!c.refresh());
         act::remove_path(&d, false).unwrap();
     }
 

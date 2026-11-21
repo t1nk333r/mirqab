@@ -74,7 +74,8 @@ QR code and the badge follow in later parts.
   (each listener on one port, with its reach and process),
   `quit PID|NAME [-y] [--force]
   [--dry-run] [--json]` (quits a
-  process or an app after asking; `--force` sends SIGKILL, and a user
+  process or an app after asking; `--group ID` names one of several apps
+  that share a name; `--force` sends SIGKILL, and a user
   service is stopped through systemctl, and the list shows the other
   services that stop with it and warns before the sound server or a
   desktop portal is stopped; it never signals pid 1, the daemon, the
@@ -259,6 +260,10 @@ If it reports that it could not start `mirqab-ui.service`, the unit is
 missing or broken: check that it is in `~/.config/systemd/user`, and run
 `systemctl --user daemon-reload` after copying it.
 
+A daemon started on another socket (`mirqab --socket PATH daemon`) does
+not start the unit, which reaches only the default socket; start the
+window yourself with `mirqab-ui --socket PATH`.
+
 Stored history is read with `mirqab history`. This prints the last hour of
 `cpu.total`, one bucket a minute:
 
@@ -317,8 +322,9 @@ window, and a middle click opens Home. The menu has Open, one entry for
 each tab the sidebar shows (a tab in `tabs.hidden` is left out, and the
 list is read each time the menu opens), Settings, and Quit daemon, which
 stops the daemon. The tooltip shows CPU, memory and temperature. It is
-computed only when the host reads it, so a host that reads it on a timer
-costs at most one reading every 10 s. The tray holds no subscription and
+computed when asked for: when the host reads it, at start, after a click
+and when the menu opens. A reading is kept 10 s, so even a host that reads
+it on a timer costs at most one reading every 10 s. The tray holds no subscription and
 no timer. Set `tray.enabled` to false to turn it off; it is read when the
 daemon starts.
 
@@ -408,11 +414,20 @@ mirqab --mcp           # MCP server on stdio
 
 ## Development
 
-On Arch, install the toolchain and the gate tools:
+On Arch, install the toolchain and the gate tools, and what the tests
+run (the packages CI installs, `.github/workflows/ci.yml`):
 
 ```sh
 pacman -S --needed base-devel git dbus rust pkgconf gtk4 libadwaita gtk4-layer-shell sqlite shellcheck jq cargo-deny gitleaks
+pacman -S --needed socat desktop-file-utils zsh fish python python-gobject qt6-declarative
 ```
+
+The second line is for the tests: `socat` talks to the daemon's socket
+(the UI tests and `tools/bench-idle.sh`), `desktop-file-validate` checks
+the desktop entry, `zsh` and `fish` parse the completion scripts,
+`python` runs the Apps tab test's socket helpers and, with
+`python-gobject`, its D-Bus check, and
+`qt6-declarative` brings `qmllint` for the haseen widget.
 
 Run the first three gates before every commit, and `tools/secrets.sh`
 before every push:

@@ -10,11 +10,16 @@
 //! Part 4: the "idle but heavy" tag with a fake focus source, the
 //! `top-apps` minute row, `apps.inspect` with a start time (S5), GPU
 //! memory read only from DRM fds and capped (D2), `.flatpak-info` read
-//! only as a regular file (D7), and `get`'s first reading taken in
+//! only as a regular file (D7) and never through a FUSE root (audit
+//! 2026-11-21, L7), and `get`'s first reading taken in
 //! `prime` (D1). From the audit: code on an interpreter's command line
 //! never names a terminal job; a `process` get's primed reading serves
 //! that get only, and a get whose baseline a tick replaced does not wait
-//! under the lock.
+//! under the lock. Plan 023's follow-up, the same for `apps`: a get whose
+//! baseline a tick replaced, or whose subscriber left in its gap, does not
+//! wait under the lock, never takes a reading another get is still
+//! waiting on, and leaves none queued; nor does a `process` get take one
+//! for the same pids that is still too young to use.
 
 use mirqab_core::Root;
 use mirqab_core::desktop::{Focus, FocusedSince, focused_since};
@@ -1367,6 +1372,127 @@ fn a_fifo_for_flatpak_info_does_not_stall_the_walk() {
     assert_ne!(g.kind, "flatpak");
 }
 
+#[test]
+fn flatpak_info_is_not_opened_through_a_fuse_root() {
+    // Audit 2026-11-21, L7: O_NONBLOCK does not stop an open on a FUSE
+    // mount from waiting on its server, so a process whose root (or whose
+    // `/.flatpak-info`) is on a hung FUSE mount would stall the walk under
+    // the sampler lock. The root is pinned with O_PATH and its mount id
+    // looked up in the process's mountinfo: only a listed tmpfs clears it
+    // (a Flatpak's root is one). Mount points do not matter; the id does. The
+    // review of the first fix found a process that chroots below a FUSE
+    // mount and puts a tmpfs over its own `/`: mountinfo then shows only
+    // that tmpfs at `/`, but its root is still the directory beneath.
+    let s = bare_root("fuse");
+    let root = Root::new(&s.0);
+    // The scratch tree is on one real mount; the fixture's mountinfo
+    // names it by its real id, and other mounts by an id that is not it.
+    let mnt = root.mount_id("proc").unwrap();
+    let other = if mnt == 7 { 8 } else { 7 };
+    let info = "[Application]\nname=org.example.Notes\n";
+    let rows = [
+        // The root's own mount is FUSE.
+        (
+            9500,
+            format!("{mnt} 1 0:40 / / rw - fuse.sshfs example:/ rw\n"),
+        ),
+        (
+            9502,
+            format!(
+                "{other} 1 254:1 / / rw - ext4 none rw\n{mnt} {other} 0:40 / / rw - fuse example rw\n"
+            ),
+        ),
+        // The review's bypass: a tmpfs over `/` that is not the root's mount.
+        (9508, format!("{other} 1 0:44 / / rw - tmpfs tmpfs rw\n")),
+        // A chroot below a mount: the root's mount is not listed at all.
+        (9506, format!("{other} 1 0:5 / /proc rw - proc proc rw\n")),
+        (9507, String::new()),
+        // A line for the root's mount without a type is no clearance.
+        (9509, format!("{mnt} 1 0:40 / / rw\n")),
+        // Nor is any type but tmpfs: an overlay can have a FUSE lower layer.
+        (9510, format!("{mnt} 1 0:45 / / rw - overlay overlay rw\n")),
+        (9511, format!("{mnt} 1 254:1 / / rw - ext4 none rw\n")),
+        // Cleared: the root's mount is listed as a tmpfs, wherever it is
+        // mounted, and FUSE elsewhere is no objection.
+        (
+            9503,
+            format!("{mnt} 1 0:44 /newroot / rw - tmpfs tmpfs rw\n"),
+        ),
+        (
+            9504,
+            format!(
+                "{mnt} 1 0:44 / / rw - tmpfs tmpfs rw\n{other} {mnt} 0:42 / /home rw - fuse.sshfs example:/ rw\n"
+            ),
+        ),
+        (
+            9512,
+            format!("{mnt} 1 0:44 / /srv\\040x rw shared:3 - tmpfs tmpfs rw\n"),
+        ),
+    ];
+    for (pid, mounts) in &rows {
+        let p = own_proc(&s.0, *pid, "notes");
+        std::fs::create_dir_all(p.join("root")).unwrap();
+        std::fs::write(p.join("root/.flatpak-info"), info).unwrap();
+        std::fs::write(p.join("mountinfo"), mounts).unwrap();
+    }
+    // No mountinfo at all (a fixture without one) still reads the file;
+    // on the live machine that would be an objection.
+    let p = own_proc(&s.0, 9505, "notes");
+    std::fs::create_dir_all(p.join("root")).unwrap();
+    std::fs::write(p.join("root/.flatpak-info"), info).unwrap();
+
+    let mut a = Apps::with_pacman(s.0.join("pacman").to_string_lossy());
+    a.probe(&root).unwrap();
+    let d = data(a.sample(&root, Instant::now()));
+    let kind = |pid: u32| {
+        d.groups
+            .iter()
+            .find(|g| g.pids.contains(&pid))
+            .unwrap()
+            .kind
+            .clone()
+    };
+    for pid in [9500, 9502, 9506, 9507, 9508, 9509, 9510, 9511] {
+        assert_ne!(kind(pid), "flatpak", "{pid}");
+        let v = inspect(&mut a, &root, pid);
+        assert!(v.get("flatpak").is_none(), "{pid}: {v}");
+    }
+    for pid in [9503, 9504, 9505, 9512] {
+        assert_eq!(kind(pid), "flatpak", "{pid}");
+        let v = inspect(&mut a, &root, pid);
+        assert_eq!(v["flatpak"], "org.example.Notes", "{pid}: {v}");
+    }
+}
+
+#[test]
+fn the_flatpak_info_mount_check_reads_mountinfo_when_asked() {
+    // Review of audit 2026-11-21, L7: Linux hands a freed mount id
+    // straight back out, so a mountinfo read before the root is pinned can
+    // describe another mount with the same id: a process unmounts its
+    // tmpfs N, mounts FUSE (which gets N) and chroots into it, and the
+    // stale "N tmpfs" line would clear the FUSE root. While a descriptor
+    // holds a mount no other live mount can carry its id, so the check
+    // reads mountinfo each time it is asked, after the pin.
+    let s = bare_root("fuse-late");
+    let p = own_proc(&s.0, 9600, "notes");
+    let root = Root::new(&s.0);
+    std::fs::write(p.join("mountinfo"), "21 1 0:44 / / rw - tmpfs tmpfs rw\n").unwrap();
+    let clear = mirqab_core::samplers::apps::procfs::tmpfs_now(&root, "proc/9600");
+    std::fs::write(
+        p.join("mountinfo"),
+        "21 1 0:40 / / rw - fuse.sshfs example:/ rw\n",
+    )
+    .unwrap();
+    assert!(
+        !clear(21),
+        "a listing from before the pin cleared a FUSE mount"
+    );
+    std::fs::write(p.join("mountinfo"), "21 1 0:44 / / rw - tmpfs tmpfs rw\n").unwrap();
+    assert!(clear(21));
+    std::fs::write(p.join("mountinfo"), "").unwrap();
+    assert!(!clear(21));
+}
+
 fn cargo_cpu(v: Value) -> f64 {
     by_id(&data(v), CARGO).cpu.expect("a rate")
 }
@@ -1395,8 +1521,9 @@ fn each_get_is_served_its_own_primed_reading_oldest_first() {
     let second = cargo_cpu(a.snapshot(&t1, Instant::now()));
     assert!(near(second), "{second}");
     assert_eq!(a.primed(), 0);
-    // A reading 2 ms old is too young: dropped, and the snapshot takes its
-    // own two readings half a second apart.
+    // A reading 2 ms old is too young: the snapshot takes its own two
+    // readings half a second apart, and leaves it for the get still in its
+    // gap, whose snapshot takes it at once (plan 023's follow-up).
     a.prime(&t0, Instant::now()).unwrap();
     std::thread::sleep(Duration::from_millis(2));
     let t = Instant::now();
@@ -1406,9 +1533,9 @@ fn each_get_is_served_its_own_primed_reading_oldest_first() {
         "{:?}",
         t.elapsed()
     );
-    // idle clears the queue.
-    a.prime(&t0, Instant::now()).unwrap();
-    a.idle();
+    assert_eq!(a.primed(), 1);
+    let (took, _) = timed(|| a.snapshot(&t0, Instant::now()));
+    assert!(took < Duration::from_millis(400), "{took:?}");
     assert_eq!(a.primed(), 0);
     // A young subscriber baseline needs no wait.
     let now = Instant::now();
@@ -1493,7 +1620,10 @@ fn a_primed_reading_left_by_one_get_never_answers_another_pid() {
     let s = scratch("procleft");
     std::fs::create_dir_all(s.0.join("proc")).unwrap();
     p.wants(&[json!({"pid": 2010})]);
-    p.prime(&t0, Instant::now()).expect("a wait");
+    let gap = p.prime(&t0, Instant::now()).expect("a wait");
+    // The snapshot comes after the gap, as the server runs it: a reading
+    // under 250 ms old is another get's (review of the apps follow-up).
+    std::thread::sleep(gap);
     assert_eq!(
         process_get(&mut p, &Root::new(&s.0), 2010),
         json!({"pid": 2010, "gone": true})
@@ -1570,4 +1700,173 @@ fn a_get_whose_baseline_a_tick_replaced_does_not_wait_under_the_lock() {
     let cpu = got["cpu"].as_f64().expect("a rate");
     assert!((cpu - 40.0).abs() < 4.0, "{cpu}");
     assert_eq!(p.primed(), 0);
+}
+
+/// How long `f` ran, and what it gave.
+fn timed<T>(f: impl FnOnce() -> T) -> (Duration, T) {
+    let t = Instant::now();
+    let v = f();
+    (t.elapsed(), v)
+}
+
+#[test]
+fn an_apps_get_whose_baseline_a_tick_replaced_does_not_wait_under_the_lock() {
+    // Plan 023's follow-up: `prime` found the subscribers' baseline young
+    // and queued nothing; a tick between the get's two locked steps
+    // replaced it with one too young to serve, and `snapshot` slept half a
+    // second holding the lock.
+    let s = scratch("ticked");
+    let mut a = probed(&pacman(&s.0));
+    let (t0, t1) = (fixture("root-desktop"), fixture("root-desktop.t1"));
+    a.sample(&t0, Instant::now() - Duration::from_secs(2));
+    assert!(
+        a.prime(&t0, Instant::now()).is_none(),
+        "the baseline serves"
+    );
+    a.sample(&t1, Instant::now());
+    let (took, got) = timed(|| a.snapshot(&t1, Instant::now()));
+    assert!(took < Duration::from_millis(400), "{took:?}");
+    // The twin's two seconds of ticks over the 2 s since the baseline the
+    // get primed with: 91 % of a core.
+    let cpu = cargo_cpu(got);
+    assert!((cpu - 91.0).abs() < 9.0, "{cpu}");
+    assert_eq!(a.primed(), 0, "the get's reading went with it");
+}
+
+#[test]
+fn an_apps_get_never_takes_another_gets_primed_reading() {
+    // Plan 023's follow-up: a get with no reading of its own popped the
+    // next get's, too young to use, dropped it and slept under the lock;
+    // that get then found none and slept under the lock too.
+    let s = scratch("steal");
+    let mut a = probed(&pacman(&s.0));
+    let (t0, t1) = (fixture("root-desktop"), fixture("root-desktop.t1"));
+    a.sample(&t0, Instant::now() - Duration::from_secs(2));
+    // Get A: the baseline serves.
+    assert!(a.prime(&t0, Instant::now()).is_none());
+    // A tick replaces it; get B finds it too young and primes.
+    a.sample(&t0, Instant::now());
+    let gap = a
+        .prime(&t0, Instant::now())
+        .expect("a fresh baseline: a wait");
+    // A's snapshot, at once.
+    let (took, got) = timed(|| a.snapshot(&t1, Instant::now()));
+    assert!(took < Duration::from_millis(400), "A waited {took:?}");
+    assert!(cargo_cpu(got) > 0.0);
+    assert_eq!(a.primed(), 1, "B's reading is left for B");
+    // B's snapshot, after its gap without the lock.
+    std::thread::sleep(gap);
+    let (took, got) = timed(|| a.snapshot(&t1, Instant::now()));
+    assert!(took < Duration::from_millis(400), "B waited {took:?}");
+    let near = |c: f64| (c - 364.0).abs() < 364.0 * 0.2;
+    let cpu = cargo_cpu(got);
+    assert!(near(cpu), "{cpu}");
+    assert_eq!(a.primed(), 0);
+}
+
+#[test]
+fn an_apps_get_answered_from_the_baseline_leaves_no_reading_queued() {
+    // A get that primed, and whose snapshot found the subscribers' baseline
+    // grown old enough in its gap, left its reading for some later get.
+    let s = scratch("leftover");
+    let mut a = probed(&pacman(&s.0));
+    let (t0, t1) = (fixture("root-desktop"), fixture("root-desktop.t1"));
+    let now = Instant::now();
+    a.sample(&t0, now - Duration::from_millis(800));
+    a.prime(&t0, now).expect("a baseline under 1 s: a wait");
+    std::thread::sleep(Duration::from_millis(500));
+    cargo_cpu(a.snapshot(&t1, Instant::now()));
+    assert_eq!(a.primed(), 0);
+}
+
+#[test]
+fn the_last_subscriber_leaving_keeps_a_pending_apps_gets_reading() {
+    // Plan 023's follow-up: `idle` in a get's gap dropped its reading, and
+    // `snapshot` slept half a second under the lock.
+    let s = scratch("idlegap");
+    let mut a = probed(&pacman(&s.0));
+    let (t0, t1) = (fixture("root-desktop"), fixture("root-desktop.t1"));
+    a.sample(&t0, Instant::now());
+    let gap = a
+        .prime(&t0, Instant::now())
+        .expect("a fresh baseline: a wait");
+    a.idle();
+    std::thread::sleep(gap);
+    let (took, got) = timed(|| a.snapshot(&t1, Instant::now()));
+    assert!(took < Duration::from_millis(400), "{took:?}");
+    assert!(cargo_cpu(got) > 0.0);
+    assert_eq!(a.primed(), 0);
+}
+
+#[test]
+fn the_last_subscriber_leaving_keeps_a_pending_process_gets_reading() {
+    // Audit 2026-11-21, L23: `Process::idle` in a get's gap dropped its
+    // reading, and `snapshot` slept half a second under the lock.
+    let (t0, t1) = (fixture("root-desktop"), fixture("root-desktop.t1"));
+    let ask = [json!({"pid": 2001})];
+    let mut p = process_probed();
+    p.wants(&ask);
+    p.sample(&t0, Instant::now());
+    p.wants(&ask);
+    let gap = p
+        .prime(&t0, Instant::now())
+        .expect("a fresh baseline: a wait");
+    p.idle();
+    std::thread::sleep(gap);
+    let (took, got) = timed(|| process_get(&mut p, &t1, 2001));
+    assert!(took < Duration::from_millis(400), "{took:?}");
+    assert!(got["cpu"].is_number(), "{got}");
+    assert_eq!(p.primed(), 0);
+}
+
+#[test]
+fn a_process_get_never_takes_another_gets_reading_too_young_to_use() {
+    // Review of the follow-up: `take_mine` took the first reading queued
+    // for the same pids whatever its age, and `snapshot` then found it
+    // under 250 ms old and slept half a second under the lock. G1 primes
+    // fresh; a tick leaves a 2 s baseline; G2 primes from it; a tick
+    // replaces it; G2's snapshot took G1's reading.
+    let (t0, t1) = (fixture("root-desktop"), fixture("root-desktop.t1"));
+    let ask = [json!({"pid": 2001})];
+    let mut p = process_probed();
+    p.wants(&ask);
+    let gap = p.prime(&t0, Instant::now()).expect("G1: a fresh reading");
+    p.wants(&ask);
+    p.sample(&t0, Instant::now() - Duration::from_secs(2));
+    p.wants(&ask);
+    assert!(
+        p.prime(&t0, Instant::now()).is_none(),
+        "G2: the baseline serves"
+    );
+    p.wants(&ask);
+    p.sample(&t1, Instant::now());
+    let (took, got) = timed(|| process_get(&mut p, &t1, 2001));
+    assert!(took < Duration::from_millis(400), "G2 waited {took:?}");
+    // 80 ticks of 100 over the 2 s since the baseline G2 primed with.
+    let cpu = got["cpu"].as_f64().expect("a rate");
+    assert!((cpu - 40.0).abs() < 4.0, "{cpu}");
+    assert_eq!(p.primed(), 1, "G1's reading is left for G1");
+    // G1's snapshot, after its gap without the lock, takes its own.
+    std::thread::sleep(gap);
+    let (took, got) = timed(|| process_get(&mut p, &t1, 2001));
+    assert!(took < Duration::from_millis(400), "G1 waited {took:?}");
+    assert!(got["cpu"].is_number(), "{got}");
+    assert_eq!(p.primed(), 0);
+}
+
+#[test]
+fn an_apps_baseline_about_to_go_stale_is_not_queued_for_a_get() {
+    // As for `process` (review of PR #26): a baseline that would expire
+    // before `snapshot` is not relied on; the get takes a fresh reading.
+    let s = scratch("stale");
+    let mut a = probed(&pacman(&s.0));
+    let t0 = fixture("root-desktop");
+    a.sample(&t0, Instant::now() - Duration::from_millis(9700));
+    assert_eq!(
+        a.prime(&t0, Instant::now()),
+        Some(Duration::from_millis(500))
+    );
+    let mut a = probed(&pacman(&s.0));
+    a.sample(&t0, Instant::now() - Duration::from_secs(9));
+    assert_eq!(a.prime(&t0, Instant::now()), None);
 }

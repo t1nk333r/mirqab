@@ -69,13 +69,10 @@ pub fn pin_button(ctx: &Rc<Ctx>, card_id: &'static str) -> gtk::Button {
         ctx.set_setting("home.pinned", json!(list));
     });
     let weak_ctx = Rc::downgrade(ctx);
-    let weak_button = button.downgrade();
-    ctx.on_config(move || {
-        let (Some(ctx), Some(b)) = (weak_ctx.upgrade(), weak_button.upgrade()) else {
-            return false;
-        };
-        set_pin_state(&b, is_pinned(&ctx));
-        true
+    ctx.on_config(&button, move |b| {
+        if let Some(ctx) = weak_ctx.upgrade() {
+            set_pin_state(b, is_pinned(&ctx));
+        }
     });
     button
 }

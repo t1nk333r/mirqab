@@ -281,7 +281,7 @@ when nothing is left to act on.
 | Refused | Rule | Source |
 | --- | --- | --- |
 | pid ≤ 1 | as today | §5.4; `act.rs:69` |
-| the daemon | `std::process::id()`, and the pid in `proc/self/stat` read through `Root` (4321 in the fixture) | §5.4; `act.rs:72` |
+| the daemon | the pid in `proc/self/stat` read through `Root` (4321 in the fixture), and `std::process::id()` on the live root | §5.4; `act.rs:72` |
 | another user's process, uid 0 included | all four numbers of `Uid:` must be the user's. Today only the real uid is read, so a setuid-root program passes. | §5.4, §8.2; `act.rs:47-54` |
 | a kernel thread | `PF_KTHREAD` in `stat` flags | follows from uid 0; stated for the message |
 | outside the user's cgroup subtree | the cgroup path must start with `/user.slice/user-<uid>.slice/` | §5.4 |
@@ -364,7 +364,10 @@ delivered, and the stream shows the result.
 **10. Every act is recorded.** One `event` row per redeemed plan, kind
 `action`, through `history.rs:285`:
 `{"action":"apps.quit","target":{"group":"…"}|{"pid":N},"caller":{"pid":N,"name":"zsh"},"results":[{"pid":N,"name":"…","signal":"TERM","result":"done|gone|failed|skipped"}],"unit":"…"}`.
-Names are `comm`; no command lines. A dry run and a `needs-confirm` reply
+Names are `comm`; no command lines. Every process the reply lists as
+skipped has a `skipped` result, a unit's processes that all started since
+the plan included (audit 2026-11-21, L27; test
+`a_unit_whose_processes_all_started_since_is_recorded_as_skipped`). A dry run and a `needs-confirm` reply
 write nothing. With no history file (`Options.history` is `None`), or one
 that cannot be opened or written, the action still runs, and the redeem
 reply's `"recorded": false` says the row is missing; `mirqab quit` then
@@ -374,11 +377,35 @@ refusing every act while the history file cannot be opened, was not
 taken.
 
 **11. The command line.**
-`mirqab quit <pid|name> [-y] [--force] [--dry-run] [--json]`.
+`mirqab quit <pid|name> [-y] [--force] [--dry-run] [--json]`, and
+`mirqab quit --group <id> …`.
 
 - A number is a pid. Anything else is a group name, matched whole and
-  case-insensitively against the `apps` view. No match: exit 1. Several
-  matches: print them with their ids and pids, exit 1; never guess.
+  case-insensitively against the `apps` view, or against the form
+  `mirqab apps` shows (`strings::shown_name`, the name column of
+  `strings::apps_row`: control and bidi characters as U+FFFD, a name
+  longer than `strings::APPS_NAME_WIDTH` cut to one less and `…`); a
+  shorter cut names nothing (audit 2026-11-21, L46). Case is folded one
+  character at a time, 'ς' as 'σ' (`quit::fold`). The first version took
+  the shown form as a prefix of the raw name, each lowercased whole; the
+  review found that an app could then miss its own shown name while a
+  look-alike matched it alone, and `-y` quit the look-alike: a cut 'Σ'
+  lowercases alone to a final 'ς' but to 'σ' inside the name, a U+202E
+  shown as U+FFFD was compared raw, and 'İ' grew to two characters.
+  Comparing with the shown form means an app always matches what was shown
+  for it, and any other app shown the same way matches too, so the
+  ambiguity refusal fires instead (tests in `crates/mirqab/src/quit.rs`:
+  `a_cut_sigma_names_its_own_app_and_never_a_look_alike_alone`,
+  `a_name_shown_with_a_replacement_names_its_own_app_and_its_look_alike`,
+  `a_cut_dotted_capital_i_names_its_own_app`,
+  `every_app_is_named_by_its_own_name_and_by_what_apps_shows`; in
+  `strings.rs`, `the_shown_name_is_the_name_column_of_an_apps_row`). No
+  match: exit 1. Several
+  matches: print them with their ids and pids, exit 1; never guess. The
+  message names `--group ID`, which sends `{"group": id}`, the subject the
+  daemon already took for a name, so every process of that group is
+  planned; a pid of it would signal that process alone unless it is in a
+  user service (audit 2026-11-21, L47).
 - `--force` selects `apps.kill`.
 - Flow: call without `confirm`; print the `wouldDo` and `skipped` lines;
   `confirm::ask`; call again with the plan. `--dry-run` sends `dryRun` and
@@ -1389,7 +1416,12 @@ with where it lives:
   (`crates/mirqab-core/src/root.rs:30`).
 - **Refusals** (`act::refusal`, `act.rs:228`), checked when the plan is
   made and again inside `act::signal`: pid ≤ 1; the daemon
-  (`std::process::id()` and `proc/self/stat` under the root); a kernel
+  (`std::process::id()` on the live root, and `proc/self/stat` under the
+  root; on a fixture root only the latter since 2026-11-21: a CI
+  container's daemon ran as pid 2011, the fixture browser's content
+  process, which a quit by name then left out as the daemon;
+  `a_fixture_process_that_shares_the_test_daemons_pid_is_not_the_daemon`
+  in `tests/actions.rs`); a kernel
   thread (`PF_KTHREAD`, before the uid so the message says so); any of the
   four `Uid:` numbers not the user's; a cgroup outside
   `/user.slice/user-<uid>.slice/`; `user@<uid>.service/init.scope`; and
@@ -1413,9 +1445,16 @@ with where it lives:
   (`crates/mirqab-core/src/guard.rs:37`) returns `WalkError::Unreadable`,
   `Loop` or `TooDeep`; the old quiet `ancestry` had no caller and is gone.
 - **Plans** (`crates/mirqab-core/src/plan.rs`): `make` and `redeem`
-  (`:98`, `:140`) take the boot-time clock, read once per request by
+  (`:98`, `:140`) take the boot-time clock, read first in each request by
   `Actions` (`actions::Clock`; an unreadable clock fails the request with
-  `strings::ACT_NO_CLOCK` before anything is planned or redeemed); at most `MAX_PLANS` = 64,
+  `strings::ACT_NO_CLOCK` before anything is planned or redeemed), and
+  read again for a confirmation once its targets are resolved, so the
+  walk and `systemctl show` count toward the plan's 120 s (audit
+  2026-11-21, L15; test
+  `a_plan_expires_when_the_confirmation_reaches_it_not_when_it_arrived`).
+  When that second read fails, the request fails with `ACT_NO_CLOCK` and
+  its plan is spent, as for a refused resolve (review of L15; test
+  `a_confirmation_whose_second_clock_read_fails_spends_its_plan`); at most `MAX_PLANS` = 64,
   the oldest dropped; targets are `act::Target`; `redeem` returns the
   planned targets still there (`kept`) and the rest (`gone`).
 - **Resolution** (`resolve`, `actions.rs:491`). A pid: its `Tgid:` first
@@ -1765,8 +1804,17 @@ Deviations from the brief, each with its reason:
 - **`capped`.** The brief caps the pids at eight but does not say what
   the ninth subscriber gets; it gets `capped: true`, not a false `gone`.
 - **`name` is `comm`.** The `apps` list's name may come from `cmdline`
-  when `comm` was cut short; the stream reads `stat` and `statm` only, as
-  designed.
+  when `comm` was cut short (also when the cut at byte 15 splits a UTF-8
+  character, whose stray bytes read as one U+FFFD; audit 2026-11-21, L5);
+  the stream reads `stat` and `statm` only, as designed. *Review of the
+  L5 fix:* only one trailing U+FFFD is dropped, and the 12 to 14 bytes
+  before it must hold no other U+FFFD, since a replaced byte makes the
+  decoded length differ from the kernel's: five invalid bytes, or nine
+  letters and two invalid bytes, decode to 15 bytes but were never cut,
+  and keep their name. Tests:
+  `display_name_survives_a_name_cut_inside_a_character`,
+  `display_name_keeps_a_name_the_kernel_did_not_cut`
+  (`samplers/apps/procfs.rs`).
 - **A `get process` goes through `wants`.** `snapshot` takes no params,
   so the `get` hands its own over first; the next tick hands the
   subscribers' back. A `get` never moves the pins or the baseline, and
@@ -2514,6 +2562,96 @@ socket or a directory there is "no Flatpak". Test: a FIFO at that path in
 a scratch copy of the fixture; the walk returns within the test's
 timeout.
 
+Audit 2026-11-21, L6: the open also carries `O_NOCTTY`. The daemon is a
+session leader without a terminal under systemd, so a tty planted at that
+path would otherwise become its controlling terminal on open. Test:
+`root.rs`, `opening_a_tty_does_not_make_it_the_controlling_terminal`
+(a child copy of the test binary starts a session, opens a fresh
+pseudo-terminal through `read_regular_prefix`, and checks `/dev/tty`).
+
+Audit 2026-11-21, L7: `O_NONBLOCK` does not stop an open (or a lookup) on
+FUSE from waiting on its server, so a process whose root sat on a hung
+FUSE mount stalled the walk under the sampler lock. The fix pins what it
+asks about. `Root::read_regular_prefix_in` opens `proc/<pid>/root` with
+`O_PATH` (following that link jumps to the root's dentry and calls no
+filesystem), takes its mount id from the `mnt_id:` line of
+`/proc/self/fdinfo/<fd>` (the kernel prints it from the descriptor; no
+filesystem is asked, unlike `fstatfs` or a `statx` that may refresh
+attributes), and clears it before `.flatpak-info` is looked up. The file
+is then opened `O_PATH|O_NOFOLLOW` through `/proc/self/fd/<rootfd>`, its
+mount id cleared too (a file can be a mount of its own), checked to be a
+regular file, and reopened for reading through its own descriptor with
+`O_NONBLOCK|O_NOCTTY`. `procfs::read_flatpak_info` clears a mount id
+only when the process's `mountinfo` lists it (field 1) as a `tmpfs`, and
+it reads that mountinfo anew each time it is asked (`procfs::tmpfs_now`),
+which is after the descriptor in question is pinned. That order matters:
+Linux hands a freed mount id straight back out, so a listing taken before
+the pin could describe another mount by the same id, while one taken
+after cannot, since the descriptor keeps its mount and the id alive. With
+that, a `pivot_root`, a mount or an unmount at any point leaves the read
+on the objects that were cleared; `Root::read_regular_prefix_in` states
+the contract (`clear` decides from state read at the call). On the live
+machine a mountinfo that cannot be read clears nothing; a fixture without
+one (the fixtures have none) is read as before through
+`read_regular_prefix`. This costs two `mountinfo` and two `fdinfo` reads
+per process that reaches the `.flatpak-info` check, once in the process's
+life (`Info` is cached).
+
+Why tmpfs only: bubblewrap builds every Flatpak root on a tmpfs, and
+`.flatpak-info` is on a tmpfs too, but not always the same mount. Checked
+on the development machine on 2026-11-21 with the `O_PATH` descriptors of
+a running Flatpak app's processes: in the app's own processes the file is
+a bind mount of its own, listed at `/.flatpak-info` as `tmpfs` with a
+mount id that differs from the root's; in the outer bubblewrap process it
+is on the root's mount, listed at `/` with root `/newroot` and type
+`tmpfs`. Either way both ids are cleared. Rejected options:
+
+- Looking for a FUSE line at `/` or `/.flatpak-info` in mountinfo (the
+  first fix). The kernel omits mounts the root cannot reach, so a process
+  chrooted into a directory of a FUSE mount has no line at `/` at all.
+- Requiring a mount at `/` and no FUSE among the mounts at `/` (the
+  second fix, rejected in delta review). A process in its own user and
+  mount namespace can chroot below a FUSE mount and mount a tmpfs over its
+  own `/`: mountinfo then lists only that tmpfs, but a chroot root does not
+  follow an overmount, so `proc/<pid>/root` still resolves to the FUSE
+  directory. Mount points prove nothing; the pinned mount id does. The
+  reviewer confirmed on this machine that the `O_PATH` descriptor's
+  `mnt_id` in that setup is absent from the process's mountinfo, so the
+  id check refuses it. Reading mountinfo before an unpinned open also left
+  a race with `pivot_root`.
+- Pinned descriptors checked against one mountinfo read taken before the
+  pin (the third fix, rejected in delta review). Between that read and the
+  `O_PATH` open, the process can chroot out through a saved descriptor,
+  unmount its tmpfs N, mount FUSE (which gets N again, the lowest free
+  id) and chroot into it; the stale "N tmpfs" line then clears the FUSE
+  root. The reviewer reproduced it with ramfs standing in for FUSE.
+- Clearing any type that does not start with `fuse`, as the review
+  suggested. An overlay with a FUSE lower layer is not `fuse*` but looks
+  its names up on the FUSE server; only Flatpak roots matter here, and
+  they are tmpfs.
+- `statx(STATX_MNT_ID, AT_STATX_DONT_SYNC)` for the mount id. It works,
+  but it reaches the filesystem's `getattr`, where `fdinfo` does not, and
+  needs `unsafe` for a call std does not wrap.
+
+Tests: `root.rs`, `a_pinned_read_asks_about_the_directory_mount_before_the_name`
+(a refused root mount is refused before the name is looked up),
+`a_pinned_read_asks_about_what_it_already_holds` (`clear` runs after the
+pin: a directory swapped on its first call does not change what is read),
+`a_pinned_read_reads_a_regular_file_on_a_cleared_mount`,
+`a_pinned_read_refuses_what_is_not_a_regular_file` (a FIFO, a symlink, a
+directory, and a name that is not one component) and
+`a_pinned_read_does_not_leave_a_fixture_tree`; `tests/apps.rs`,
+`flatpak_info_is_not_opened_through_a_fuse_root`, whose fixture mountinfo
+names the scratch tree's real mount id (`Root::mount_id`): FUSE, overlay
+or ext4 for the root's mount, a tmpfs at `/` that is not the root's mount
+(the review's bypass), the root's mount not listed, a line without a type
+and an empty mountinfo are skipped; a tmpfs root's mount, wherever it is
+mounted and with FUSE elsewhere, and no mountinfo at all are read. The
+bypass row failed against the second fix before this one. And
+`the_flatpak_info_mount_check_reads_mountinfo_when_asked`: a check made
+while mountinfo said tmpfs refuses once it says FUSE; it failed against a
+version of `tmpfs_now` that kept a copy.
+
 **15. The session bus by command name (owner question 1).** See the
 question; if the owner says yes, `guard::SESSION_BUS_COMMS = ["dbus-daemon",
 "dbus-broker", "dbus-broker-launch"]` joins `act::refusal` beside the
@@ -2987,7 +3125,13 @@ Known limits (part 4a):
 
 - Discovery takes the newest live instance; if its event socket refuses
   the connect, `start` fails and does not try an older one (the next
-  page open tries again).
+  page open tries again). *Changed by the audit of 2026-11-21, L22:* a
+  crashed instance whose lock's pid was reused looked live and won, so
+  `start` now tries each live directory in turn (`instances`) and goes on
+  when the event socket refuses or is missing; a connect that times out
+  (a compositor there but stuck) still ends the search. Test:
+  `a_dead_instance_whose_pid_was_reused_gives_way_to_a_live_one`
+  (`tests/focus.rs`).
 - A burst of more than ten new windows a second leaves the focus on the
   last answered one until the next event.
 - The tag uses the time the reader saw each focus change (`Instant`), and
@@ -3069,10 +3213,15 @@ dropped the rest. What changed, with its test:
 3. **S2 (reduced), the compositor waits are bounded and said.**
    `ask_active` (`hyprland.rs:135`) arms every read with what is left of
    one 500 ms deadline, so a trickled answer cannot hold the reader;
-   `stop` (`:442`) joins within that deadline. Architecture §5.3 now
-   says: no sampler sleeps or asks another program while holding its
-   lock; the focus source may wait on the compositor up to 1.5 s once
-   when the page opens and up to 0.5 s when it closes. Test:
+   `stop` (`:442`) joins within that deadline (with the request's
+   500 ms connect, 1 s; and since the audit of 2026-11-21, L21, `stop`
+   raises a flag the reader checks before each line and each request, so
+   lines still queued on the socket ask nothing more: test
+   `stop_reads_no_queued_line_and_asks_nothing_more`). Architecture
+   §5.3 now says: no sampler sleeps or asks another program while
+   holding its lock; the focus source may wait on the compositor up to
+   1.5 s once when the page opens and up to 0.5 s when it closes (1 s
+   with the connect, audit 2026-11-21, L21). Test:
    `a_trickled_answer_ends_in_time_and_stop_is_bounded`
    (`tests/focus.rs:351`: `stop` under 1 s during a one-byte-per-100 ms
    answer; a `start` whose request hangs ends within 1.2 s).
@@ -3408,6 +3557,80 @@ AT-SPI readback of the selected state (owner check, Orca). Dropped: a
 real-machine basis for the 64 cap (counted: 13 at most, recorded above),
 "freezes for good" (the next click or an unmap clears a press), and a
 longer wait in the Home test (the cause was item 1).
+
+### `get apps` under the lock, plan 023's follow-up (2026-11-21)
+
+Plan 023 ("Review follow-ups") left `apps` with the sleep under the
+sampler's lock that PR #26 removed from `process`. `Apps::snapshot`
+slept 500 ms holding the lock in three sequences the server reaches
+(`server.rs`, the `get` path: `prime` locked, the gap unlocked,
+`snapshot` locked):
+
+- `prime` found the subscribers' baseline 1–10 s old and queued nothing;
+  a tick between the two locked steps replaced it with one under 1 s old,
+  and `snapshot` found no reading.
+- In that case `take_primed` also popped the next pending get's reading,
+  dropped it as under 250 ms old, and that get then slept under the lock
+  too.
+- The last subscriber left during a get's gap, and `idle` cleared the
+  queue.
+
+A get that primed and found the baseline grown 1 s old by its
+`snapshot` also left its reading queued for a later one (harmless for
+`apps`, whose readings are whole walks, unlike `process`'s per pid).
+
+Changed (`samplers/apps/mod.rs`, `Apps::prime`, `take_mine`, `snapshot`,
+`idle`): `prime` queues a reading for every get, a copy of the baseline
+when it serves and is at most 9.5 s old, else a fresh walk and the wait;
+`snapshot` takes the oldest reading 250 ms to 10 s old whichever way it
+answers, dropping older ones and leaving younger ones to the gets still
+in their gap; `idle` keeps the queue. `take_primed` is gone; the 16-entry
+cap stays. This supersedes "`idle` clears the queue" and "drops younger
+… ones" in item 2 of "Review of PR #20" above. Tests (`tests/apps.rs`):
+`an_apps_get_whose_baseline_a_tick_replaced_does_not_wait_under_the_lock`,
+`an_apps_get_never_takes_another_gets_primed_reading`,
+`an_apps_get_answered_from_the_baseline_leaves_no_reading_queued`,
+`the_last_subscriber_leaving_keeps_a_pending_apps_gets_reading`,
+`an_apps_baseline_about_to_go_stale_is_not_queued_for_a_get`; all five
+failed before the change (three on a 0.50 s wait, one on a reading left
+queued, one on `None` for a 9.7 s baseline).
+`each_get_is_served_its_own_primed_reading_oldest_first` now checks that
+a too-young reading is left for its own get. `Process::idle` cleared
+its queue too, the third case for `process` (audit 2026-11-21, L23:
+prime, idle, snapshot slept 500 ms under the lock); in its own commit
+it keeps the queue (`samplers/process.rs`, `idle`; `take_mine` drops
+readings past 10 s, the cap stays 16). Test:
+`the_last_subscriber_leaving_keeps_a_pending_process_gets_reading`
+(failed before on a 0.50 s wait).
+
+Review of this follow-up (2026-11-21), three lows:
+
+1. `Process::take_mine` took the first reading queued for the same pids
+   whatever its age, and only then did `snapshot` check the 250 ms
+   floor. G1 primes a fresh reading; a tick leaves a 2 s baseline; G2
+   primes a copy of it; a tick replaces it; G2's snapshot took G1's
+   2 ms-old reading, could not use it, and slept 500 ms under the lock.
+   Changed (`samplers/process.rs`, `take_mine`, `snapshot`): as in
+   `apps`, it takes the first reading for these pids that is 250 ms to
+   10 s old, so a younger one stays for the get still in its gap; the
+   floor check in `snapshot` went with it. No get is left without a
+   reading: its own is at least 500 ms old at its snapshot (the gap) or
+   at least 1 s (a copy of a baseline), so a get that took another's
+   leaves its own old enough for that one. Test (`tests/apps.rs`):
+   `a_process_get_never_takes_another_gets_reading_too_young_to_use`
+   (failed before on "G2 waited 500.18 ms"); G1 then takes its own at
+   once and none is left. `a_primed_reading_left_by_one_get_never_answers_another_pid`
+   now waits the gap before the snapshot of a process that left, as the
+   server does: without it the reading is 0 ms old and stays queued.
+2. Declined: letting `take_mine` keep a baseline copy a little past 10 s
+   for a get that waited on the lock. A copy is queued only at 9.5 s or
+   younger (review of PR #26), so it misses only when the lock was held
+   over 500 ms between `prime` and `snapshot`; any slack moves that edge
+   rather than removing it, as nothing bounds the lock wait, and the
+   miss costs the bounded 500 ms wait, never a wrong rate.
+3. The `Sampler::prime` doc (`sampler.rs`) and `docs/architecture.md`
+   said the readings are "served in order"; both now say each
+   `snapshot` takes the oldest that fits it and is 250 ms to 10 s old.
 
 
 ## Unverified

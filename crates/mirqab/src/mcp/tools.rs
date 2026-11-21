@@ -141,7 +141,8 @@ fn fetch(socket: &Path, req: Request) -> Result<Value, Value> {
 }
 
 fn snapshot(socket: &Path) -> Result<SystemData, Value> {
-    fetch(socket, Request::new(1, "get").with_stream(stream::SYSTEM)).map(|v| system(&v))
+    let v = fetch(socket, Request::new(1, "get").with_stream(stream::SYSTEM))?;
+    system(&v).map_err(failed)
 }
 
 /// The figures an agent reasons about; nothing else of the stream.

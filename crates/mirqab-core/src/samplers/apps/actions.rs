@@ -464,7 +464,13 @@ fn make_guard(
 ) -> Result<Guard, Failure> {
     let refused_tree =
         |e: guard::WalkError| Failure::new(Code::Refused, strings::refuse_tree(&e.to_string()));
-    let mut daemon = vec![std::process::id()];
+    // On a fixture root the daemon is the tree's `proc/self`: the real pid
+    // of the process running there names nothing in the tree, and a fixture
+    // process that happened to share it was left out as the daemon.
+    let mut daemon = Vec::new();
+    if root.is_host() {
+        daemon.push(std::process::id());
+    }
     if let Some(st) = procfs::read_text(root, "proc/self/stat")
         .as_deref()
         .and_then(procfs::stat)
@@ -812,8 +818,9 @@ impl Actions {
     /// Answers one parsed request: the `wouldDo` of a dry run, a
     /// `needs-confirm` failure with a new plan, or what was done. Each
     /// redeemed plan is written to `history` as one `action` event, and the
-    /// reply's `recorded` says whether it was. The clock is read once,
-    /// first: without it nothing is planned or redeemed (review of PR #17).
+    /// reply's `recorded` says whether it was. The clock is read first:
+    /// without it nothing is planned or redeemed (review of PR #17); a
+    /// confirmation reads it again once its targets are resolved.
     pub fn handle(
         &self,
         root: &Root,
@@ -821,20 +828,23 @@ impl Actions {
         history: Option<&Mutex<History>>,
     ) -> Result<Value, Failure> {
         let now = (self.clock)().map_err(|_| Failure::new(Code::Failed, strings::ACT_NO_CLOCK))?;
+        // A plan offered with a request that is refused now is spent all
+        // the same: it was for this subject.
+        let spend = || {
+            if let Some(id) = &ask.redeem {
+                let _ = lock(&self.plans).redeem(
+                    id,
+                    ask.action.name(),
+                    &ask.subject.to_value(),
+                    &[],
+                    now,
+                );
+            }
+        };
         let res = match resolve(root, &ask.subject, ask.caller, self.sender.as_ref()) {
             Ok(r) => r,
             Err(f) => {
-                // A plan offered with a request that is refused now is
-                // spent all the same: it was for this subject.
-                if let Some(id) = &ask.redeem {
-                    let _ = lock(&self.plans).redeem(
-                        id,
-                        ask.action.name(),
-                        &ask.subject.to_value(),
-                        &[],
-                        now,
-                    );
-                }
+                spend();
                 return Err(f);
             }
         };
@@ -868,6 +878,15 @@ impl Actions {
                     "warnings": res.warnings(),
                 })),
             });
+        };
+        // Resolving walked every process and may have waited on
+        // `systemctl show`: the plan's age is told when it is redeemed, not
+        // when the request came (audit 2026-11-21, L15). A clock that
+        // fails now refuses the request, and spends its plan as a refused
+        // resolve does (review of L15).
+        let Ok(now) = (self.clock)() else {
+            spend();
+            return Err(Failure::new(Code::Failed, strings::ACT_NO_CLOCK));
         };
         self.redeem(root, ask, id, res, history, now)
     }
@@ -1000,6 +1019,9 @@ impl Actions {
                     // is still there; systemd ends what joined it since too.
                     if !procs.iter().any(|(t, _)| redeemed.kept.contains(t)) {
                         for (t, name) in procs {
+                            // In the event too, as for a signal (audit
+                            // 2026-11-21, L27).
+                            results.push(json!({"pid": t.pid, "name": name, "signal": sig.name(), "result": "skipped"}));
                             skipped.push(Skip {
                                 pid: t.pid,
                                 name: name.clone(),

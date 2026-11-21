@@ -69,10 +69,13 @@ plan adds the tray icon and bar items.
 - `Activate` (left click) is `toggle`. `SecondaryActivate` (middle click)
   opens Home. `Scroll` does nothing.
 - Menu: Open; one entry per visible tab; Pin window; Settings; Quit daemon.
-- Tooltip: one line, `CPU 12% · Mem 41% · 52°`. It is computed **only when
-  the host asks** (a property read), from one `get system`; the tray holds
-  no subscription. Hosts that read the tooltip on a timer would defeat
-  this, so the value is cached for 10 s.
+- Tooltip: one line, `CPU 12% · Mem 41% · 52°`. It is computed on demand,
+  from one `get system`; the tray holds no subscription and no timer.
+  ksni 0.3.7 asks for it when the host reads the property, and also at
+  start, after each click and each time the menu opens (it rebuilds every
+  property then, `State::update_properties` in its `service.rs`; audit
+  2026-11-21, L45). Those and hosts that read the tooltip on a timer are
+  bounded by a 10 s cache: at most one `get` per 10 s.
 - A "needs attention" state (`Status=NeedsAttention`, `AttentionIconName`)
   is set by later plans: an exposed port (007), an agent that needs the
   user (008), an alert (018).
@@ -165,7 +168,7 @@ machine with haseen and is not a CI gate here.
 |------|--------|
 | `crates/mirqab/tests/tray.rs` | Registers once the watcher appears; re-registers after the watcher restarts; `Activate` produces a `ui` toggle event; the tooltip read causes one `get`, and no subscription exists afterwards; `tray.enabled=false` registers nothing |
 | `tests/test-bar.sh` | Each item's one-shot output in the three formats against `root-desktop`; `--watch` prints nothing while the text is unchanged between the base and `.t1` fixtures swapped under it; interval below 2 s is raised; a closed pipe ends the process; `--list` matches the table |
-| `tests/test-contrib.sh` | `contrib/haseen/mirqab.bar/manifest.json` parses, `Widget.qml` passes `qmllint` when that tool is installed (skipped with a note otherwise; not installed in CI), the Waybar snippets are valid JSON |
+| `tests/test-contrib.sh` | `contrib/haseen/mirqab.bar/manifest.json` parses, `Widget.qml` passes `qmllint` when that tool is installed (skipped with a note otherwise; CI's `test` job installs `qt6-declarative` and fails without it, audit 2026-11-21 L63), the Waybar snippets are valid JSON |
 | `tools/bench-idle.sh --tray` | With the tray registered and no window, the daemon stays in the idle budget |
 
 ## Acceptance
@@ -230,6 +233,13 @@ Part 1 (2026-11-13), where it differs from the plan:
   Deferred: output that survives a closed pipe for every command
   (`println!` aborts on EPIPE) to plan 005; `bar.combo` end to end to
   part 2.
+- "Only when the text would change" compares the text, the class and the
+  percentage, not the whole output line: the tooltips of cpu, mem and
+  load hold figures that move every sample, so comparing whole lines
+  printed every interval with the text unchanged (audit 2026-11-21, L33).
+  A tooltip may lag until the text next changes; a bar redraws only when
+  what it shows changes. `a_tooltip_alone_changing_is_no_change` in
+  `crates/mirqab/src/bar/mod.rs`.
 - The haseen widget validates with `haseen plugin validate` against
   haseen's schema on the development machine; its one unmet requirement
   there was `mirqab` not on `PATH` (not installed). `Widget.qml` passes
