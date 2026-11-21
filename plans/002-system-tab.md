@@ -260,6 +260,16 @@ From the review of PR #7 (2026-11-13):
   skipped (`root-laptop` carries one as a trap), and `nvidia-smi` runs
   only while no NVIDIA card is suspended (`gpu::nvidia_wanted`). After a
   failed or empty `nvidia-smi` it waits 60 s.
+- *Audit 2026-11-21, L25:* NVIDIA's driver has no hwmon chip, so the
+  `nvidia-smi` temperature reached only the card's `celsius`, never
+  `temp.gpu` or the thermal word. Each card's `nvidia-smi` temperature
+  is now a GPU sensor `nvidia.N` (no critical, so 95 °C) for the
+  thermal word and `temp.gpu` (`System::nvidia_temps`); it is not added
+  to the streamed `temps`, which stays hwmon's, so the stream's rows do
+  not change (only `thermal.hottest` may name `nvidia.N`). Test:
+  `an_nvidia_smi_temperature_reaches_the_thermal_word_and_temp_gpu`
+  (`tests/system.rs`, a stub `nvidia-smi` passed to
+  `System::with_nvidia_smi`).
 - `gpu.N` series are keyed by the card's place among all cards, in the
   minute writer as in the live means; a suspended card leaves its slot
   empty. Cards without a PCI vendor (simpledrm, vkms, USB display

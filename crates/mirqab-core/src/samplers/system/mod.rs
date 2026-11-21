@@ -19,6 +19,7 @@ pub mod temps;
 
 use crate::history::SERIES;
 use crate::proto::stream::{self, Advice, Cpu, Gpu, Mem, Power, SystemData, Temp};
+use crate::proto::strings;
 use crate::root::Root;
 use crate::sampler::Sampler;
 use cpu::Stat;
@@ -115,6 +116,14 @@ pub struct System {
     /// Memory `some60` of the last 60 minutes, for the advice.
     psi_hour: VecDeque<f64>,
     nvidia: Option<(Instant, Vec<NvidiaRow>)>,
+    /// The last build's nvidia-smi temperatures, one per card (`nvidia.N`):
+    /// NVIDIA's driver has no hwmon chip, so `temp.gpu` and the thermal
+    /// word take them from here. They stay out of the streamed `temps`,
+    /// whose GPU rows are hwmon's; the card's own `celsius` shows them
+    /// (audit 2026-11-21, L25).
+    nvidia_temps: Vec<Temp>,
+    /// The program asked for NVIDIA's readings; None is `nvidia-smi`.
+    nvidia_smi: Option<String>,
     has_nvidia: bool,
     /// Each awake dGPU's last reading, by card.
     dgpu: BTreeMap<String, DgpuReading>,
@@ -148,9 +157,30 @@ fn nvidia_due(last: Option<(Instant, bool)>, now: Instant) -> bool {
     }
 }
 
-fn hottest(data: &SystemData, kind: &str) -> Option<f64> {
+/// One GPU temperature per nvidia-smi row that has one, numbered as
+/// nvidia-smi numbers its cards; no critical temperature, so the thermal
+/// word uses the default.
+fn nvidia_temps(rows: &[NvidiaRow]) -> Vec<Temp> {
+    rows.iter()
+        .enumerate()
+        .filter_map(|(n, r)| {
+            Some(Temp {
+                id: format!("nvidia.{n}"),
+                label: strings::temp_label("gpu", n + 1),
+                celsius: r.celsius?,
+                critical: None,
+                kind: "gpu".to_string(),
+            })
+        })
+        .collect()
+}
+
+/// The hottest sensor of `kind` among the streamed temperatures and
+/// `extra` (`System::nvidia_temps`).
+fn hottest(data: &SystemData, extra: &[Temp], kind: &str) -> Option<f64> {
     data.temps
         .iter()
+        .chain(extra)
         .filter(|t| t.kind == kind)
         .map(|t| t.celsius)
         .max_by(f64::total_cmp)
@@ -159,6 +189,14 @@ fn hottest(data: &SystemData, kind: &str) -> Option<f64> {
 impl System {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// `program` answers in place of `nvidia-smi`: tests pass a stub.
+    pub fn with_nvidia_smi(program: impl Into<String>) -> Self {
+        System {
+            nvidia_smi: Some(program.into()),
+            ..Self::default()
+        }
     }
 
     fn nvidia_rows(&mut self, root: &Root, now: Instant) -> Vec<NvidiaRow> {
@@ -172,7 +210,7 @@ impl System {
         match &self.nvidia {
             Some((_, rows)) if !nvidia_due(last, now) => rows.clone(),
             _ => {
-                let rows = gpu::query_nvidia();
+                let rows = gpu::query_nvidia(self.nvidia_smi.as_deref().unwrap_or("nvidia-smi"));
                 self.nvidia = Some((now, rows.clone()));
                 rows
             }
@@ -284,8 +322,12 @@ impl System {
             (_, Some(_)) => false,
             _ => temps::throttling_by_clock(&temps, mhz_avg, self.mhz_max),
         };
-        let thermal = temps::thermal(&temps, throttling);
         let nvidia = self.nvidia_rows(root, cur.at);
+        self.nvidia_temps = nvidia_temps(&nvidia);
+        let thermal = temps::thermal(
+            &[temps.as_slice(), self.nvidia_temps.as_slice()].concat(),
+            throttling,
+        );
         let gpus = gpu::read(root, &nvidia, &held);
         for (card, dirs) in due {
             let Some(g) = gpus.iter().find(|g| g.id == card && !g.suspended) else {
@@ -397,8 +439,8 @@ impl System {
                 (m.swap_total_bytes > 0).then_some(m.swap_used_bytes as f64),
             );
         }
-        add("temp.cpu", hottest(d, "cpu"));
-        add("temp.gpu", hottest(d, "gpu"));
+        add("temp.cpu", hottest(d, &self.nvidia_temps, "cpu"));
+        add("temp.gpu", hottest(d, &self.nvidia_temps, "gpu"));
         add(
             "cpu.mhz",
             d.cpu.as_ref().and_then(|c| c.mhz_avg).map(f64::from),
@@ -471,8 +513,14 @@ impl System {
             put("psi.memory", p.memory.as_ref().map(|s| s.some60));
             put("psi.io", p.io.as_ref().map(|s| s.some60));
         }
-        put("temp.cpu", mean("temp.cpu", hottest(&data, "cpu")));
-        put("temp.gpu", mean("temp.gpu", hottest(&data, "gpu")));
+        put(
+            "temp.cpu",
+            mean("temp.cpu", hottest(&data, &self.nvidia_temps, "cpu")),
+        );
+        put(
+            "temp.gpu",
+            mean("temp.gpu", hottest(&data, &self.nvidia_temps, "gpu")),
+        );
         // Keyed by the card's place among all cards, as `accumulate` and
         // the page are; a suspended card is skipped, not renumbered
         // (review of PR #7).

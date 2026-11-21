@@ -3,7 +3,9 @@
 //! cores, a suspended GPU that is never read, battery power, the restart
 //! advice, and a minimal machine where every missing file is `None`. From
 //! the audit: the minute reads no disk sensor, and an awake dGPU is read
-//! at most every 10 s.
+//! at most every 10 s. From the audit of 2026-11-21: page counts are per
+//! minute whatever the gap, and a stub `nvidia-smi`'s temperature reaches
+//! the thermal word and `temp.gpu`.
 
 use mirqab_core::Root;
 use mirqab_core::proto::stream::{SystemData, Temp};
@@ -201,6 +203,39 @@ fn nvidia_smi_never_wakes_a_suspended_card() {
     )
     .unwrap();
     assert!(nvidia_wanted(&root));
+}
+
+#[test]
+fn an_nvidia_smi_temperature_reaches_the_thermal_word_and_temp_gpu() {
+    // Audit 2026-11-21, L25: NVIDIA's driver has no hwmon chip, so its
+    // temperature comes only from nvidia-smi; a stub answers 85 °C for
+    // one awake NVIDIA card.
+    use std::os::unix::fs::PermissionsExt;
+    let d = scratch("nv85", "root-minimal");
+    let dev = d.0.join("sys/class/drm/card0/device");
+    std::fs::create_dir_all(dev.join("power")).unwrap();
+    std::fs::write(dev.join("vendor"), "0x10de\n").unwrap();
+    std::fs::write(dev.join("power/runtime_status"), "active\n").unwrap();
+    let stub = d.0.join("nvidia-smi");
+    std::fs::write(&stub, "#!/bin/sh\nprintf '5, 100, 8192, 85, 40.00\\n'\n").unwrap();
+    std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let root = Root::new(&d.0);
+    let mut s = System::with_nvidia_smi(stub.to_string_lossy());
+    s.probe(&root).unwrap();
+    let t0 = Instant::now();
+    let first = data(s.sample(&root, t0));
+    assert_eq!(first.gpus[0].celsius, Some(85.0));
+    let thermal = first.thermal.expect("a thermal word");
+    assert_eq!(thermal.state, "hot", "85 of 95 °C");
+    assert_eq!(thermal.hottest.as_deref(), Some("nvidia.0"));
+    assert!(
+        first.temps.iter().all(|t| !t.id.starts_with("nvidia")),
+        "the streamed list stays hwmon's"
+    );
+    s.minute_at(&root, WALL, t0);
+    let m = s.minute_at(&root, WALL + 60, t0 + Duration::from_secs(60));
+    let get = |k: &str| m.iter().find(|(key, _)| *key == k).map(|(_, v)| *v);
+    assert_eq!(get("temp.gpu"), Some(850));
 }
 
 #[test]
