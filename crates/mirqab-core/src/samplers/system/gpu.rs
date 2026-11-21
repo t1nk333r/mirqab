@@ -2,7 +2,8 @@
 //! NVIDIA through `nvidia-smi` when it is installed. A card whose device is
 //! runtime-suspended is reported as such and nothing else is read from it:
 //! reading its files would wake it (haseen's sysusage plugin learned this
-//! on hybrid laptops).
+//! on hybrid laptops). A card that can suspend and is awake is read no
+//! more often than its autosuspend delay allows (`throttled`).
 
 use crate::exec;
 use crate::proto::stream::Gpu;
@@ -46,6 +47,28 @@ pub fn suspended(root: &Root, dev: &str) -> bool {
     read_trim(root, &format!("{dev}/power/runtime_status")).as_deref() == Some("suspended")
 }
 
+/// Whether the card under `dev` is a dGPU, read at most every 10 s by the
+/// sampler while it is awake: every card but the boot display (only it
+/// has `boot_vga` 1; a 3D controller has no such file). In amdgpu each
+/// read of the busy or hwmon files ends in `pm_runtime_put_autosuspend`,
+/// restarting the card's 5 s autosuspend timer, so a 1–2 s stream would
+/// keep an idle card powered (audit of plan 002). NVIDIA's values come
+/// from `nvidia-smi`, paced on its own.
+pub fn throttled(root: &Root, dev: &str) -> bool {
+    read_trim(root, &format!("{dev}/boot_vga")).as_deref() != Some("1")
+        && read_trim(root, &format!("{dev}/vendor")).as_deref() != Some("0x10de")
+}
+
+/// The card's hwmon directories (`hwmon6`), the names `sys/class/hwmon`
+/// lists them under. Listing them wakes nothing.
+pub fn hwmon_dirs(root: &Root, dev: &str) -> Vec<String> {
+    root.read_dir(&format!("{dev}/hwmon"))
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|d| d.starts_with("hwmon"))
+        .collect()
+}
+
 /// Whether `nvidia-smi` may run: an NVIDIA card exists and none is
 /// suspended, since the query wakes a sleeping card (review of PR #7).
 pub fn nvidia_wanted(root: &Root) -> bool {
@@ -58,8 +81,14 @@ pub fn nvidia_wanted(root: &Root) -> bool {
 }
 
 /// One reading of every card. `nvidia` holds the last `nvidia-smi` rows,
-/// refreshed by the caller no more than every 2 s.
-pub fn read(root: &Root, nvidia: &[NvidiaRow]) -> Vec<Gpu> {
+/// refreshed by the caller no more than every 2 s. A card in `held` (a
+/// dGPU read less than 10 s ago) repeats those values unless it has
+/// suspended since.
+pub fn read(
+    root: &Root,
+    nvidia: &[NvidiaRow],
+    held: &std::collections::BTreeMap<String, Gpu>,
+) -> Vec<Gpu> {
     let mut nv = nvidia.iter();
     cards(root)
         .into_iter()
@@ -80,6 +109,9 @@ pub fn read(root: &Root, nvidia: &[NvidiaRow]) -> Vec<Gpu> {
             if suspended(root, &dev) {
                 g.suspended = true;
                 return g;
+            }
+            if let Some(last) = held.get(&card) {
+                return last.clone();
             }
             match vendor {
                 "amd" => {

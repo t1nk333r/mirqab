@@ -1,7 +1,9 @@
 //! The `system` sampler on fixture roots (plan 002, Tests): rates from the
 //! `.t1` twin, the thermal word at each threshold, throttling, hybrid
 //! cores, a suspended GPU that is never read, battery power, the restart
-//! advice, and a minimal machine where every missing file is `None`.
+//! advice, and a minimal machine where every missing file is `None`. From
+//! the audit: the minute reads no disk sensor, and an awake dGPU is read
+//! at most every 10 s.
 
 use mirqab_core::Root;
 use mirqab_core::proto::stream::{SystemData, Temp};
@@ -407,4 +409,105 @@ fn nvidia_smi_rows_parse() {
     assert_eq!(rows[0].watts, Some(120.5));
     assert_eq!(rows[1].busy, None);
     assert_eq!(rows[1].watts, None);
+}
+
+#[test]
+fn the_minute_never_reads_a_disk_sensor() {
+    // On some drives a temperature read restarts the spin-down timer
+    // (kernel Documentation/hwmon/drivetemp.rst, Known issues), and no
+    // series stores a disk temperature. A FIFO in place of the NVMe
+    // sensor blocks whoever opens it.
+    let d = scratch("disks", "root-desktop");
+    let sensor = d.0.join("sys/class/hwmon/hwmon1/temp1_input");
+    std::fs::remove_file(&sensor).unwrap();
+    let st = std::process::Command::new("mkfifo")
+        .arg(&sensor)
+        .status()
+        .expect("mkfifo runs");
+    assert!(st.success());
+    let base = d.0.clone();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let root = Root::new(&base);
+        let mut s = System::new();
+        s.probe(&root).unwrap();
+        let t0 = Instant::now();
+        s.minute_at(&root, WALL, t0);
+        tx.send(s.minute_at(&root, WALL + 60, t0 + Duration::from_secs(60)))
+            .unwrap();
+    });
+    let m = rx
+        .recv_timeout(Duration::from_secs(10))
+        .expect("the minute reads no disk sensor");
+    assert!(m.iter().any(|(k, _)| *k == "temp.cpu"));
+    // A live sample or a `get` still shows them: someone is looking.
+    let root = fixture("root-desktop");
+    let mut s = System::new();
+    s.probe(&root).unwrap();
+    let live = data(s.sample(&root, Instant::now()));
+    let disks: Vec<&str> = live
+        .temps
+        .iter()
+        .filter(|t| t.kind == "disk")
+        .map(|t| t.id.as_str())
+        .collect();
+    assert_eq!(disks, ["nvme/temp1", "nvme.1/temp1"]);
+    let snap = data(s.snapshot(&root, Instant::now()));
+    assert_eq!(snap.temps.iter().filter(|t| t.kind == "disk").count(), 2);
+}
+
+#[test]
+fn an_awake_dgpu_is_read_at_most_every_ten_seconds() {
+    // Each read of an awake amdgpu card's busy or hwmon files restarts
+    // its 5 s autosuspend timer, so a 1-2 s stream would keep an idle
+    // dGPU powered. card0 is not the boot display (boot_vga 0): it is
+    // read once per 10 s and repeated between; card1 is read every time.
+    let d = scratch("dgpu", "root-desktop");
+    let root = Root::new(&d.0);
+    let mut s = System::new();
+    s.probe(&root).unwrap();
+    let edge = |d: &SystemData| {
+        d.temps
+            .iter()
+            .find(|t| t.id == "amdgpu.1/temp1")
+            .map(|t| t.celsius)
+    };
+    let t0 = Instant::now();
+    let first = data(s.sample(&root, t0));
+    assert_eq!(first.gpus[0].busy_percent, Some(0.0));
+    assert_eq!(first.gpus[0].celsius, Some(40.0));
+    assert_eq!(edge(&first), Some(40.0));
+    let card0 = d.0.join("sys/class/drm/card0/device");
+    std::fs::write(card0.join("gpu_busy_percent"), "55\n").unwrap();
+    std::fs::write(card0.join("hwmon/hwmon6/temp1_input"), "70000\n").unwrap();
+    std::fs::write(d.0.join("sys/class/hwmon/hwmon6/temp1_input"), "70000\n").unwrap();
+    std::fs::write(
+        d.0.join("sys/class/drm/card1/device/gpu_busy_percent"),
+        "77\n",
+    )
+    .unwrap();
+    let second = data(s.sample(&root, t0 + Duration::from_secs(2)));
+    assert_eq!(second.gpus[0].busy_percent, Some(0.0), "repeated, not read");
+    assert_eq!(second.gpus[0].celsius, Some(40.0));
+    assert_eq!(edge(&second), Some(40.0), "nor its chip under class/hwmon");
+    assert_eq!(second.gpus[1].busy_percent, Some(77.0), "the boot display");
+    let minute = s.minute_at(&root, WALL, t0 + Duration::from_secs(4));
+    assert!(
+        minute.contains(&("gpu.0.busy", 0)),
+        "the minute repeats it too: {minute:?}"
+    );
+    let third = data(s.sample(&root, t0 + Duration::from_secs(10)));
+    assert_eq!(third.gpus[0].busy_percent, Some(55.0), "read again at 10 s");
+    assert_eq!(third.gpus[0].celsius, Some(70.0));
+    assert_eq!(edge(&third), Some(70.0));
+    // A card that went to sleep shows as suspended at once, its last
+    // values dropped and nothing read.
+    for dev in [card0.clone(), d.0.join("sys/class/hwmon/hwmon6/device")] {
+        std::fs::create_dir_all(dev.join("power")).unwrap();
+        std::fs::write(dev.join("power/runtime_status"), "suspended\n").unwrap();
+    }
+    let fourth = data(s.sample(&root, t0 + Duration::from_secs(12)));
+    assert!(fourth.gpus[0].suspended);
+    assert_eq!(fourth.gpus[0].busy_percent, None);
+    assert_eq!(edge(&fourth), None);
 }
