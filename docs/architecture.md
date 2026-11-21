@@ -302,10 +302,12 @@ so once in the footer.
 - `SO_PEERCRED` is checked on accept: a peer with another uid is closed.
 - systemd units: `mirqab.socket` (`ListenStream=%t/mirqab/daemon.sock`,
   `SocketMode=0600`, `DirectoryMode=0700`) and `mirqab.service`
-  (`Type=notify`). Run by hand, the daemon prints `ready <socket path>` on
-  stdout once it listens. A client connects only after that line or after
-  the unit is active, and retries with a backoff (250 ms doubling to 4 s)
-  if the daemon restarts.
+  (`Type=notify`). When `LISTEN_PID` and `LISTEN_FDS` name the daemon, it
+  adopts fd 3 only if that is a listening Unix stream socket, and
+  otherwise refuses to start rather than bind a socket of its own. Run by
+  hand, the daemon prints `ready <socket path>` on stdout once it listens.
+  A client connects only after that line or after the unit is active, and
+  retries with a backoff (250 ms doubling to 4 s) if the daemon restarts.
 - The interface reads the socket on GLib's main loop (`gio`'s Unix socket
   client and a line reader), not on a thread of its own.
 

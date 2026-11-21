@@ -713,6 +713,14 @@ pub fn no_home_dir(var: &str) -> String {
     )
 }
 
+/// LISTEN_PID and LISTEN_FDS name this process, but fd 3 is not a
+/// listening Unix socket.
+pub fn listen_fd_not_a_socket(why: &str) -> String {
+    format!(
+        "LISTEN_PID and LISTEN_FDS say a socket was passed, but fd 3 is not a listening Unix stream socket ({why}); refusing to adopt it"
+    )
+}
+
 pub fn socket_dir_not_private(dir: &str) -> String {
     format!(
         "{dir} is not a private directory of this user's (mode 0700, not a symlink); refusing to put the socket there"

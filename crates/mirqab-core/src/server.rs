@@ -521,7 +521,7 @@ pub fn listen(opts: Options) -> Result<Server, ListenError> {
             })?)
         }
     };
-    let (listener, activated) = match sys::listen_fd() {
+    let (listener, activated) = match sys::listen_fd().map_err(ListenError::Failed)? {
         Some(l) => (l, true),
         None => (bind(&opts.socket)?, false),
     };
