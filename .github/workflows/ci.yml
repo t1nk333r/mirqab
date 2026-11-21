@@ -80,7 +80,9 @@ jobs:
           # zsh and fish: tests/test-cli.sh parses their completion scripts.
           # python-gobject: tests/test-ui-apps.sh builds a D-Bus CommandLine
           # call with GLib to prove --do is refused without MIRQAB_TEST.
-          pacman -Syu --noconfirm --needed "${pkgs[@]}" zsh fish python-gobject
+          # qt6-declarative: /usr/lib/qt6/bin/qmllint, which tests/test-contrib.sh
+          # runs on contrib/haseen's Widget.qml (it fails without it here).
+          pacman -Syu --noconfirm --needed "${pkgs[@]}" zsh fish python-gobject qt6-declarative
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # The pull request's merge base must be in the clone.

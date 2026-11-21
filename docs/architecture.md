@@ -1272,7 +1272,10 @@ tools/secrets.sh          # gitleaks over history, plus the privacy patterns of 
   unmarked timers, string literals in widget calls); and the coverage
   check that every source file is matched by some test's
   `# mirqab:covers`. The one QML file set, `contrib/haseen/`, is checked
-  with `qmllint` only when that tool is installed; it is not a gate.
+  with `qmllint` by `tests/test-contrib.sh`: an error fails it, the
+  warnings for haseen's modules (not importable here) do not. CI's
+  `test` job installs `qt6-declarative` for it; elsewhere the check is
+  skipped with a note when the tool is missing.
 - Tests never read the live machine. Rust tests take a `Root` fixture;
   shell tests run with a stub `PATH`, a temporary `HOME` and
   `XDG_RUNTIME_DIR`. The interface is tested as §7.5 describes: view
