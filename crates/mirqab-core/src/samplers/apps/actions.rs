@@ -822,20 +822,23 @@ impl Actions {
         history: Option<&Mutex<History>>,
     ) -> Result<Value, Failure> {
         let now = (self.clock)().map_err(|_| Failure::new(Code::Failed, strings::ACT_NO_CLOCK))?;
+        // A plan offered with a request that is refused now is spent all
+        // the same: it was for this subject.
+        let spend = || {
+            if let Some(id) = &ask.redeem {
+                let _ = lock(&self.plans).redeem(
+                    id,
+                    ask.action.name(),
+                    &ask.subject.to_value(),
+                    &[],
+                    now,
+                );
+            }
+        };
         let res = match resolve(root, &ask.subject, ask.caller, self.sender.as_ref()) {
             Ok(r) => r,
             Err(f) => {
-                // A plan offered with a request that is refused now is
-                // spent all the same: it was for this subject.
-                if let Some(id) = &ask.redeem {
-                    let _ = lock(&self.plans).redeem(
-                        id,
-                        ask.action.name(),
-                        &ask.subject.to_value(),
-                        &[],
-                        now,
-                    );
-                }
+                spend();
                 return Err(f);
             }
         };
@@ -872,8 +875,13 @@ impl Actions {
         };
         // Resolving walked every process and may have waited on
         // `systemctl show`: the plan's age is told when it is redeemed, not
-        // when the request came (audit 2026-11-21, L15).
-        let now = (self.clock)().map_err(|_| Failure::new(Code::Failed, strings::ACT_NO_CLOCK))?;
+        // when the request came (audit 2026-11-21, L15). A clock that
+        // fails now refuses the request, and spends its plan as a refused
+        // resolve does (review of L15).
+        let Ok(now) = (self.clock)() else {
+            spend();
+            return Err(Failure::new(Code::Failed, strings::ACT_NO_CLOCK));
+        };
         self.redeem(root, ask, id, res, history, now)
     }
 

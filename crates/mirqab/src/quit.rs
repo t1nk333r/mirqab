@@ -108,42 +108,59 @@ pub(crate) fn result_lines(v: &Value) -> (Vec<String>, bool) {
             g["pid"].as_u64().unwrap_or(0) as u32
         ));
     }
-    let failed = v["failed"].as_array().map_or(&[][..], Vec::as_slice);
-    for f in failed {
-        let what = if f["run"].is_array() {
-            argv(f)
-        } else {
-            format!(
-                "{} {}",
-                f["pid"].as_u64().unwrap_or(0),
-                f["name"].as_str().unwrap_or("")
-            )
-        };
-        out.push(strings::quit_failed_line(
-            &what,
-            f["error"].as_str().unwrap_or(""),
-        ));
-    }
+    let failed = failed_lines(v);
+    let any = !failed.is_empty();
+    out.extend(failed);
     out.extend(skipped_lines(&v["skipped"]));
-    (out, !failed.is_empty())
+    (out, any)
 }
 
-/// Whether `target` names the app called `name`, ignoring case: the whole
-/// name, or the form `mirqab apps` shows a name too long for its column,
-/// its first characters and an ellipsis, taken as a prefix (audit
-/// 2026-11-21, L46). Only that shown form is a prefix: a shorter cut names
-/// nothing, so a few letters and `-y` never quit an app by guess.
+/// The lines of what failed, one per entry of `failed`.
+pub(crate) fn failed_lines(v: &Value) -> Vec<String> {
+    v["failed"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|f| {
+            let what = if let Some(a) = f["run"].as_array() {
+                a.iter()
+                    .filter_map(Value::as_str)
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            } else {
+                format!(
+                    "{} {}",
+                    f["pid"].as_u64().unwrap_or(0),
+                    f["name"].as_str().unwrap_or("")
+                )
+            };
+            strings::quit_failed_line(&what, f["error"].as_str().unwrap_or(""))
+        })
+        .collect()
+}
+
+/// Whether `target` names the app called `name`, ignoring case: its whole
+/// name, or the form `mirqab apps` shows (`strings::shown_name`: control
+/// and bidi characters as U+FFFD, a name too long for the column cut with
+/// an ellipsis; audit 2026-11-21, L46). The target is compared with that
+/// shown form, never taken as a prefix of the raw name, so an app always
+/// matches what was shown for it, and any other app shown the same way
+/// matches too and makes the name ambiguous: `-y` never quits a look-alike
+/// in its place. A shorter cut names nothing.
 fn names(name: &str, target: &str) -> bool {
-    let (name, target) = (name.to_lowercase(), target.to_lowercase());
-    if name == target {
-        return true;
-    }
-    let width = strings::APPS_NAME_WIDTH;
-    target.strip_suffix('\u{2026}').is_some_and(|prefix| {
-        prefix.chars().count() == width - 1
-            && name.chars().count() > width
-            && name.starts_with(prefix)
-    })
+    let t = fold(target);
+    fold(name) == t || fold(&strings::shown_name(name)) == t
+}
+
+/// `s` with its case folded one character at a time, so a character folds
+/// the same wherever a cut leaves it: `str::to_lowercase` makes a last 'Σ'
+/// a final 'ς', which a cut name and the whole name disagree on. 'ς' folds
+/// to 'σ', as Unicode case folding does (review of audit 2026-11-21, L46).
+fn fold(s: &str) -> String {
+    s.chars()
+        .flat_map(char::to_lowercase)
+        .map(|c| if c == '\u{3c2}' { '\u{3c3}' } else { c })
+        .collect()
 }
 
 /// `{"pid": N}` for a number, else the one app whose name is `name`.
@@ -259,6 +276,14 @@ pub fn run(args: Args) -> ExitCode {
                     crate::out::line(&l);
                 }
             }
+            // A reader that went away does not hide a failed act: what
+            // failed goes to stderr, in both modes (review of audit
+            // 2026-11-21, L40).
+            if crate::out::stdout_gone() {
+                for l in failed_lines(&v) {
+                    crate::out::err(&l);
+                }
+            }
             // The act ran, but its audit row could not be written: said
             // in both modes (owner, 2026-11-14: act and warn).
             if v["recorded"] == Value::Bool(false) {
@@ -322,6 +347,32 @@ mod tests {
     }
 
     #[test]
+    fn the_failed_lines_are_those_result_lines_prints_for_failures() {
+        // What goes to stderr when stdout is gone (review of L40).
+        let v = json!({
+            "done": [{"signal": "TERM", "pid": 2001, "name": "browser"}],
+            "failed": [
+                {"pid": 2010, "name": "x\u{1b}[2J", "error": "no such process"},
+                {"run": ["systemctl", "--user", "stop", "--no-block", "--", "a.service"],
+                 "error": "exit 1"},
+            ],
+            "skipped": [{"pid": 1050, "name": "Hyprland", "reason": "the compositor"}],
+        });
+        let failed = failed_lines(&v);
+        assert_eq!(
+            failed,
+            [
+                "failed 2010 x\u{fffd}[2J: no such process",
+                "failed systemctl --user stop --no-block -- a.service: exit 1",
+            ]
+        );
+        let (all, any) = result_lines(&v);
+        assert!(any);
+        assert_eq!(all[1..3], failed[..]);
+        assert!(failed_lines(&json!({"done": []})).is_empty());
+    }
+
+    #[test]
     fn a_stop_lists_what_it_takes_with_it_and_the_warnings() {
         let data = json!({
             "wouldDo": [
@@ -364,6 +415,88 @@ mod tests {
         // A name of exactly the width is shown whole, never cut.
         let exact = "Example Browser Developer Ed";
         assert!(!names(exact, "Example Browser Developer E\u{2026}"));
+    }
+
+    /// The name column of the row `mirqab apps` prints for `name`.
+    fn shown(name: &str) -> String {
+        let row = strings::apps_row(name, "0.0%", "1 MiB", 1);
+        let col: String = row.chars().take(strings::APPS_NAME_WIDTH).collect();
+        col.trim_end().to_string()
+    }
+
+    /// The apps of `all` that `target` names, as `subject` filters them.
+    fn found<'a>(all: &[&'a str], target: &str) -> Vec<&'a str> {
+        all.iter().copied().filter(|n| names(n, target)).collect()
+    }
+
+    const STEM: &str = "abcdefghijklmnopqrstuvwxyz";
+
+    #[test]
+    fn a_cut_sigma_names_its_own_app_and_never_a_look_alike_alone() {
+        // Review of L46: lowercased on its own, the cut name's last 'Σ' is
+        // a final 'ς', while inside A's whole name it is 'σ'; B, with a
+        // literal 'ς' there, matched what A shows and A did not.
+        let a = format!("{STEM}\u{3a3}XYZ");
+        let b = format!("{STEM}\u{3c2}xyz");
+        let all = [a.as_str(), b.as_str()];
+        assert_eq!(shown(&a), format!("{STEM}\u{3a3}\u{2026}"));
+        let hit = found(&all, &shown(&a));
+        assert!(hit.contains(&a.as_str()), "A by its shown name: {hit:?}");
+        assert_ne!(hit, [b.as_str()], "never B alone");
+        let hit = found(&all, &shown(&b));
+        assert!(hit.contains(&b.as_str()), "B by its shown name: {hit:?}");
+        // Whole names fold the same way: an upper-case Greek name is
+        // found by its lower-case spelling, final sigma and all.
+        assert!(names(
+            "\u{39f}\u{394}\u{39f}\u{3a3}",
+            "\u{3bf}\u{3b4}\u{3bf}\u{3c2}"
+        ));
+    }
+
+    #[test]
+    fn a_name_shown_with_a_replacement_names_its_own_app_and_its_look_alike() {
+        // Review of L46: `mirqab apps` shows a control or bidi character as
+        // U+FFFD. A, with U+202E in what is shown, missed its own shown
+        // name; B, with a literal U+FFFD there, matched it alone.
+        let a = format!("{}\u{202e}{}", &STEM[..20], &STEM[..10]);
+        let b = format!("{}\u{fffd}{}", &STEM[..20], &STEM[..10]);
+        let all = [a.as_str(), b.as_str()];
+        assert_eq!(shown(&a), shown(&b));
+        assert_eq!(found(&all, &shown(&a)), all, "both, so nothing is guessed");
+        assert_eq!(found(&all, &a), [a.as_str()], "A's own name is A alone");
+        // A short name is shown whole, through the same replacement.
+        let (c, d) = ("foot\u{1b}bar", "foot\u{fffd}bar");
+        assert_eq!(found(&[c, d], &shown(c)), [c, d]);
+        assert_eq!(found(&[c, d], c), [c]);
+    }
+
+    #[test]
+    fn a_cut_dotted_capital_i_names_its_own_app() {
+        // 'İ' lowercases to two characters: the old prefix was one too
+        // long, so A never matched its own shown name.
+        let a = format!("{STEM}\u{130}XYZ");
+        let b = format!("{STEM}i\u{307}xyz");
+        let all = [a.as_str(), b.as_str()];
+        assert_eq!(found(&all, &shown(&a)), [a.as_str()]);
+        assert_eq!(found(&all, &shown(&b)), [b.as_str()]);
+    }
+
+    #[test]
+    fn every_app_is_named_by_its_own_name_and_by_what_apps_shows() {
+        let all = [
+            "Example Browser Developer Edition X",
+            "Example Browser Developer Edition Y",
+            "Example Browser Developer Ed",
+            "Foot",
+            "\u{39f}\u{394}\u{39f}\u{3a3} \u{3a3}\u{3a3}\u{3a3}\u{3a3}\u{3a3}\u{3a3}\u{3a3}\u{3a3}\u{3a3}\u{3a3}\u{3a3}\u{3a3}\u{3a3}\u{3a3}\u{3a3}\u{3a3}\u{3a3}\u{3a3}\u{3a3}\u{3a3}\u{3a3}\u{3a3}\u{3a3}\u{3a3}",
+            "x\u{1b}[2J long enough to be cut by the column",
+            "\u{130}\u{130}\u{130}\u{130}\u{130}\u{130}\u{130}\u{130}\u{130}\u{130}\u{130}\u{130}\u{130}\u{130}\u{130}\u{130}\u{130}\u{130}\u{130}\u{130}\u{130}\u{130}\u{130}\u{130}\u{130}\u{130}\u{130}\u{130}\u{130}",
+        ];
+        for a in all {
+            for target in [a.to_string(), shown(a), shown(a).to_uppercase()] {
+                assert!(found(&all, &target).contains(&a), "{a:?} by {target:?}");
+            }
+        }
     }
 
     #[test]

@@ -381,9 +381,25 @@ taken.
 `mirqab quit --group <id> …`.
 
 - A number is a pid. Anything else is a group name, matched whole and
-  case-insensitively against the `apps` view. A name `mirqab apps` shows
-  cut (`strings::APPS_NAME_WIDTH` less one character, then `…`) is taken
-  as a prefix; a shorter cut names nothing (audit 2026-11-21, L46). No
+  case-insensitively against the `apps` view, or against the form
+  `mirqab apps` shows (`strings::shown_name`, the name column of
+  `strings::apps_row`: control and bidi characters as U+FFFD, a name
+  longer than `strings::APPS_NAME_WIDTH` cut to one less and `…`); a
+  shorter cut names nothing (audit 2026-11-21, L46). Case is folded one
+  character at a time, 'ς' as 'σ' (`quit::fold`). The first version took
+  the shown form as a prefix of the raw name, each lowercased whole; the
+  review found that an app could then miss its own shown name while a
+  look-alike matched it alone, and `-y` quit the look-alike: a cut 'Σ'
+  lowercases alone to a final 'ς' but to 'σ' inside the name, a U+202E
+  shown as U+FFFD was compared raw, and 'İ' grew to two characters.
+  Comparing with the shown form means an app always matches what was shown
+  for it, and any other app shown the same way matches too, so the
+  ambiguity refusal fires instead (tests in `crates/mirqab/src/quit.rs`:
+  `a_cut_sigma_names_its_own_app_and_never_a_look_alike_alone`,
+  `a_name_shown_with_a_replacement_names_its_own_app_and_its_look_alike`,
+  `a_cut_dotted_capital_i_names_its_own_app`,
+  `every_app_is_named_by_its_own_name_and_by_what_apps_shows`; in
+  `strings.rs`, `the_shown_name_is_the_name_column_of_an_apps_row`). No
   match: exit 1. Several
   matches: print them with their ids and pids, exit 1; never guess. The
   message names `--group ID`, which sends `{"group": id}`, the subject the
@@ -1430,7 +1446,10 @@ with where it lives:
   read again for a confirmation once its targets are resolved, so the
   walk and `systemctl show` count toward the plan's 120 s (audit
   2026-11-21, L15; test
-  `a_plan_expires_when_the_confirmation_reaches_it_not_when_it_arrived`); at most `MAX_PLANS` = 64,
+  `a_plan_expires_when_the_confirmation_reaches_it_not_when_it_arrived`).
+  When that second read fails, the request fails with `ACT_NO_CLOCK` and
+  its plan is spent, as for a refused resolve (review of L15; test
+  `a_confirmation_whose_second_clock_read_fails_spends_its_plan`); at most `MAX_PLANS` = 64,
   the oldest dropped; targets are `act::Target`; `redeem` returns the
   planned targets still there (`kept`) and the rest (`gone`).
 - **Resolution** (`resolve`, `actions.rs:491`). A pid: its `Tgid:` first

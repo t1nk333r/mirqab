@@ -23,6 +23,13 @@ pub fn keep_going() {
     KEEP_GOING.store(true, Ordering::Relaxed);
 }
 
+/// Whether stdout's reader went away under `keep_going`: a command then
+/// says on stderr what failed, which it would have printed (review of
+/// audit 2026-11-21, L40).
+pub fn stdout_gone() -> bool {
+    STDOUT_GONE.load(Ordering::Relaxed)
+}
+
 /// Writes `text` to stdout as is. A reader that went away (a broken pipe)
 /// ends the process with status 0, as it asked for, unless a command that
 /// changes something said `keep_going`; any other failure (a full disk

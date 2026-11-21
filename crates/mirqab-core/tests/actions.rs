@@ -1309,3 +1309,41 @@ fn a_unit_whose_processes_all_started_since_is_recorded_as_skipped() {
     );
     assert!(rows[0]["data"].get("unit").is_none(), "no unit was stopped");
 }
+
+#[test]
+fn a_confirmation_whose_second_clock_read_fails_spends_its_plan() {
+    // Review of audit 2026-11-21, L15: a confirmation that cannot read the
+    // clock again once its targets are resolved fails as a refused
+    // resolve does, and its plan is spent all the same: it was for this
+    // subject.
+    let root = fixture("root-desktop");
+    let reads = Arc::new(AtomicU64::new(0));
+    let clock: actions::Clock = {
+        let reads = Arc::clone(&reads);
+        Arc::new(move || match reads.fetch_add(1, Ordering::SeqCst) {
+            0 | 1 => Ok(Duration::from_secs(1000)),
+            _ => Err(std::io::Error::other("no clock")),
+        })
+    };
+    let rec = Arc::new(Recording::default());
+    let a = Actions::with_clock(rec.clone(), clock);
+    let data = plan(&a, &root, Action::Quit, pid(7100));
+    let f = confirm(
+        &a,
+        &root,
+        Action::Quit,
+        pid(7100),
+        data["plan"].as_str().unwrap(),
+        None,
+    )
+    .unwrap_err();
+    assert_eq!(f.code, Code::Failed);
+    assert_eq!(f.message, mirqab_core::proto::strings::ACT_NO_CLOCK);
+    assert_eq!(
+        reads.load(Ordering::SeqCst),
+        3,
+        "read again after resolving"
+    );
+    assert!(rec.lines().is_empty(), "nothing sent");
+    assert_eq!(a.live_plans(), 0, "the plan is spent");
+}
