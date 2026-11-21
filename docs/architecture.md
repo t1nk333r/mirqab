@@ -1303,12 +1303,13 @@ jobs whose names are exactly the required checks:
 | Job | Runs |
 |-----|------|
 | `lint` | `tools/lint.sh` |
-| `test` | On a pull request `tests/run.sh --affected origin/main`; on a push to `main` `tests/run.sh` (everything). Then `tools/bench-idle.sh` when `crates/` changed |
+| `test` | On a pull request `tests/run.sh --affected --committed <base>`, `<base>` being the pull request's base commit; on a push to `main` `tests/run.sh` (everything). Then `tools/bench-idle.sh`, on a pull request only when it changes `crates/`, `Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml`, `tools/bench-idle.sh`, `tools/mkfixture.sh`, `tests/fixtures/root-desktop/` or `tests/fixtures/procs.tsv` |
 | `docs` | `tools/check-docs.sh` |
 | `secrets` | `tools/secrets.sh` (full history: the checkout uses `fetch-depth: 0`) |
 
 All four run on `pull_request` and on `push` to `main`, in an
-`archlinux:latest` container as an unprivileged user, with every action
+`archlinux:latest` container as an unprivileged user (`ci`, created in
+the job and given the checkout), with every action
 pinned by commit SHA and `permissions: contents: read`. The `test` job
 installs `gtk4`, `libadwaita` and `gtk4-layer-shell` and starts Broadway
 through `tests/lib.sh`. Plan 020 adds a second file,

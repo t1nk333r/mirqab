@@ -479,7 +479,10 @@ Phase A as built (2026-11-13), where it differs from the steps above:
   on the development machine.
 - All four CI jobs run in the `archlinux:latest` container; `docs` and
   `secrets` install only `git` (and `gawk`, `gitleaks`) and, since they
-  only read the checkout, run as the container's root.
+  only read the checkout, run as the container's root. (Audit of
+  2026-11-21, L64: they now run as the `ci` user too, like `lint` and
+  `test`; the pull request's `test` runs `--affected --committed` with
+  the event's base commit, not `origin/main`.)
 - Step 6's `--why` is not a flag: the selector prints its reasons to
   stderr unless `--quiet`. `--paths-for TEST` prints the changed paths that
   select one test (or `all`); `tests/test-rust.sh` uses it, so any path
