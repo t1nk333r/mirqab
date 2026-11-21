@@ -10,7 +10,8 @@
 //! Part 4: the "idle but heavy" tag with a fake focus source, the
 //! `top-apps` minute row, `apps.inspect` with a start time (S5), GPU
 //! memory read only from DRM fds and capped (D2), `.flatpak-info` read
-//! only as a regular file (D7), and `get`'s first reading taken in
+//! only as a regular file (D7) and never through a FUSE root (audit
+//! 2026-11-21, L7), and `get`'s first reading taken in
 //! `prime` (D1). From the audit: code on an interpreter's command line
 //! never names a terminal job; a `process` get's primed reading serves
 //! that get only, and a get whose baseline a tick replaced does not wait
@@ -1369,6 +1370,127 @@ fn a_fifo_for_flatpak_info_does_not_stall_the_walk() {
     let d = data(a.sample(&root, Instant::now()));
     let g = d.groups.iter().find(|g| g.pids.contains(&9401)).unwrap();
     assert_ne!(g.kind, "flatpak");
+}
+
+#[test]
+fn flatpak_info_is_not_opened_through_a_fuse_root() {
+    // Audit 2026-11-21, L7: O_NONBLOCK does not stop an open on a FUSE
+    // mount from waiting on its server, so a process whose root (or whose
+    // `/.flatpak-info`) is on a hung FUSE mount would stall the walk under
+    // the sampler lock. The root is pinned with O_PATH and its mount id
+    // looked up in the process's mountinfo: only a listed tmpfs clears it
+    // (a Flatpak's root is one). Mount points do not matter; the id does. The
+    // review of the first fix found a process that chroots below a FUSE
+    // mount and puts a tmpfs over its own `/`: mountinfo then shows only
+    // that tmpfs at `/`, but its root is still the directory beneath.
+    let s = bare_root("fuse");
+    let root = Root::new(&s.0);
+    // The scratch tree is on one real mount; the fixture's mountinfo
+    // names it by its real id, and other mounts by an id that is not it.
+    let mnt = root.mount_id("proc").unwrap();
+    let other = if mnt == 7 { 8 } else { 7 };
+    let info = "[Application]\nname=org.example.Notes\n";
+    let rows = [
+        // The root's own mount is FUSE.
+        (
+            9500,
+            format!("{mnt} 1 0:40 / / rw - fuse.sshfs example:/ rw\n"),
+        ),
+        (
+            9502,
+            format!(
+                "{other} 1 254:1 / / rw - ext4 none rw\n{mnt} {other} 0:40 / / rw - fuse example rw\n"
+            ),
+        ),
+        // The review's bypass: a tmpfs over `/` that is not the root's mount.
+        (9508, format!("{other} 1 0:44 / / rw - tmpfs tmpfs rw\n")),
+        // A chroot below a mount: the root's mount is not listed at all.
+        (9506, format!("{other} 1 0:5 / /proc rw - proc proc rw\n")),
+        (9507, String::new()),
+        // A line for the root's mount without a type is no clearance.
+        (9509, format!("{mnt} 1 0:40 / / rw\n")),
+        // Nor is any type but tmpfs: an overlay can have a FUSE lower layer.
+        (9510, format!("{mnt} 1 0:45 / / rw - overlay overlay rw\n")),
+        (9511, format!("{mnt} 1 254:1 / / rw - ext4 none rw\n")),
+        // Cleared: the root's mount is listed as a tmpfs, wherever it is
+        // mounted, and FUSE elsewhere is no objection.
+        (
+            9503,
+            format!("{mnt} 1 0:44 /newroot / rw - tmpfs tmpfs rw\n"),
+        ),
+        (
+            9504,
+            format!(
+                "{mnt} 1 0:44 / / rw - tmpfs tmpfs rw\n{other} {mnt} 0:42 / /home rw - fuse.sshfs example:/ rw\n"
+            ),
+        ),
+        (
+            9512,
+            format!("{mnt} 1 0:44 / /srv\\040x rw shared:3 - tmpfs tmpfs rw\n"),
+        ),
+    ];
+    for (pid, mounts) in &rows {
+        let p = own_proc(&s.0, *pid, "notes");
+        std::fs::create_dir_all(p.join("root")).unwrap();
+        std::fs::write(p.join("root/.flatpak-info"), info).unwrap();
+        std::fs::write(p.join("mountinfo"), mounts).unwrap();
+    }
+    // No mountinfo at all (a fixture without one) still reads the file;
+    // on the live machine that would be an objection.
+    let p = own_proc(&s.0, 9505, "notes");
+    std::fs::create_dir_all(p.join("root")).unwrap();
+    std::fs::write(p.join("root/.flatpak-info"), info).unwrap();
+
+    let mut a = Apps::with_pacman(s.0.join("pacman").to_string_lossy());
+    a.probe(&root).unwrap();
+    let d = data(a.sample(&root, Instant::now()));
+    let kind = |pid: u32| {
+        d.groups
+            .iter()
+            .find(|g| g.pids.contains(&pid))
+            .unwrap()
+            .kind
+            .clone()
+    };
+    for pid in [9500, 9502, 9506, 9507, 9508, 9509, 9510, 9511] {
+        assert_ne!(kind(pid), "flatpak", "{pid}");
+        let v = inspect(&mut a, &root, pid);
+        assert!(v.get("flatpak").is_none(), "{pid}: {v}");
+    }
+    for pid in [9503, 9504, 9505, 9512] {
+        assert_eq!(kind(pid), "flatpak", "{pid}");
+        let v = inspect(&mut a, &root, pid);
+        assert_eq!(v["flatpak"], "org.example.Notes", "{pid}: {v}");
+    }
+}
+
+#[test]
+fn the_flatpak_info_mount_check_reads_mountinfo_when_asked() {
+    // Review of audit 2026-11-21, L7: Linux hands a freed mount id
+    // straight back out, so a mountinfo read before the root is pinned can
+    // describe another mount with the same id: a process unmounts its
+    // tmpfs N, mounts FUSE (which gets N) and chroots into it, and the
+    // stale "N tmpfs" line would clear the FUSE root. While a descriptor
+    // holds a mount no other live mount can carry its id, so the check
+    // reads mountinfo each time it is asked, after the pin.
+    let s = bare_root("fuse-late");
+    let p = own_proc(&s.0, 9600, "notes");
+    let root = Root::new(&s.0);
+    std::fs::write(p.join("mountinfo"), "21 1 0:44 / / rw - tmpfs tmpfs rw\n").unwrap();
+    let clear = mirqab_core::samplers::apps::procfs::tmpfs_now(&root, "proc/9600");
+    std::fs::write(
+        p.join("mountinfo"),
+        "21 1 0:40 / / rw - fuse.sshfs example:/ rw\n",
+    )
+    .unwrap();
+    assert!(
+        !clear(21),
+        "a listing from before the pin cleared a FUSE mount"
+    );
+    std::fs::write(p.join("mountinfo"), "21 1 0:44 / / rw - tmpfs tmpfs rw\n").unwrap();
+    assert!(clear(21));
+    std::fs::write(p.join("mountinfo"), "").unwrap();
+    assert!(!clear(21));
 }
 
 fn cargo_cpu(v: Value) -> f64 {

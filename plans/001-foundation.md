@@ -583,11 +583,25 @@ squash merge leaves `e72bfef` out of `main`, and is removed then.
     NOTICE row.
 13. `root.rs`, `exec.rs`, `act.rs` (with `signal`, `remove_path`,
     `write_file`, each a no-op returning a description under `dry_run`).
+    Audit 2026-11-21: `exec.rs` keeps output that is not UTF-8, lossily
+    (L3; test `exec::tests::output_that_is_not_utf8_is_kept_lossily`),
+    and once the child has exited reads its pipes only until the same
+    deadline plus a 100 ms grace, so a process it left holding them
+    cannot stall the call (L4; test `exec::tests::
+    a_grandchild_holding_the_pipes_does_not_outlast_the_timeout`). The
+    reader threads send chunks over one channel; after the wait gives up,
+    the queued chunks are taken past any end-of-stream between them, since
+    one stream's end can sit ahead of the other's last bytes (review of
+    L4; test `exec::tests::the_final_drain_reads_past_an_end_of_stream`,
+    which builds the queue by hand because the threads' order cannot be
+    forced through `run`).
 14. `sampler.rs` (the trait), `server.rs` (accept, peer-credential check,
     hello, subscribe/unsubscribe/get/status/shutdown, merged intervals,
     the `live` floor, per-client queue). Model: haseen PR #128 `core/sidecar/src/server.rs`.
 15. `selfcost.rs` and the `self` stream; `config.rs` with
-    `config.get`/`config.set` and atomic write (temporary file, `rename`).
+    `config.get`/`config.set` and atomic write (temporary file, `rename`;
+    since audit 2026-11-21, L8, the temporary is synced before the rename
+    and its directory after, so a crash cannot leave a 0-byte file).
 16. `crates/mirqab/src/{main,daemon,cli}.rs`: `daemon [--root] [--socket]`,
     socket activation (`LISTEN_FDS`), `sd_notify` ready by writing to
     `NOTIFY_SOCKET` (no library), the `ready <path>` line; `status`,

@@ -156,11 +156,60 @@ const FLATPAK_INFO_MAX: usize = 4096;
 /// root's `.flatpak-info`, read only when that is a regular file (plan
 /// 006, part 4, decision 14; D7 of PR #16): the process controls its own
 /// root, and a FIFO there would stall the walk.
+///
+/// Nor is anything there opened or looked up unless the root, and the
+/// file, sit on a tmpfs (audit 2026-11-21, L7). An open or a lookup on
+/// FUSE waits on its server, O_NONBLOCK or not, and a hung server would
+/// hold the walk under the sampler lock. `Root::read_regular_prefix_in`
+/// pins the root and the file with O_PATH descriptors and asks `tmpfs_now`
+/// about each one's mount id; the mount points that mountinfo lists prove
+/// nothing, since a chroot root does not follow a mount placed over it.
+/// bubblewrap builds every Flatpak root on a tmpfs, and `.flatpak-info` is
+/// on one too (a bind mount of its own in the app's processes), so tmpfs
+/// is the one type cleared: denying only `fuse*` would pass an overlay
+/// with a FUSE lower layer. On the live machine a mountinfo that cannot be
+/// read clears nothing; a fixture without one is read as before.
 pub fn read_flatpak_info(root: &Root, dir: &str) -> Option<String> {
-    let bytes = root
-        .read_regular_prefix(&format!("{dir}/root/.flatpak-info"), FLATPAK_INFO_MAX)
-        .ok()?;
+    // Whether there is a mountinfo only picks the fixture path; what it
+    // says is read by `tmpfs_now`, after each pin.
+    let bytes = if root.is_host() || root.exists(&format!("{dir}/mountinfo")) {
+        root.read_regular_prefix_in(
+            &format!("{dir}/root"),
+            ".flatpak-info",
+            FLATPAK_INFO_MAX,
+            tmpfs_now(root, dir),
+        )
+        .ok()?
+    } else {
+        root.read_regular_prefix(&format!("{dir}/root/.flatpak-info"), FLATPAK_INFO_MAX)
+            .ok()?
+    };
     flatpak_info(&String::from_utf8_lossy(&bytes))
+}
+
+/// The `clear` of `read_flatpak_info`: whether the process at `dir`
+/// (`proc/<pid>`) has the mount with id `id` as a tmpfs, by its
+/// mountinfo read anew on each call, never from a copy. Linux hands a
+/// freed mount id straight back out, so a listing taken before a
+/// descriptor was pinned can describe another mount with the same id (a
+/// tmpfs unmounted and a FUSE mount made in its place). A listing taken
+/// after the pin cannot: while the descriptor holds its mount, no other
+/// live mount carries that id. A mountinfo that cannot be read clears
+/// nothing.
+pub fn tmpfs_now<'a>(root: &'a Root, dir: &str) -> impl Fn(u64) -> bool + 'a {
+    let rel = format!("{dir}/mountinfo");
+    move |id| read_text(root, &rel).is_some_and(|t| tmpfs_mount(&t, id))
+}
+
+/// Whether `mountinfo` lists the mount with id `id` (field 1) as a tmpfs.
+/// The type is the first field after the ` - ` separator; spaces inside
+/// fields are escaped as `\040`, so neither split can be fooled by a name.
+/// A mount that is not listed, or a line without a type, is not cleared.
+pub fn tmpfs_mount(mountinfo: &str, id: u64) -> bool {
+    mountinfo.lines().any(|l| {
+        let mine = l.split(' ').next().and_then(|v| v.parse::<u64>().ok()) == Some(id);
+        mine && l.split(" - ").nth(1).and_then(|r| r.split(' ').next()) == Some("tmpfs")
+    })
 }
 
 /// One account of `etc/passwd`.

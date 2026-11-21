@@ -2562,6 +2562,96 @@ socket or a directory there is "no Flatpak". Test: a FIFO at that path in
 a scratch copy of the fixture; the walk returns within the test's
 timeout.
 
+Audit 2026-11-21, L6: the open also carries `O_NOCTTY`. The daemon is a
+session leader without a terminal under systemd, so a tty planted at that
+path would otherwise become its controlling terminal on open. Test:
+`root.rs`, `opening_a_tty_does_not_make_it_the_controlling_terminal`
+(a child copy of the test binary starts a session, opens a fresh
+pseudo-terminal through `read_regular_prefix`, and checks `/dev/tty`).
+
+Audit 2026-11-21, L7: `O_NONBLOCK` does not stop an open (or a lookup) on
+FUSE from waiting on its server, so a process whose root sat on a hung
+FUSE mount stalled the walk under the sampler lock. The fix pins what it
+asks about. `Root::read_regular_prefix_in` opens `proc/<pid>/root` with
+`O_PATH` (following that link jumps to the root's dentry and calls no
+filesystem), takes its mount id from the `mnt_id:` line of
+`/proc/self/fdinfo/<fd>` (the kernel prints it from the descriptor; no
+filesystem is asked, unlike `fstatfs` or a `statx` that may refresh
+attributes), and clears it before `.flatpak-info` is looked up. The file
+is then opened `O_PATH|O_NOFOLLOW` through `/proc/self/fd/<rootfd>`, its
+mount id cleared too (a file can be a mount of its own), checked to be a
+regular file, and reopened for reading through its own descriptor with
+`O_NONBLOCK|O_NOCTTY`. `procfs::read_flatpak_info` clears a mount id
+only when the process's `mountinfo` lists it (field 1) as a `tmpfs`, and
+it reads that mountinfo anew each time it is asked (`procfs::tmpfs_now`),
+which is after the descriptor in question is pinned. That order matters:
+Linux hands a freed mount id straight back out, so a listing taken before
+the pin could describe another mount by the same id, while one taken
+after cannot, since the descriptor keeps its mount and the id alive. With
+that, a `pivot_root`, a mount or an unmount at any point leaves the read
+on the objects that were cleared; `Root::read_regular_prefix_in` states
+the contract (`clear` decides from state read at the call). On the live
+machine a mountinfo that cannot be read clears nothing; a fixture without
+one (the fixtures have none) is read as before through
+`read_regular_prefix`. This costs two `mountinfo` and two `fdinfo` reads
+per process that reaches the `.flatpak-info` check, once in the process's
+life (`Info` is cached).
+
+Why tmpfs only: bubblewrap builds every Flatpak root on a tmpfs, and
+`.flatpak-info` is on a tmpfs too, but not always the same mount. Checked
+on the development machine on 2026-11-21 with the `O_PATH` descriptors of
+a running Flatpak app's processes: in the app's own processes the file is
+a bind mount of its own, listed at `/.flatpak-info` as `tmpfs` with a
+mount id that differs from the root's; in the outer bubblewrap process it
+is on the root's mount, listed at `/` with root `/newroot` and type
+`tmpfs`. Either way both ids are cleared. Rejected options:
+
+- Looking for a FUSE line at `/` or `/.flatpak-info` in mountinfo (the
+  first fix). The kernel omits mounts the root cannot reach, so a process
+  chrooted into a directory of a FUSE mount has no line at `/` at all.
+- Requiring a mount at `/` and no FUSE among the mounts at `/` (the
+  second fix, rejected in delta review). A process in its own user and
+  mount namespace can chroot below a FUSE mount and mount a tmpfs over its
+  own `/`: mountinfo then lists only that tmpfs, but a chroot root does not
+  follow an overmount, so `proc/<pid>/root` still resolves to the FUSE
+  directory. Mount points prove nothing; the pinned mount id does. The
+  reviewer confirmed on this machine that the `O_PATH` descriptor's
+  `mnt_id` in that setup is absent from the process's mountinfo, so the
+  id check refuses it. Reading mountinfo before an unpinned open also left
+  a race with `pivot_root`.
+- Pinned descriptors checked against one mountinfo read taken before the
+  pin (the third fix, rejected in delta review). Between that read and the
+  `O_PATH` open, the process can chroot out through a saved descriptor,
+  unmount its tmpfs N, mount FUSE (which gets N again, the lowest free
+  id) and chroot into it; the stale "N tmpfs" line then clears the FUSE
+  root. The reviewer reproduced it with ramfs standing in for FUSE.
+- Clearing any type that does not start with `fuse`, as the review
+  suggested. An overlay with a FUSE lower layer is not `fuse*` but looks
+  its names up on the FUSE server; only Flatpak roots matter here, and
+  they are tmpfs.
+- `statx(STATX_MNT_ID, AT_STATX_DONT_SYNC)` for the mount id. It works,
+  but it reaches the filesystem's `getattr`, where `fdinfo` does not, and
+  needs `unsafe` for a call std does not wrap.
+
+Tests: `root.rs`, `a_pinned_read_asks_about_the_directory_mount_before_the_name`
+(a refused root mount is refused before the name is looked up),
+`a_pinned_read_asks_about_what_it_already_holds` (`clear` runs after the
+pin: a directory swapped on its first call does not change what is read),
+`a_pinned_read_reads_a_regular_file_on_a_cleared_mount`,
+`a_pinned_read_refuses_what_is_not_a_regular_file` (a FIFO, a symlink, a
+directory, and a name that is not one component) and
+`a_pinned_read_does_not_leave_a_fixture_tree`; `tests/apps.rs`,
+`flatpak_info_is_not_opened_through_a_fuse_root`, whose fixture mountinfo
+names the scratch tree's real mount id (`Root::mount_id`): FUSE, overlay
+or ext4 for the root's mount, a tmpfs at `/` that is not the root's mount
+(the review's bypass), the root's mount not listed, a line without a type
+and an empty mountinfo are skipped; a tmpfs root's mount, wherever it is
+mounted and with FUSE elsewhere, and no mountinfo at all are read. The
+bypass row failed against the second fix before this one. And
+`the_flatpak_info_mount_check_reads_mountinfo_when_asked`: a check made
+while mountinfo said tmpfs refuses once it says FUSE; it failed against a
+version of `tmpfs_now` that kept a copy.
+
 **15. The session bus by command name (owner question 1).** See the
 question; if the owner says yes, `guard::SESSION_BUS_COMMS = ["dbus-daemon",
 "dbus-broker", "dbus-broker-launch"]` joins `act::refusal` beside the
