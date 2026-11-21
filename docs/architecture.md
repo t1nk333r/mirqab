@@ -849,7 +849,8 @@ Sizes are in em of the base font so the fractional-scale case works.
   binary and loaded with a `GtkCssProvider`. Rules in it refer to
   `var(--…)` only. The app's own tokens (`--mirqab-series-1` to `-6`,
   `--mirqab-grid`, `--mirqab-meter-track`, `--mirqab-map-land`,
-  `--mirqab-map-night`) are declared once, at the top of that file.
+  `--mirqab-map-night`) are declared once, in the token table below; the
+  stylesheet's `mirqab:tokens` block holds no colour.
 - **The token table.** `crates/mirqab-view/src/theme.rs` lists every
   token with its default. It is the only Rust file with a colour literal.
   From it the interface generates a second, small stylesheet that sets the
