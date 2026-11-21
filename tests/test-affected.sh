@@ -1,7 +1,10 @@
 # tests/test-affected.sh — tools/affected-tests.sh selects exactly the test
 # files that cover a changed path, widens on global and shared paths, skips
-# exempt ones, and its --check fails on an uncovered file.
+# exempt ones, and its --check fails on an uncovered file; and the sandbox
+# of tests/lib.sh keeps the caller's git environment out of the scratch
+# repositories such tests write.
 # mirqab:covers tools/affected-tests.sh tools/coverage-exempt.txt tests/run.sh
+# mirqab:covers tests/lib.sh
 
 sandbox
 
@@ -90,3 +93,44 @@ printf 'ok\n' >"$repo/tests/test-bare.sh"
 capture bash -c "cd '$repo' && tools/affected-tests.sh --check"
 status_is "--check fails on a test without a covers line" 1 "$STATUS"
 like "--check names the undeclared test" "$OUTPUT" "tests/test-bare.sh"
+
+# The sandbox drops the caller's git environment (audit of the gates): a
+# pre-commit hook exports GIT_INDEX_FILE, and in a linked worktree GIT_DIR,
+# and git obeys them over `-C`, so the scratch repositories above would
+# write into the real one. A decoy repository stands for it here.
+decoy="$SANDBOX/decoy"
+mkdir -p "$decoy"
+printf 'decoy\n' >"$decoy/kept"
+(
+    cd "$decoy" || exit
+    git init -q -b main
+    git add -A
+    git -c user.name=t -c user.email=t@example.invalid commit -qm decoy
+) >/dev/null
+decoy_head="$(git -C "$decoy" rev-parse HEAD)"
+# sandbox_git LIB — in a fresh shell whose git variables point at the decoy,
+# as a hook's would, source LIB, call sandbox and commit in a scratch
+# repository; prints what the scratch repository tracks.
+sandbox_git() {
+    env GIT_DIR="$decoy/.git" GIT_INDEX_FILE="$decoy/.git/index" GIT_WORK_TREE="$decoy" \
+        GIT_CONFIG_PARAMETERS="'user.name=decoy'" bash -c '
+        set -Eeuo pipefail
+        source "$1"
+        sandbox
+        for v in GIT_DIR GIT_INDEX_FILE GIT_WORK_TREE GIT_CONFIG_PARAMETERS; do
+            [[ -z ${!v+x} ]] || echo "still set: $v"
+        done
+        s="$SANDBOX/scratch"
+        mkdir -p "$s" && printf "scratch\n" >"$s/new"
+        git -C "$s" init -q -b main >/dev/null
+        git -C "$s" add -A
+        git -C "$s" -c user.name=t -c user.email=t@example.invalid commit -qm scratch
+        git -C "$s" ls-files
+    ' _ "$1" 2>&1
+}
+capture sandbox_git "$REPO/tests/lib.sh"
+status_is "a scratch commit under the sandbox succeeds" 0 "$STATUS"
+unlike "the sandbox unsets the caller's git variables" "$OUTPUT" "still set"
+is "the scratch repository holds only its own file" "new" "$OUTPUT"
+is "the caller's repository keeps its HEAD" "$decoy_head" "$(git -C "$decoy" rev-parse HEAD)"
+is "and its index" "kept" "$(git -C "$decoy" ls-files)"
