@@ -1,11 +1,12 @@
 //! The Hyprland focus source against a fake Hyprland in a scratch root
 //! (plan 006, part 4, "Tests"): instance discovery by the lock file (a
 //! lock naming a pid with no `proc/<pid>` is skipped, the newer of two
-//! wins, no `hypr/` is no source); the reader asks `j/activewindow` once
+//! wins, no `hypr/` is no source, a dead directory whose socket refuses
+//! gives way to the next); the reader asks `j/activewindow` once
 //! per new address and caches it, `closewindow` evicts, an empty address
 //! is no focus, `0x` and bare addresses match; a request that hangs times
-//! out and the reader goes on; five failures stop it; `stop` and an end of
-//! file end its thread; and the `apps` sampler on a root without Hyprland
+//! out and the reader goes on; five failures stop it; `stop` (reading no
+//! queued line) and an end of file end its thread; and the `apps` sampler on a root without Hyprland
 //! has no `focus`. Every line is synthetic: nothing reads the live
 //! session's sockets (a fixture root never reads the environment).
 
@@ -374,5 +375,65 @@ fn a_trickled_answer_ends_in_time_and_stop_is_bounded() {
         "{:?}",
         t.elapsed()
     );
+    h.stop();
+}
+
+#[test]
+fn stop_reads_no_queued_line_and_asks_nothing_more() {
+    // Audit 2026-11-21, L21: after the shutdown, lines already queued on
+    // the event socket can still be read; each asked the compositor
+    // again, so a hung request socket held `stop` for seconds.
+    let s = root("queued", &[1050]);
+    let f = fake(&s.0, "sig_1_1", 1050, answer("aaa", 2001));
+    let mut h = Hyprland::new();
+    h.start(&Root::new(&s.0), 1000).unwrap();
+    let (mut ev, _) = f.events.accept().unwrap();
+    f.set(Mode::Hang);
+    for i in 0..6 {
+        ev.write_all(format!("activewindowv2>>q{i}\n").as_bytes())
+            .unwrap();
+    }
+    eventually("the first hung request asked", || f.asked() == 2);
+    let t = Instant::now();
+    h.stop();
+    assert!(
+        t.elapsed() < Duration::from_millis(1100),
+        "{:?}",
+        t.elapsed()
+    );
+    assert!(h.finished());
+    assert_eq!(f.asked(), 2, "nothing asked after stop");
+}
+
+#[test]
+fn a_dead_instance_whose_pid_was_reused_gives_way_to_a_live_one() {
+    // Audit 2026-11-21, L22: a crashed instance's directory whose lock
+    // names a pid now reused by another process looks live; its sockets
+    // refuse, and start goes on to the next live directory.
+    let s = root("reused", &[1050, 1051]);
+    let live = fake(&s.0, "live_1_1", 1050, answer("aaa", 2001));
+    let stale = s.0.join("run/user/1000/hypr/stale_1_2");
+    std::fs::create_dir_all(&stale).unwrap();
+    std::fs::write(stale.join("hyprland.lock"), "1051\nwayland-1\n").unwrap();
+    // Bound and closed: the socket files stay, nothing listens.
+    drop(UnixListener::bind(stale.join(".socket2.sock")).unwrap());
+    drop(UnixListener::bind(stale.join(".socket.sock")).unwrap());
+    // The live one is older, so the dead one is tried first.
+    std::fs::File::open(&live.dir)
+        .unwrap()
+        .set_modified(std::time::SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000))
+        .unwrap();
+    let r = Root::new(&s.0);
+    assert_eq!(
+        hyprland::instances(&r, "run/user/1000", None),
+        [
+            "run/user/1000/hypr/stale_1_2",
+            "run/user/1000/hypr/live_1_1"
+        ]
+    );
+    let mut h = Hyprland::new();
+    assert_eq!(h.start(&r, 1000), Ok("hyprland"));
+    let _ev = live.events.accept().unwrap();
+    assert_eq!(now_of(&mut h), Some(2001));
     h.stop();
 }
