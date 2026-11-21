@@ -443,7 +443,12 @@ sandbox, export `GDK_BACKEND=broadway`, `BROADWAY_DISPLAY=:N`,
    addresses, `100.64.0.0/10` addresses, coordinates with more than two
    decimals, `sk-…`/`ghp_…` shapes, and a `tools/secrets-deny.txt` of
    literal strings (kept empty in the repository; the owner's machines add
-   their hostnames locally through `MIRQAB_SECRETS_DENY`).
+   their hostnames locally through `MIRQAB_SECRETS_DENY`). (Audit of
+   2026-11-21, L60: also IPv6 addresses outside `::`, `::1`,
+   `2001:db8::/32`, IPv4-mapped allowed ones and a small-identifier
+   `fe80::/9` such as `fe80::1`; and the hexadecimal addresses in
+   `tests/fixtures/**/proc/net/{tcp,tcp6,udp,udp6}`, decoded and held to
+   the same ranges.)
 10. `.github/workflows/ci.yml`, the only workflow this plan adds. Triggers:
     `pull_request` and `push` to `main`. `permissions: contents: read`.
     Container `archlinux:latest`; install `base-devel rust pkgconf gtk4

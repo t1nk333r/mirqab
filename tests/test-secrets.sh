@@ -1,6 +1,7 @@
 # tests/test-secrets.sh — tools/secrets.sh flags host addresses (bare or in
-# CIDR form), MAC addresses, fine coordinates and denied strings, and allows
-# network ranges and the documentation ranges. gitleaks is stubbed: its own
+# CIDR form, IPv6, or hexadecimal in a fixture's /proc/net table), MAC
+# addresses, fine coordinates and denied strings, and allows network ranges
+# and the documentation ranges. gitleaks is stubbed: its own
 # rules are its business; this file tests the patterns around it.
 # mirqab:covers tools/secrets.sh tools/secrets-deny.txt tools/secrets-allow.txt
 
@@ -60,6 +61,78 @@ status_is "a fine coordinate is flagged" 1 "$STATUS"
 
 scan '"latitude": 24.71'
 status_is "a city-level coordinate passes" 0 "$STATUS"
+
+# IPv6 addresses as text (audit 2026-11-21, L60). Built here like the
+# samples above; the global one is in a real provider's range, the
+# link-local one carries a MAC-derived identifier.
+c=:
+global6="2a01${c}4f8${c}c0c${c}1234${c}${c}1"
+eui64="fe80${c}${c}1c2b${c}3cff${c}fe4d${c}5e6f"
+scan "server $global6"
+status_is "a global IPv6 address is flagged" 1 "$STATUS"
+like "and named" "$OUTPUT" "IPv6 address outside the documentation range"
+scan "link $eui64"
+status_is "a link-local address with a hardware identifier is flagged" 1 "$STATUS"
+scan "mapped ${c}${c}ffff${c}${private_host}"
+status_is "an IPv4-mapped private address is flagged" 1 "$STATUS"
+scan 'documentation 2001:db8::1 and 2001:0DB8:0:0:0:0:0:42, loopback ::1, any ::,
+mapped ::ffff:192.0.2.1, link-local fe80::1, Rust std::fs::read and Self::new,
+a time 12:30:45, a socket 0100007F:0BB8, a key "a:", a path a::b::c'
+status_is "documentation, loopback and non-address text pass" 0 "$STATUS"
+
+# Hexadecimal addresses in a fixture's /proc/net tables, as the kernel
+# writes them: each 32-bit word in host (little-endian) byte order.
+# plant PATH ROW... — the table PATH (a header and ROWs) as the only file
+# besides sample.txt; run the scan; remove it again.
+plant() {
+    local path=$1
+    shift
+    mkdir -p "$repo/$(dirname "$path")"
+    {
+        echo '  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode'
+        printf '%s\n' "$@"
+    } >"$repo/$path"
+    scan 'clean'
+    rm -rf "$repo/tests"
+}
+tail6=' 0A 00000000:00000000 00:00000000 00000000  1000        0 70020 1 0000000000000000 100 0 0 10 0'
+tail4=' 0A 00000000:00000000 00:00000000 00000000  1000        0 70010 1 0000000000000000 100 0 0 10 0'
+z8=00000000
+z32=$z8$z8$z8$z8
+lan4=0101A8C0 # a private address (192, 168, 1, 1), byte-reversed
+plant tests/fixtures/x/proc/net/tcp \
+    "   0: 0100007F:0BB8 $z8:0000$tail4" \
+    "   1: 0A0200C0:2328 $z8:0000$tail4" \
+    "   2: $z8:1F40 $z8:0000$tail4"
+status_is "loopback, documentation and any in a tcp table pass" 0 "$STATUS"
+plant tests/fixtures/x/proc/net/tcp "   0: $lan4:0016 $z8:0000$tail4"
+status_is "a private address in a tcp table is flagged" 1 "$STATUS"
+like "and named" "$OUTPUT" "address in a /proc/net table"
+like "and decoded" "$OUTPUT" "192${d}168${d}1${d}1"
+plant tests/fixtures/x/proc/net/udp "   0: 0100007F:0035 $lan4:0035$tail4"
+status_is "a private remote address in a udp table is flagged" 1 "$STATUS"
+plant tests/fixtures/x/proc/net/tcp6 \
+    "   0: $z32:1435 $z32:0000$tail6" \
+    "   1: $z8$z8${z8}01000000:0277 $z32:0000$tail6" \
+    "   2: B80D0120$z8${z8}01000000:0016 $z32:0000$tail6" \
+    "   3: $z8${z8}FFFF00000100007F:0016 $z32:0000$tail6"
+status_is "any, loopback, documentation and mapped loopback in tcp6 pass" 0 "$STATUS"
+plant tests/fixtures/x/proc/net/tcp6 "   0: F804012A$z8${z8}01000000:0016 $z32:0000$tail6"
+status_is "a global address in a tcp6 table is flagged" 1 "$STATUS"
+plant tests/fixtures/x/proc/net/udp6 "   0: $z8${z8}FFFF0000$lan4:0035 $z32:0000$tail6"
+status_is "a mapped private address in a udp6 table is flagged" 1 "$STATUS"
+# A table row in history, removed since, is still found.
+mkdir -p "$repo/tests/fixtures/x/proc/net"
+printf '   0: %s:0016 %s:0000%s\n' "$lan4" "$z8" "$tail4" >"$repo/tests/fixtures/x/proc/net/tcp"
+git -C "$repo" add -A
+git -C "$repo" -c user.name=t -c user.email=t@example.invalid commit -qm table
+rm -rf "$repo/tests"
+git -C "$repo" add -A
+git -C "$repo" -c user.name=t -c user.email=t@example.invalid commit -qm gone
+capture "$repo/tools/secrets.sh"
+status_is "a private address in a removed table is found in history" 1 "$STATUS"
+rm -rf "$repo/.git"
+git -C "$repo" init -q -b main
 
 # An added line whose text starts with "++ " is scanned, not taken for a
 # diff header, even after the next commit removes it.
