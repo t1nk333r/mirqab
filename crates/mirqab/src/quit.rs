@@ -161,10 +161,6 @@ fn subject(socket: &Path, target: &str) -> Result<Value, ExitCode> {
 }
 
 pub fn run(args: Args) -> ExitCode {
-    let socket = match socket_or_exit(&args) {
-        Ok(s) => s,
-        Err(code) => return code,
-    };
     let (mut yes, mut force, mut dry_run, mut json_out) = (false, false, false, false);
     let mut target: Option<&str> = None;
     for a in &args.rest {
@@ -179,6 +175,12 @@ pub fn run(args: Args) -> ExitCode {
     }
     let Some(target) = target else {
         return usage(&strings::command_help("quit").unwrap_or_default());
+    };
+    // The arguments first: a usage error is 64 even with no socket to
+    // name (audit 2026-11-21).
+    let socket = match socket_or_exit(&args) {
+        Ok(s) => s,
+        Err(code) => return code,
     };
     let subject = match subject(&socket, target) {
         Ok(s) => s,

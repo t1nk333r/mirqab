@@ -739,6 +739,12 @@ Deferred:
   `crates/mirqab-core/tests/history.rs`,
   `a_history_query_is_clamped_and_its_series_capped` in
   `crates/mirqab-core/tests/protocol.rs`).
+  An unknown series (alone or beside a known one) exits 1 with
+  "history keeps no series named …" since the audit of 2026-11-21 (L41;
+  `tests/test-cli.sh`, "an unknown series exits 1"); an unknown range
+  already did. With `--json` the answer is printed, the series is
+  `null`, and the exit is 1 as well (review of the fix; "with --json
+  too").
 - The first plan that writes events: create `history.db`, its directory
   and the lock file 0600/0700. Done by the audit fixes in PR #26
   (`history::private_dir`, `private_file`, and
@@ -863,6 +869,17 @@ above:
   the display failure comes after exec. Tested in
   `crates/mirqab/tests/cli.rs`, `open_without_an_interface_fails_cleanly`
   and `a_unit_that_fails_to_start_is_reported`.)
+  A daemon on a socket other than `$XDG_RUNTIME_DIR/mirqab/daemon.sock`
+  (given with `--socket` or in its own `$MIRQAB_SOCKET`, which the user
+  manager's environment does not carry) starts no unit: the shared
+  `mirqab-ui.service` runs `mirqab-ui` without `--socket`, so it would
+  dial the default socket, wait out the 5 s and fail, or attach to
+  another daemon. The open is `failed` with `mirqab-ui --socket <path>`
+  as the hint; an interface started that way gets the events as usual
+  (audit 2026-11-21, L61;
+  `open_on_another_socket_names_the_command_and_starts_no_unit` and
+  `open_on_a_socket_named_in_the_environment_starts_no_unit` in
+  `crates/mirqab/tests/cli.rs`).
   `ui.hide` with no interface is done. The fallback that spawns
   `mirqab-ui` with the caller's environment (Unverified, below) moves to
   plan 020, which owns the session setup.

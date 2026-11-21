@@ -85,10 +85,6 @@ pub(crate) fn what_lines(i: &Inspect, private: bool) -> Vec<String> {
 }
 
 pub fn run(command: &str, args: Args) -> ExitCode {
-    let socket = match socket_or_exit(&args) {
-        Ok(s) => s,
-        Err(code) => return code,
-    };
     let (mut json_out, mut all, mut sort, mut pid) = (false, false, "cpu".to_string(), None);
     let mut it = args.rest.iter();
     while let Some(a) = it.next() {
@@ -122,6 +118,12 @@ pub fn run(command: &str, args: Args) -> ExitCode {
         Request::new(1, "get")
             .with_stream(APPS_INSPECT)
             .with_params(json!({ "pid": pid }))
+    };
+    // The arguments first: a usage error is 64 even with no socket to
+    // name (audit 2026-11-21).
+    let socket = match socket_or_exit(&args) {
+        Ok(s) => s,
+        Err(code) => return code,
     };
     match call(&socket, req) {
         Ok(v) if json_out => {
