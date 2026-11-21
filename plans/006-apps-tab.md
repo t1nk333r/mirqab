@@ -281,7 +281,7 @@ when nothing is left to act on.
 | Refused | Rule | Source |
 | --- | --- | --- |
 | pid ≤ 1 | as today | §5.4; `act.rs:69` |
-| the daemon | `std::process::id()`, and the pid in `proc/self/stat` read through `Root` (4321 in the fixture) | §5.4; `act.rs:72` |
+| the daemon | the pid in `proc/self/stat` read through `Root` (4321 in the fixture), and `std::process::id()` on the live root | §5.4; `act.rs:72` |
 | another user's process, uid 0 included | all four numbers of `Uid:` must be the user's. Today only the real uid is read, so a setuid-root program passes. | §5.4, §8.2; `act.rs:47-54` |
 | a kernel thread | `PF_KTHREAD` in `stat` flags | follows from uid 0; stated for the message |
 | outside the user's cgroup subtree | the cgroup path must start with `/user.slice/user-<uid>.slice/` | §5.4 |
