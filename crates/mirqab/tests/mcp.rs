@@ -439,6 +439,47 @@ fn no_daemon_is_a_tool_error_the_agent_can_show() {
     );
 }
 
+/// A daemon that answers every request on `socket` with `result`, until
+/// the test ends.
+fn stub_daemon(socket: &std::path::Path, result: Value) {
+    let listener = std::os::unix::net::UnixListener::bind(socket).unwrap();
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(stream) = stream else { return };
+            let mut lines = BufReader::new(&stream).lines();
+            while let Some(Ok(line)) = lines.next() {
+                let req: Value = serde_json::from_str(&line).unwrap_or_default();
+                let reply = json!({"type": "reply", "id": req["id"], "result": result});
+                if writeln!(&stream, "{reply}").is_err() {
+                    break;
+                }
+            }
+        }
+    });
+}
+
+#[test]
+fn an_unreadable_daemon_answer_is_a_tool_error_not_an_empty_summary() {
+    // Under /tmp, not $TMPDIR: a socket path must stay under 108 bytes.
+    let dir = PathBuf::from("/tmp").join(format!("mqp-bad-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let socket = dir.join("daemon.sock");
+    stub_daemon(&socket, json!({"cpu": "x"}));
+    let mut s = Server::start(&socket);
+    for tool in ["system_load", "explain_slowness"] {
+        let r = s.ask(json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": {"name": tool, "arguments": {}}}));
+        assert_eq!(r["result"]["isError"], true, "{tool}: {r}");
+        assert!(
+            text_of(&r["result"]).contains("could not be read"),
+            "{tool}: {r}"
+        );
+    }
+    drop(s);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn closing_stdin_ends_the_server() {
     let mut s = Server::start(std::path::Path::new("/nonexistent/mirqab.sock"));

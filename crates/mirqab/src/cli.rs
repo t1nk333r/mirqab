@@ -161,8 +161,10 @@ fn print_history(v: &Value, list: bool) -> bool {
     all_found
 }
 
-pub(crate) fn system(v: &Value) -> SystemData {
-    serde_json::from_value(v.clone()).unwrap_or_default()
+/// The `system` frame, or the message for an answer this mirqab cannot
+/// read (audit 2026-11-21: it used to read as an all-empty frame).
+pub(crate) fn system(v: &Value) -> Result<SystemData, String> {
+    serde_json::from_value(v.clone()).map_err(|e| strings::bad_daemon_answer(&e.to_string()))
 }
 
 fn pct(v: Option<f64>) -> String {
@@ -170,8 +172,8 @@ fn pct(v: Option<f64>) -> String {
 }
 
 /// `mirqab load`: CPU, load, memory, swap, pressure, thermal word.
-fn print_load(v: &Value) {
-    for l in load_lines(&system(v)) {
+fn print_load(d: &SystemData) {
+    for l in load_lines(d) {
         crate::out::line(&l);
     }
 }
@@ -235,8 +237,7 @@ pub(crate) fn load_lines(d: &SystemData) -> Vec<String> {
 
 /// `mirqab sensors`: temperatures, GPUs, power. Celsius; plan 005 reads
 /// `units.temperature`.
-fn print_sensors(v: &Value) {
-    let d = system(v);
+fn print_sensors(d: &SystemData) {
     let c = format::TempUnit::Celsius;
     for t in &d.temps {
         let crit = t.critical.map(|x| format::temperature(x, c));
@@ -375,10 +376,19 @@ pub fn run(command: &str, args: Args) -> ExitCode {
                 if !print_history(&v, list) {
                     return ExitCode::from(EXIT_FAILED);
                 }
-            } else if command == "load" && !json_out {
-                print_load(&v);
-            } else if command == "sensors" && !json_out {
-                print_sensors(&v);
+            } else if matches!(command, "load" | "sensors") && !json_out {
+                let d = match system(&v) {
+                    Ok(d) => d,
+                    Err(why) => {
+                        crate::out::err(&why);
+                        return ExitCode::from(EXIT_FAILED);
+                    }
+                };
+                if command == "load" {
+                    print_load(&d);
+                } else {
+                    print_sensors(&d);
+                }
             } else if matches!(command, "status" | "history" | "load" | "sensors") || dry_run {
                 crate::out::line(&format!("{v}"));
             }
@@ -452,6 +462,13 @@ mod tests {
         let r = call_within(&socket, Request::new(1, "status"), Duration::from_secs(5));
         assert!(matches!(r, Err(CallError::NoDaemon(_))), "no daemon");
         handle.join().unwrap();
+    }
+
+    #[test]
+    fn an_unreadable_system_frame_is_an_error_not_an_empty_one() {
+        let why = system(&json!({"cpu": "x"})).expect_err("an error");
+        assert!(why.contains("could not be read"), "{why}");
+        assert!(system(&json!({})).is_ok(), "a frame with nothing yet reads");
     }
 
     #[test]

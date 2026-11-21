@@ -292,6 +292,12 @@ Part 2 (2026-11-14), where it differs from the plan:
 - Tests: `crates/mirqab/tests/mcp.rs` (both eras, the tools against a
   fixture daemon, bad input, no daemon, EOF); `tests/test-mcp-config.sh`
   with recording stubs (the agent CLIs are always stubbed in the sandbox).
+- A `system` frame this mirqab cannot read (after an upgrade, the old
+  daemon's) is the "answer could not be read" error, not an empty
+  summary: `system_load` and `explain_slowness` return `isError: true`
+  and `mirqab load` / `sensors` exit 1 (audit 2026-11-21, L38;
+  `an_unreadable_daemon_answer_is_a_tool_error_not_an_empty_summary` in
+  `crates/mirqab/tests/mcp.rs`).
 
 ## Unverified
 
