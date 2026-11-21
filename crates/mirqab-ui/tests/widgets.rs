@@ -1492,3 +1492,39 @@ fn a_daemon_that_never_says_hello_counts_as_disconnected() {
     drop(listener);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Audit 2026-11-21, L11: nothing shows a clock until plan 016, so
+/// Settings offers no clock format; `units.clock` stays a valid, reserved
+/// key.
+#[gtk::test]
+#[ignore = "needs a display: run tests/test-ui-widgets.sh"]
+fn settings_offers_no_clock_format_yet() {
+    use adw::prelude::PreferencesRowExt;
+    adw::init().unwrap();
+    let app = adw::Application::builder()
+        .application_id("io.github.t1nk333r.mirqab.test")
+        .flags(gtk::gio::ApplicationFlags::NON_UNIQUE)
+        .build();
+    let dir = std::env::temp_dir().join(format!("mirqab-widgets-{}", std::process::id()));
+    let ctx = mirqab_ui::app::Ctx::new(&app, dir.join("none.sock"));
+    let page = mirqab_ui::tabs::settings::page::build(&ctx);
+    let mut titles = Vec::new();
+    let mut stack = vec![page.clone()];
+    while let Some(w) = stack.pop() {
+        if let Some(row) = w.downcast_ref::<adw::PreferencesRow>() {
+            titles.push(row.title().to_string());
+        }
+        let mut c = w.first_child();
+        while let Some(child) = c {
+            c = child.next_sibling();
+            stack.push(child);
+        }
+    }
+    let has = |t: &str| titles.iter().any(|x| x == t);
+    assert!(
+        has(mirqab_proto::strings::SETTINGS_TEMPERATURE),
+        "{titles:?}"
+    );
+    assert!(!has(mirqab_proto::strings::SETTINGS_CLOCK), "{titles:?}");
+    ctx.client.close();
+}

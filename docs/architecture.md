@@ -601,6 +601,9 @@ XDG variables override each directory. The daemon is the only writer of
 and every subscriber to `ui` gets a `config-changed` event. A config the
 daemon cannot parse is left untouched, reported in `status`, and defaults
 are used: the app never rewrites a file the user broke by hand.
+`theme.accent` and `units.clock` are reserved keys: accepted and checked,
+so a config that sets them stays valid, but read by nothing yet (the
+clock arrives with plan 016).
 
 With `mirqab daemon --root DIR` (fixture trees, used by the tests) the
 daemon keeps `history.db` and `config.json` beside its socket instead, so

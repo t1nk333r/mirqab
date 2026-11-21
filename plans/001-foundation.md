@@ -171,6 +171,11 @@ the stream accepts `live` for a pinned self-cost graph):
 
 (Plan 022, 2026-11-14: the default `window.mode` is now `"window"`.)
 
+`theme.accent` and `units.clock` are reserved: the daemon accepts and
+checks them, so a config that sets them stays valid, but nothing reads
+`theme.accent` yet and no clock is shown until plan 016, so Settings
+offers no clock row (audit 2026-11-21, L11).
+
 `live.intervalMs` is the interval of a live graph on screen: 1000 by
 default, settable from 1000 to 5000 for a user who wants less work. It
 does not change any other interval.
