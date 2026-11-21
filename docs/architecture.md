@@ -302,8 +302,9 @@ so once in the footer.
   `SocketMode=0600`, `DirectoryMode=0700`) and `mirqab.service`
   (`Type=notify`). Run by hand, the daemon prints `ready <socket path>` on
   stdout once it listens. A client connects only after that line or after
-  the unit is active, and retries with a backoff (250 ms doubling to 4 s)
-  if the daemon restarts.
+  the unit is active, and retries with a backoff (2 s doubling to 30 s,
+  so a missing daemon costs no polling under 2 s; §9.2) if the daemon
+  restarts.
 - The interface reads the socket on GLib's main loop (`gio`'s Unix socket
   client and a line reader), not on a thread of its own.
 
