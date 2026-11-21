@@ -246,7 +246,17 @@ Part 1 (2026-11-13), where it differs from the plan:
   0–100; series a later plan registers are reloaded at open; prune deletes
   one series' range at a time instead of scanning the table.
 - `page.in`/`page.out` are KiB per minute and per second (vmstat counts
-  pgpgin in KiB); `swap.in`/`swap.out` pages. The CLI prints Celsius;
+  pgpgin in KiB); `swap.in`/`swap.out` pages. The history's per-minute
+  counts are scaled to 60 s from the minute's real gap (the first minute
+  after start is shorter, a late tick up to 90 s; audit 2026-11-21, L24).
+  A gap under 10 s (`PAGE_GAP_MIN`: a start in a minute's last seconds,
+  or an Instant gap an NTP step left short) gives that minute no page or
+  swap point, since scaling it would multiply a burst up to 60 times; at
+  10 s the factor is at most 6 (review of the L24 fix). Tests:
+  `page_counts_are_per_minute_whatever_the_gap`,
+  `page_counts_over_a_gap_under_ten_seconds_are_skipped`
+  (`tests/system.rs`).
+  The CLI prints Celsius;
   `units.temperature` reaches the CLI with plan 005.
 - The restart advice's pressure condition uses the sampler's own last 60
   minutes of memory `some60`, not a history query.
@@ -257,6 +267,18 @@ From the review of PR #7 (2026-11-13):
   skipped (`root-laptop` carries one as a trap), and `nvidia-smi` runs
   only while no NVIDIA card is suspended (`gpu::nvidia_wanted`). After a
   failed or empty `nvidia-smi` it waits 60 s.
+- *Audit 2026-11-21, L25:* NVIDIA's driver has no hwmon chip, so the
+  `nvidia-smi` temperature reached only the card's `celsius`, never
+  `temp.gpu` or the thermal word. Each card's `nvidia-smi` temperature
+  is now a GPU sensor `nvidia.N` (no critical, so 95 °C) for the
+  thermal word and `temp.gpu` (`System::nvidia_temps`); it is not added
+  to the streamed `temps`, which stays hwmon's, so the stream's rows do
+  not change (only `thermal.hottest` may name `nvidia.N`, as its doc
+  comment in `stream.rs` says; `System::with_nvidia_smi` is
+  `#[doc(hidden)]`, for tests). Test:
+  `an_nvidia_smi_temperature_reaches_the_thermal_word_and_temp_gpu`
+  (`tests/system.rs`, a stub `nvidia-smi` passed to
+  `System::with_nvidia_smi`).
 - `gpu.N` series are keyed by the card's place among all cards, in the
   minute writer as in the live means; a suspended card leaves its slot
   empty. Cards without a PCI vendor (simpledrm, vkms, USB display

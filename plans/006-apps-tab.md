@@ -1765,8 +1765,17 @@ Deviations from the brief, each with its reason:
 - **`capped`.** The brief caps the pids at eight but does not say what
   the ninth subscriber gets; it gets `capped: true`, not a false `gone`.
 - **`name` is `comm`.** The `apps` list's name may come from `cmdline`
-  when `comm` was cut short; the stream reads `stat` and `statm` only, as
-  designed.
+  when `comm` was cut short (also when the cut at byte 15 splits a UTF-8
+  character, whose stray bytes read as one U+FFFD; audit 2026-11-21, L5);
+  the stream reads `stat` and `statm` only, as designed. *Review of the
+  L5 fix:* only one trailing U+FFFD is dropped, and the 12 to 14 bytes
+  before it must hold no other U+FFFD, since a replaced byte makes the
+  decoded length differ from the kernel's: five invalid bytes, or nine
+  letters and two invalid bytes, decode to 15 bytes but were never cut,
+  and keep their name. Tests:
+  `display_name_survives_a_name_cut_inside_a_character`,
+  `display_name_keeps_a_name_the_kernel_did_not_cut`
+  (`samplers/apps/procfs.rs`).
 - **A `get process` goes through `wants`.** `snapshot` takes no params,
   so the `get` hands its own over first; the next tick hands the
   subscribers' back. A `get` never moves the pins or the baseline, and
@@ -2987,7 +2996,13 @@ Known limits (part 4a):
 
 - Discovery takes the newest live instance; if its event socket refuses
   the connect, `start` fails and does not try an older one (the next
-  page open tries again).
+  page open tries again). *Changed by the audit of 2026-11-21, L22:* a
+  crashed instance whose lock's pid was reused looked live and won, so
+  `start` now tries each live directory in turn (`instances`) and goes on
+  when the event socket refuses or is missing; a connect that times out
+  (a compositor there but stuck) still ends the search. Test:
+  `a_dead_instance_whose_pid_was_reused_gives_way_to_a_live_one`
+  (`tests/focus.rs`).
 - A burst of more than ten new windows a second leaves the focus on the
   last answered one until the next event.
 - The tag uses the time the reader saw each focus change (`Instant`), and
@@ -3069,10 +3084,15 @@ dropped the rest. What changed, with its test:
 3. **S2 (reduced), the compositor waits are bounded and said.**
    `ask_active` (`hyprland.rs:135`) arms every read with what is left of
    one 500 ms deadline, so a trickled answer cannot hold the reader;
-   `stop` (`:442`) joins within that deadline. Architecture §5.3 now
-   says: no sampler sleeps or asks another program while holding its
-   lock; the focus source may wait on the compositor up to 1.5 s once
-   when the page opens and up to 0.5 s when it closes. Test:
+   `stop` (`:442`) joins within that deadline (with the request's
+   500 ms connect, 1 s; and since the audit of 2026-11-21, L21, `stop`
+   raises a flag the reader checks before each line and each request, so
+   lines still queued on the socket ask nothing more: test
+   `stop_reads_no_queued_line_and_asks_nothing_more`). Architecture
+   §5.3 now says: no sampler sleeps or asks another program while
+   holding its lock; the focus source may wait on the compositor up to
+   1.5 s once when the page opens and up to 0.5 s when it closes (1 s
+   with the connect, audit 2026-11-21, L21). Test:
    `a_trickled_answer_ends_in_time_and_stop_is_bounded`
    (`tests/focus.rs:351`: `stop` under 1 s during a one-byte-per-100 ms
    answer; a `start` whose request hangs ends within 1.2 s).
