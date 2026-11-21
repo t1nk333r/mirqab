@@ -1912,7 +1912,7 @@ mod tests {
     /// A scratch root whose `proc/self` has used `ticks` of CPU.
     fn self_root(name: &str) -> (PathBuf, Root) {
         let d = std::env::temp_dir().join(format!("mirqab-self-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
+        let _ = crate::act::remove_path(&d, false);
         std::fs::create_dir_all(d.join("proc/self")).unwrap();
         std::fs::write(d.join("proc/self/status"), "VmRSS:\t100 kB\nThreads:\t2\n").unwrap();
         set_ticks(&d, 100);
@@ -1943,7 +1943,7 @@ mod tests {
         set_ticks(&d, 150);
         assert_eq!(cpu(&s.snapshot(&root, t0 + SELF_GAP)), 100.0);
         assert!(s.daemon.is_none(), "no subscriber baseline was made");
-        let _ = std::fs::remove_dir_all(&d);
+        let _ = crate::act::remove_path(&d, false);
     }
 
     #[test]
@@ -1960,6 +1960,6 @@ mod tests {
         assert_eq!(cpu(&s.snapshot(&root, t1)), 100.0);
         // The next tick still reads from t0: 100 ticks in 2 s.
         assert_eq!(cpu(&s.sample(&root, t0 + Duration::from_secs(2))), 50.0);
-        let _ = std::fs::remove_dir_all(&d);
+        let _ = crate::act::remove_path(&d, false);
     }
 }
