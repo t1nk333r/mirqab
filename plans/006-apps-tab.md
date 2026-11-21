@@ -281,7 +281,7 @@ when nothing is left to act on.
 | Refused | Rule | Source |
 | --- | --- | --- |
 | pid ≤ 1 | as today | §5.4; `act.rs:69` |
-| the daemon | `std::process::id()`, and the pid in `proc/self/stat` read through `Root` (4321 in the fixture) | §5.4; `act.rs:72` |
+| the daemon | the pid in `proc/self/stat` read through `Root` (4321 in the fixture), and `std::process::id()` on the live root | §5.4; `act.rs:72` |
 | another user's process, uid 0 included | all four numbers of `Uid:` must be the user's. Today only the real uid is read, so a setuid-root program passes. | §5.4, §8.2; `act.rs:47-54` |
 | a kernel thread | `PF_KTHREAD` in `stat` flags | follows from uid 0; stated for the message |
 | outside the user's cgroup subtree | the cgroup path must start with `/user.slice/user-<uid>.slice/` | §5.4 |
@@ -1389,7 +1389,12 @@ with where it lives:
   (`crates/mirqab-core/src/root.rs:30`).
 - **Refusals** (`act::refusal`, `act.rs:228`), checked when the plan is
   made and again inside `act::signal`: pid ≤ 1; the daemon
-  (`std::process::id()` and `proc/self/stat` under the root); a kernel
+  (`std::process::id()` on the live root, and `proc/self/stat` under the
+  root; on a fixture root only the latter since 2026-11-21: a CI
+  container's daemon ran as pid 2011, the fixture browser's content
+  process, which a quit by name then left out as the daemon;
+  `a_fixture_process_that_shares_the_test_daemons_pid_is_not_the_daemon`
+  in `tests/actions.rs`); a kernel
   thread (`PF_KTHREAD`, before the uid so the message says so); any of the
   four `Uid:` numbers not the user's; a cgroup outside
   `/user.slice/user-<uid>.slice/`; `user@<uid>.service/init.scope`; and

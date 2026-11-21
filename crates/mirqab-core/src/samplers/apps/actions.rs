@@ -464,7 +464,13 @@ fn make_guard(
 ) -> Result<Guard, Failure> {
     let refused_tree =
         |e: guard::WalkError| Failure::new(Code::Refused, strings::refuse_tree(&e.to_string()));
-    let mut daemon = vec![std::process::id()];
+    // On a fixture root the daemon is the tree's `proc/self`: the real pid
+    // of the process running there names nothing in the tree, and a fixture
+    // process that happened to share it was left out as the daemon.
+    let mut daemon = Vec::new();
+    if root.is_host() {
+        daemon.push(std::process::id());
+    }
     if let Some(st) = procfs::read_text(root, "proc/self/stat")
         .as_deref()
         .and_then(procfs::stat)
