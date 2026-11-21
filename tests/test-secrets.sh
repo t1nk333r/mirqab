@@ -76,9 +76,32 @@ status_is "a link-local address with a hardware identifier is flagged" 1 "$STATU
 scan "mapped ${c}${c}ffff${c}${private_host}"
 status_is "an IPv4-mapped private address is flagged" 1 "$STATUS"
 scan 'documentation 2001:db8::1 and 2001:0DB8:0:0:0:0:0:42, loopback ::1, any ::,
-mapped ::ffff:192.0.2.1, link-local fe80::1, Rust std::fs::read and Self::new,
-a time 12:30:45, a socket 0100007F:0BB8, a key "a:", a path a::b::c'
+mapped ::ffff:192.0.2.1, link-local fe80::1, febf::1 and fec0::1, Rust std::fs::read,
+Self::new, Scope::dead, Kind::abc and Foo::1:2, a time 12:30:45 and at:12:30:45,
+a socket 0100007F:0BB8, a key "a:" and "dead:beef:", a path a::b::c, x.0.5:1:2,
+an address ::1: refused, 2001:db8::1:'
 status_is "documentation, loopback and non-address text pass" 0 "$STATUS"
+# fe80::/9 is allowed only with words 2 to 7 zero (review of L60): an
+# identifier in the middle words, or a prefix past feff, names a machine.
+scan "link fe80${c}1234${c}5678${c}9abc${c}${c}1"
+status_is "a link-local address with non-zero middle words is flagged" 1 "$STATUS"
+scan "site fec0${c}1${c}2${c}3${c}${c}5"
+status_is "a site-local address with a subnet is flagged" 1 "$STATUS"
+scan "top feff${c}dead${c}beef${c}cafe${c}${c}1"
+status_is "an feff address with non-zero words is flagged" 1 "$STATUS"
+# Multicast: the repository uses none, so every multicast group is flagged; a
+# solicited-node group carries the low bits of a host's own address.
+scan "group ff02${c}${c}1${c}ff4d${c}5e6f"
+status_is "a solicited-node multicast address is flagged" 1 "$STATUS"
+scan "all nodes ff02${c}${c}1"
+status_is "a well-known multicast address is flagged" 1 "$STATUS"
+# An address joined to a word, or followed by a colon, is still read.
+scan "addr${c}$global6"
+status_is "an address after a word and a colon is flagged" 1 "$STATUS"
+scan "host_$global6"
+status_is "an address after a word and an underscore is flagged" 1 "$STATUS"
+scan "$global6${c} refused"
+status_is "an address followed by a colon is flagged" 1 "$STATUS"
 
 # Hexadecimal addresses in a fixture's /proc/net tables, as the kernel
 # writes them: each 32-bit word in host (little-endian) byte order.

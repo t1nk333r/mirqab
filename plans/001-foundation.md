@@ -448,7 +448,13 @@ sandbox, export `GDK_BACKEND=broadway`, `BROADWAY_DISPLAY=:N`,
    `2001:db8::/32`, IPv4-mapped allowed ones and a small-identifier
    `fe80::/9` such as `fe80::1`; and the hexadecimal addresses in
    `tests/fixtures/**/proc/net/{tcp,tcp6,udp,udp6}`, decoded and held to
-   the same ranges.)
+   the same ranges. On review, `fe80::/9` means `fe80` to `feff` with
+   words 2 to 7 zero, so `febf::1` and `fec0::1` pass and a subnet or
+   middle-word identifier is flagged; multicast is flagged, as the
+   repository uses none; an address joined to a word by `:`, `_` or `.`,
+   or followed by one colon, is still read; `tests/test-secrets.sh`
+   "a link-local address with non-zero middle words is flagged" through
+   "an address followed by a colon is flagged".)
 10. `.github/workflows/ci.yml`, the only workflow this plan adds. Triggers:
     `pull_request` and `push` to `main`. `permissions: contents: read`.
     Container `archlinux:latest`; install `base-devel rust pkgconf gtk4

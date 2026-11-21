@@ -127,9 +127,11 @@ done | report "IPv4 address outside the documentation ranges"
 # Address classes for the two scans below, as awk functions. IPv4: the
 # ranges the scan above allows. IPv6 (eight 16-bit words): :: and ::1, the
 # documentation range 2001:db8::/32 (RFC 3849), an IPv4-mapped ::ffff:a.b.c.d
-# by its IPv4 address, and a link- or site-local fe80::/9 address whose
-# interface identifier is under 0x10000 (fe80::1 names no machine; a
-# MAC-derived or random identifier does).
+# by its IPv4 address, and a link- or site-local fe80::/9 address (fe80 to
+# feff) whose words 2 to 7 are zero, so only a 16-bit identifier is left
+# (fe80::1 names no machine; a subnet, or a MAC-derived or random identifier,
+# does). Multicast (ff00::/8) is not allowed: the repository uses none, and a
+# solicited-node group carries the low bits of a host's address.
 addr_lib='
 function hexval(s,    i, v) {
     v = 0
@@ -147,23 +149,42 @@ function v6ok(w,    zero5) {
     if (zero5 && w[6] == 0 && w[7] == 0 && w[8] <= 1) return 1
     if (w[1] == 8193 && w[2] == 3512) return 1
     if (zero5 && w[6] == 65535) return v4ok(int(w[7] / 256), w[7] % 256, int(w[8] / 256), w[8] % 256)
-    return w[1] >= 65152 && w[5] == 0 && w[6] == 0 && w[7] == 0
+    return w[1] >= 65152 && w[1] <= 65279 && w[2] == 0 && w[3] == 0 && w[4] == 0 &&
+        w[5] == 0 && w[6] == 0 && w[7] == 0
 }'
 
-# IPv6 addresses as text. A token of letters, digits, dots and colons is an
-# address only when all of it is (Rust paths such as std::fs and times such
-# as 12:30:45 are not), with a trailing dotted quad read as two words.
+# IPv6 addresses as text. A token of letters, digits, dots and colons is
+# read with one trailing colon dropped (`...::1: refused`) and a trailing
+# dotted quad read as two words. A token that is not all hex and colons is
+# an address joined to a word (`addr:2a01:...`, `host_2a01:...`) only when
+# what follows its last other character and that word's separator (the
+# character itself when it is `_` or `.`, else one colon) is an address of
+# at least two hex groups: Rust paths such as std::fs and Kind::abc, and
+# times such as at:12:30:45, are not.
 v6re='[0-9A-Za-z_.:]*:[0-9A-Za-z_.:]*'
 {
-    git grep -nIoE -e "$v6re" -- . ':!tools/secrets.sh' | sed 's/^\([^:]*:[0-9]*\):/\1\t/' || true
+    git grep -nIoE -e "$v6re" -- . ':!tools/secrets.sh' ':!tools/secrets-deny.txt' |
+        sed 's/^\([^:]*:[0-9]*\):/\1\t/' || true
     grep -oE -e "$v6re" "$added" | sed 's/^/history\t/' || true
 } | awk -F'\t' "$addr_lib"'
     {
         t = $2
         sub(/\.+$/, "", t)
+        if (t ~ /[^:]:$/) t = substr(t, 1, length(t) - 1)
         if (match(t, /:[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/)) {
             split(substr(t, RSTART + 1), q, ".")
             t = substr(t, 1, RSTART) sprintf("%x:%x", q[1] * 256 + q[2], q[3] * 256 + q[4])
+        }
+        joined = 0
+        if (t ~ /[^0-9A-Fa-f:]/) {
+            match(t, /^.*[^0-9A-Fa-f:]/)
+            sep = substr(t, RLENGTH, 1)
+            t = substr(t, RLENGTH + 1)
+            if (sep != "_" && sep != ".") {
+                if (substr(t, 1, 1) != ":") next
+                t = substr(t, 2)
+            }
+            joined = 1
         }
         if (t !~ /^[0-9A-Fa-f:]+$/ || t ~ /:::/ || t ~ /^:[^:]/ || t ~ /[^:]:$/) next
         c = t
@@ -175,6 +196,7 @@ v6re='[0-9A-Za-z_.:]*:[0-9A-Za-z_.:]*'
             if (g[i] != "") filled++
         }
         if (dbl > 1 || (dbl == 0 && filled != 8) || (dbl == 1 && filled > 7)) next
+        if (joined && filled < 2) next
         m = 0
         for (i = 1; i <= n; i++) {
             if (g[i] != "") w[++m] = hexval(g[i])
