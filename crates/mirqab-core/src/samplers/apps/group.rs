@@ -370,8 +370,12 @@ fn script_of(comm: &str, mut args: &[String]) -> Option<String> {
             "-C",
             "--conditions",
             "--input-type",
+            "--env-file",
+            "--title",
+            "--inspect-port",
         ],
-        "ruby" | "perl" => &["-I", "-r"],
+        "ruby" => &["-I", "-r", "-C", "-E"],
+        "perl" => &["-I", "-r"],
         "deno" => &["-c", "--config", "-L", "--log-level", "--import-map"],
         _ => &[],
     };

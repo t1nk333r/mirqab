@@ -322,7 +322,10 @@ From the audit of the samplers (2026-11-21):
   read of `gpu_busy_percent` or a hwmon sensor restarts the card's 5 s
   autosuspend timer, so a 1–2 s stream kept an idle card powered. A dGPU
   is any card but the boot display (`gpu::throttled`: `boot_vga` is not
-  1; NVIDIA is paced by `nvidia-smi`). Between reads the card's fields
+  1; NVIDIA is paced by `nvidia-smi`) whose `power/control` is `auto`: a
+  card that never suspends (a second desktop card, `control` set to `on`,
+  a virtual GPU) gains nothing from the pace and keeps its 1 s graph
+  (review of PR #25). Between reads the card's fields
   and its chips' rows under `class/hwmon` (matched by the `hwmonN` names
   under the card's `device/hwmon`) are repeated. `runtime_status` is
   still checked on every sample, so a card that has gone to sleep shows

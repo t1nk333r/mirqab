@@ -463,6 +463,8 @@ fn an_awake_dgpu_is_read_at_most_every_ten_seconds() {
     // dGPU powered. card0 is not the boot display (boot_vga 0): it is
     // read once per 10 s and repeated between; card1 is read every time.
     let d = scratch("dgpu", "root-desktop");
+    let control = d.0.join("sys/class/drm/card0/device/power/control");
+    std::fs::write(&control, "auto\n").unwrap();
     let root = Root::new(&d.0);
     let mut s = System::new();
     s.probe(&root).unwrap();
@@ -500,6 +502,16 @@ fn an_awake_dgpu_is_read_at_most_every_ten_seconds() {
     assert_eq!(third.gpus[0].busy_percent, Some(55.0), "read again at 10 s");
     assert_eq!(third.gpus[0].celsius, Some(70.0));
     assert_eq!(edge(&third), Some(70.0));
+    // A card whose runtime power management is off never suspends: the
+    // pace gains nothing, so it is read every time.
+    std::fs::write(&control, "on\n").unwrap();
+    std::fs::write(card0.join("gpu_busy_percent"), "66\n").unwrap();
+    let held_off = data(s.sample(&root, t0 + Duration::from_secs(11)));
+    assert_eq!(
+        held_off.gpus[0].busy_percent,
+        Some(66.0),
+        "power/control on"
+    );
     // A card that went to sleep shows as suspended at once, its last
     // values dropped and nothing read.
     for dev in [card0.clone(), d.0.join("sys/class/hwmon/hwmon6/device")] {

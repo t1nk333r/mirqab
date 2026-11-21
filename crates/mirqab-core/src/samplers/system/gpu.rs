@@ -49,14 +49,17 @@ pub fn suspended(root: &Root, dev: &str) -> bool {
 
 /// Whether the card under `dev` is a dGPU, read at most every 10 s by the
 /// sampler while it is awake: every card but the boot display (only it
-/// has `boot_vga` 1; a 3D controller has no such file). In amdgpu each
-/// read of the busy or hwmon files ends in `pm_runtime_put_autosuspend`,
+/// has `boot_vga` 1; a 3D controller has no such file) whose runtime power
+/// management is on (`power/control` is `auto`). In amdgpu each read of
+/// the busy or hwmon files ends in `pm_runtime_put_autosuspend`,
 /// restarting the card's 5 s autosuspend timer, so a 1–2 s stream would
-/// keep an idle card powered (audit of plan 002). NVIDIA's values come
-/// from `nvidia-smi`, paced on its own.
+/// keep an idle card powered (audit of plan 002). A card that never
+/// suspends gains nothing from the pace and keeps its 1 s graph (review
+/// of PR #25). NVIDIA's values come from `nvidia-smi`, paced on its own.
 pub fn throttled(root: &Root, dev: &str) -> bool {
     read_trim(root, &format!("{dev}/boot_vga")).as_deref() != Some("1")
         && read_trim(root, &format!("{dev}/vendor")).as_deref() != Some("0x10de")
+        && read_trim(root, &format!("{dev}/power/control")).as_deref() == Some("auto")
 }
 
 /// The card's hwmon directories (`hwmon6`), the names `sys/class/hwmon`
