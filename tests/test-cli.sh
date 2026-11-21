@@ -298,6 +298,44 @@ capture "$BIN/mirqab" load
 unlike "no escape codes when piped" "$OUTPUT" $'\e['
 stop_daemon
 
+# A name too long for `mirqab apps` is shown cut, and quits by that shown
+# form: a prefix that must name exactly one app (audit 2026-11-21, L46).
+# A copy of root-desktop whose apps have long names, two sharing the part
+# that is shown.
+LONG="$SANDBOX/root-long"
+cp -r "$FIXTURES/root-desktop" "$LONG"
+sed -i 's/^Name=Example Browser$/Name=Example Browser Developer Edition X/' \
+    "$LONG/usr/share/applications/example-browser.desktop"
+sed -i 's/^Name=Example Sync$/Name=Example Notes And Sync Tool One/' \
+    "$LONG/usr/share/applications/org.example.Sync.desktop"
+sed -i 's/^Name=Example Notes$/Name=Example Notes And Sync Tool Two/' \
+    "$LONG/var/lib/flatpak/exports/share/applications/org.example.Notes.desktop"
+rm -f "$SANDBOX/daemon.out"
+: >"$MIRQAB_ACT_LOG"
+start_daemon "$LONG"
+capture "$BIN/mirqab" apps --sort name
+like "apps cuts a long name" "$OUTPUT" "Example Browser Developer E… "
+capture "$BIN/mirqab" quit "Example Browser Developer E…" --dry-run
+status_is "quit by a shown name exits 0" 0 "$STATUS"
+like "and plans that app" "$OUTPUT" "2001  browser"
+capture "$BIN/mirqab" quit "example browser developer e…" -y
+status_is "quit -y by a shown name exits 0" 0 "$STATUS"
+is "a shown name quits the app, its main process first" "TERM 2001 5010
+TERM 2000 5000
+TERM 2010 5100
+TERM 2011 5200
+TERM 2012 5300" "$(act_log)"
+: >"$MIRQAB_ACT_LOG"
+capture "$BIN/mirqab" quit "Example Notes And Sync Tool…" -y
+status_is "a shown name two apps share exits 1" 1 "$STATUS"
+like "and lists one" "$OUTPUT" "flatpak:org.example.Notes"
+like "and the other" "$OUTPUT" "service:app-org.example.Sync@autostart"
+capture "$BIN/mirqab" quit "Example Browser…" -y
+status_is "a cut shorter than the shown one names no app" 1 "$STATUS"
+like "and says so" "$OUTPUT" "no app is named"
+is "nothing was sent for either" "" "$(act_log)"
+stop_daemon
+
 # Help, docs and completions come from one table (plan 005).
 capture "$BIN/mirqab" help --markdown
 is "docs/cli.md is the generated markdown" "$(<"$REPO/docs/cli.md")" "$OUTPUT"

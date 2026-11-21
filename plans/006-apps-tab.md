@@ -380,7 +380,10 @@ taken.
 `mirqab quit <pid|name> [-y] [--force] [--dry-run] [--json]`.
 
 - A number is a pid. Anything else is a group name, matched whole and
-  case-insensitively against the `apps` view. No match: exit 1. Several
+  case-insensitively against the `apps` view. A name `mirqab apps` shows
+  cut (`strings::APPS_NAME_WIDTH` less one character, then `…`) is taken
+  as a prefix; a shorter cut names nothing (audit 2026-11-21, L46). No
+  match: exit 1. Several
   matches: print them with their ids and pids, exit 1; never guess.
 - `--force` selects `apps.kill`.
 - Flow: call without `confirm`; print the `wouldDo` and `skipped` lines;

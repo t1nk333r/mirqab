@@ -6,8 +6,9 @@
 //! a plan and the `wouldDo` list, which is printed and confirmed (plan
 //! 005's flow, `confirm.rs`); the second sends the plan with
 //! `confirm: true`. So `-y` costs two calls as well. A name is matched
-//! whole and ignoring case against the apps' names; several matches are
-//! listed and nothing is guessed.
+//! whole and ignoring case against the apps' names, or by the cut form
+//! `mirqab apps` shows (`names`); several matches are listed and nothing
+//! is guessed.
 
 use crate::apps::parse_apps;
 use crate::cli::{CallError, call, exit_for, socket_or_exit};
@@ -127,6 +128,24 @@ pub(crate) fn result_lines(v: &Value) -> (Vec<String>, bool) {
     (out, !failed.is_empty())
 }
 
+/// Whether `target` names the app called `name`, ignoring case: the whole
+/// name, or the form `mirqab apps` shows a name too long for its column,
+/// its first characters and an ellipsis, taken as a prefix (audit
+/// 2026-11-21, L46). Only that shown form is a prefix: a shorter cut names
+/// nothing, so a few letters and `-y` never quit an app by guess.
+fn names(name: &str, target: &str) -> bool {
+    let (name, target) = (name.to_lowercase(), target.to_lowercase());
+    if name == target {
+        return true;
+    }
+    let width = strings::APPS_NAME_WIDTH;
+    target.strip_suffix('\u{2026}').is_some_and(|prefix| {
+        prefix.chars().count() == width - 1
+            && name.chars().count() > width
+            && name.starts_with(prefix)
+    })
+}
+
 /// `{"pid": N}` for a number, else the one app whose name is `name`.
 fn subject(socket: &Path, target: &str) -> Result<Value, ExitCode> {
     if target.bytes().all(|b| b.is_ascii_digit()) {
@@ -141,11 +160,10 @@ fn subject(socket: &Path, target: &str) -> Result<Value, ExitCode> {
         .with_params(json!({"sort": "name", "limit": u32::MAX}));
     let apps = call(socket, req).map_err(|e| exit_for(socket, e))?;
     let apps = parse_apps(apps).map_err(|m| fail(&m))?;
-    let wanted = target.to_lowercase();
     let found: Vec<_> = apps
         .groups
         .iter()
-        .filter(|g| g.name.to_lowercase() == wanted)
+        .filter(|g| names(&g.name, target))
         .collect();
     match found.as_slice() {
         [] => Err(fail(&strings::quit_no_app(target))),
@@ -320,6 +338,23 @@ mod tests {
         for l in &lines {
             assert!(!l.chars().any(char::is_control), "{l:?}");
         }
+    }
+
+    #[test]
+    fn a_name_is_matched_whole_or_by_the_form_apps_shows() {
+        let long = "Example Browser Developer Edition X";
+        let row = strings::apps_row(long, "0.0%", "1 MiB", 1);
+        let shown = row.split("  ").next().unwrap().trim_end();
+        assert_eq!(shown, "Example Browser Developer E\u{2026}");
+        assert!(names(long, shown));
+        assert!(names(long, &shown.to_uppercase()));
+        assert!(names(long, long));
+        assert!(names("Foot", "foot"));
+        assert!(!names(long, "Example Browser\u{2026}"), "a shorter cut");
+        assert!(!names(long, "Example Browser Developer E"), "no ellipsis");
+        // A name of exactly the width is shown whole, never cut.
+        let exact = "Example Browser Developer Ed";
+        assert!(!names(exact, "Example Browser Developer E\u{2026}"));
     }
 
     #[test]
