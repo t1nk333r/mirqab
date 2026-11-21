@@ -266,6 +266,13 @@ capture "$BIN/mirqab" history cpu.total --range 2y
 status_is "an unknown range is refused" 1 "$STATUS"
 capture "$BIN/mirqab" history
 status_is "history needs a series" 64 "$STATUS"
+# A series history does not keep is a failure, alone or beside a known one
+# (audit 2026-11-21, L41).
+capture "$BIN/mirqab" history nope
+status_is "an unknown series exits 1" 1 "$STATUS"
+like "and says which" "$OUTPUT" "no series named nope"
+capture "$BIN/mirqab" history cpu.total nope
+status_is "a known series beside an unknown one still exits 1" 1 "$STATUS"
 # --json is one line, and nothing piped carries an escape code.
 capture "$BIN/mirqab" status --json
 is "status --json is one line" 1 "$(wc -l <<<"$OUTPUT" | tr -d ' ')"

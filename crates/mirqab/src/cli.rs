@@ -127,8 +127,10 @@ fn print_status(v: &Value) {
 }
 
 /// One line per bucket: unix time, series, average and peak; or, with
-/// `--list`, one series per line.
-fn print_history(v: &Value, list: bool) {
+/// `--list`, one series per line. False when a series asked for is one
+/// history does not keep: the command then exits 1 (audit 2026-11-21).
+fn print_history(v: &Value, list: bool) -> bool {
+    let mut all_found = true;
     if list {
         for s in v.as_array().into_iter().flatten() {
             crate::out::line(&format!(
@@ -137,11 +139,12 @@ fn print_history(v: &Value, list: bool) {
                 s["unit"].as_str().unwrap_or("")
             ));
         }
-        return;
+        return all_found;
     }
     for (key, s) in v["series"].as_object().into_iter().flatten() {
         if s.is_null() {
             crate::out::err(&strings::no_such_series(key));
+            all_found = false;
             continue;
         }
         let unit = s["unit"].as_str().unwrap_or("");
@@ -155,6 +158,7 @@ fn print_history(v: &Value, list: bool) {
             ));
         }
     }
+    all_found
 }
 
 pub(crate) fn system(v: &Value) -> SystemData {
@@ -366,7 +370,9 @@ pub fn run(command: &str, args: Args) -> ExitCode {
             if command == "status" && !json_out {
                 print_status(&v);
             } else if command == "history" && !json_out {
-                print_history(&v, list);
+                if !print_history(&v, list) {
+                    return ExitCode::from(EXIT_FAILED);
+                }
             } else if command == "load" && !json_out {
                 print_load(&v);
             } else if command == "sensors" && !json_out {

@@ -739,6 +739,10 @@ Deferred:
   `crates/mirqab-core/tests/history.rs`,
   `a_history_query_is_clamped_and_its_series_capped` in
   `crates/mirqab-core/tests/protocol.rs`).
+  An unknown series (alone or beside a known one) exits 1 with
+  "history keeps no series named …" since the audit of 2026-11-21 (L41;
+  `tests/test-cli.sh`, "an unknown series exits 1"); an unknown range
+  already did.
 - The first plan that writes events: create `history.db`, its directory
   and the lock file 0600/0700. Done by the audit fixes in PR #26
   (`history::private_dir`, `private_file`, and
