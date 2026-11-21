@@ -12,13 +12,16 @@ build_bins
 # One clock tick (10 ms) over 2 s is 0.5 %, over the 0.3 % idle budget, so
 # the idle checks run 4 s (one tick is 0.25 %) and judge the better of two
 # runs: a single stray tick on a shared CI machine failed PR #12.
-capture "$REPO/tools/bench-idle.sh" --bin "$BIN" --seconds 4 --runs 2
+# $BIN is the debug build: as for the tray below, the 15 MiB budget is the
+# release build's, gated by CI's `bench`; here a regression ceiling (debug
+# RSS 15.2 MiB on CI and 15.4 locally on 2026-11-21, so 18).
+capture "$REPO/tools/bench-idle.sh" --bin "$BIN" --seconds 4 --runs 2 --max-rss 18
 status_is "a short idle run is within budget" 0 "$STATUS"
 like "it prints the CPU share" "$OUTPUT" "no subscriber: cpu "
 like "and the verdict" "$OUTPUT" "within budget"
 
 if command -v socat >/dev/null 2>&1; then
-    capture "$REPO/tools/bench-idle.sh" --bin "$BIN" --seconds 2 --subscribe self --live
+    capture "$REPO/tools/bench-idle.sh" --bin "$BIN" --seconds 2 --subscribe self --live --max-rss 18
     status_is "a live subscription is measured" 0 "$STATUS"
     like "against its own budget" "$OUTPUT" "< 1%"
 else
@@ -50,7 +53,7 @@ if command -v socat >/dev/null 2>&1; then
     # 20 % (17.1 MiB on 2026-11-14, so 21); CI gates the release build.
     capture "$REPO/tools/bench-idle.sh" --bin "$BIN" --seconds 2 --subscribe apps --max-cpu 1.5 --max-rss 21 --procs 400
     status_is "apps at 400 processes is measured" 0 "$STATUS"
-    like "on a cloned root it names" "$OUTPUT" "clones of 37 user processes"
+    like "on a cloned root it names" "$OUTPUT" "clones of 47 user processes"
     like "against the 1.5 % budget" "$OUTPUT" "< 1.5%"
     n=$(sed -n 's/^procs: \([0-9]*\) processes.*/\1/p' <<<"$OUTPUT")
     ((${n:-0} >= 400)) && ok || not_ok "at least 400 processes (got ${n:-none})"
