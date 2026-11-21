@@ -39,11 +39,12 @@ fn a_first_run_is_seeded_once() {
 #[test]
 fn cards_move_up_and_down_and_toggle() {
     let p = v(&["a", "b", "c"]);
-    assert_eq!(home::moved(&p, "b", true), v(&["b", "a", "c"]));
-    assert_eq!(home::moved(&p, "b", false), v(&["a", "c", "b"]));
-    assert_eq!(home::moved(&p, "a", true), p, "first stays first");
-    assert_eq!(home::moved(&p, "c", false), p, "last stays last");
-    assert_eq!(home::moved(&p, "zz", true), p);
+    let all = ["a", "b", "c"];
+    assert_eq!(home::moved(&p, &all, "b", true), v(&["b", "a", "c"]));
+    assert_eq!(home::moved(&p, &all, "b", false), v(&["a", "c", "b"]));
+    assert_eq!(home::moved(&p, &all, "a", true), p, "first stays first");
+    assert_eq!(home::moved(&p, &all, "c", false), p, "last stays last");
+    assert_eq!(home::moved(&p, &all, "zz", true), p);
     assert_eq!(
         home::dropped(&p, "c", "a"),
         v(&["c", "a", "b"]),
@@ -62,6 +63,51 @@ fn cards_move_up_and_down_and_toggle() {
         v(&["b", "c", "a"]),
         "re-pinning moves it last"
     );
+}
+
+/// Audit 2026-11-21, L51: an id Home does not show (unknown, its stream
+/// unserved, or a repeat) sits between two cards; Alt+Down passes over it to
+/// the next shown card instead of seeming to do nothing.
+#[test]
+fn a_card_moves_past_a_pinned_id_that_is_not_shown() {
+    let pinned = v(&["system.cpu", "bogus", "system.memory"]);
+    let caps = v(&["system", "self", "ui"]);
+    let shown: Vec<&str> = home::visible(&pinned, &caps).iter().map(|c| c.id).collect();
+    assert_eq!(shown, ["system.cpu", "system.memory"]);
+    assert_eq!(
+        home::moved(&pinned, &shown, "system.cpu", false),
+        v(&["system.memory", "bogus", "system.cpu"])
+    );
+    assert_eq!(
+        home::moved(&pinned, &shown, "system.memory", true),
+        v(&["system.memory", "bogus", "system.cpu"])
+    );
+    assert_eq!(
+        home::moved(&pinned, &shown, "system.memory", false),
+        pinned,
+        "the last shown card stays last"
+    );
+    // A repeated id is shown once, at its first place: passed over too.
+    let twice = v(&[
+        "system.cpu",
+        "system.memory",
+        "system.cpu",
+        "system.overview",
+    ]);
+    let caps = v(&["system"]);
+    let shown: Vec<&str> = home::visible(&twice, &caps).iter().map(|c| c.id).collect();
+    assert_eq!(
+        home::moved(&twice, &shown, "system.memory", false),
+        v(&[
+            "system.cpu",
+            "system.overview",
+            "system.cpu",
+            "system.memory"
+        ])
+    );
+    // Before the daemon says what it serves: every known pinned card.
+    let ids: Vec<&str> = home::visible(&pinned, &[]).iter().map(|c| c.id).collect();
+    assert_eq!(ids, ["system.cpu", "system.memory"]);
 }
 
 #[test]

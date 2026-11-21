@@ -7,6 +7,7 @@
 //! (CLAUDE.md "Style").
 #![allow(unsafe_code)]
 
+use crate::proto::strings;
 use std::os::fd::{AsRawFd, BorrowedFd, FromRawFd, OwnedFd, RawFd};
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -61,25 +62,39 @@ pub fn uid() -> u32 {
 }
 
 /// The first socket systemd passed (sd_listen_fds(3)): fd 3, when
-/// LISTEN_PID names this process and LISTEN_FDS is at least 1.
-pub fn listen_fd() -> Option<UnixListener> {
-    let pid: u32 = std::env::var("LISTEN_PID").ok()?.parse().ok()?;
-    let fds: u32 = std::env::var("LISTEN_FDS").ok()?.parse().ok()?;
+/// LISTEN_PID names this process and LISTEN_FDS is at least 1. Ok(None)
+/// when the variables do not name this process. Err when they do but fd 3
+/// is not a listening Unix stream socket: the variables lie (a caller that
+/// closed fd 3, `3<&-`, and then fd 3 is whatever this process opened
+/// next, the lock file), and adopting it would hand a file to `accept`
+/// and to two owners (audit 2026-11-21, L1).
+pub fn listen_fd() -> Result<Option<UnixListener>, String> {
+    let var = |name| std::env::var(name).ok().and_then(|v| v.parse::<u32>().ok());
+    let (Some(pid), Some(fds)) = (var("LISTEN_PID"), var("LISTEN_FDS")) else {
+        return Ok(None);
+    };
     if pid != std::process::id() || fds < 1 {
-        return None;
+        return Ok(None);
     }
     const SD_LISTEN_FDS_START: RawFd = 3;
-    // SAFETY: systemd's contract is that fd 3 is an open listening socket
-    // handed to this pid and owned by nobody else in the process; we take
-    // ownership exactly once, here, before anything could open fd 3.
-    let listener = unsafe { UnixListener::from_raw_fd(SD_LISTEN_FDS_START) };
+    listening_unix_stream(SD_LISTEN_FDS_START)
+        .map_err(|e| strings::listen_fd_not_a_socket(&e.to_string()))?;
     // systemd passes the socket without close-on-exec; the commands exec.rs
     // runs (systemctl, from phase D) must not inherit the listening socket.
-    // SAFETY: fd 3 is the open socket just adopted; F_SETFD with FD_CLOEXEC
+    // SAFETY: fd 3 is open (checked just above); F_SETFD with FD_CLOEXEC
     // changes only its close-on-exec flag and touches no memory.
-    unsafe {
-        libc::fcntl(SD_LISTEN_FDS_START, libc::F_SETFD, libc::FD_CLOEXEC);
+    let rc = unsafe { libc::fcntl(SD_LISTEN_FDS_START, libc::F_SETFD, libc::FD_CLOEXEC) };
+    if rc == -1 {
+        return Err(strings::listen_fd_not_a_socket(
+            &std::io::Error::last_os_error().to_string(),
+        ));
     }
+    // SAFETY: fd 3 was just checked to be an open, listening AF_UNIX stream
+    // socket, so it is the one systemd passed: the daemon opens no listening
+    // socket of its own before this, and the files it does open first (its
+    // lock files) would have failed the check had one taken fd 3. Nothing
+    // else owns it; ownership is taken exactly once, here.
+    let listener = unsafe { UnixListener::from_raw_fd(SD_LISTEN_FDS_START) };
     // Children (the commands exec.rs runs) must not inherit the variables.
     // SAFETY: called at start-up on the main thread before any other thread
     // exists, as std::env::remove_var requires.
@@ -88,7 +103,55 @@ pub fn listen_fd() -> Option<UnixListener> {
         std::env::remove_var("LISTEN_FDS");
         std::env::remove_var("LISTEN_FDNAMES");
     }
-    Some(listener)
+    Ok(Some(listener))
+}
+
+/// Ok when `fd` is an open socket (fstat), of the Unix domain, of the stream
+/// type, and listening (SO_ACCEPTCONN); else why not.
+fn listening_unix_stream(fd: RawFd) -> std::io::Result<()> {
+    let mut st = std::mem::MaybeUninit::<libc::stat>::uninit();
+    // SAFETY: `st` is a live stack buffer of the type fstat writes; fstat
+    // reads nothing through it and fails with EBADF on a closed fd.
+    if unsafe { libc::fstat(fd, st.as_mut_ptr()) } != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    // SAFETY: fstat returned 0, so it filled the whole struct.
+    let st = unsafe { st.assume_init() };
+    let not = |what: &str| std::io::Error::new(std::io::ErrorKind::InvalidInput, what.to_string());
+    if st.st_mode & libc::S_IFMT != libc::S_IFSOCK {
+        return Err(not("not a socket"));
+    }
+    if sockopt_int(fd, libc::SO_DOMAIN)? != libc::AF_UNIX {
+        return Err(not("not a Unix socket"));
+    }
+    if sockopt_int(fd, libc::SO_TYPE)? != libc::SOCK_STREAM {
+        return Err(not("not a stream socket"));
+    }
+    if sockopt_int(fd, libc::SO_ACCEPTCONN)? == 0 {
+        return Err(not("not listening"));
+    }
+    Ok(())
+}
+
+/// An integer SOL_SOCKET option of `fd`.
+fn sockopt_int(fd: RawFd, opt: libc::c_int) -> std::io::Result<libc::c_int> {
+    let mut v: libc::c_int = 0;
+    let mut len = std::mem::size_of::<libc::c_int>() as libc::socklen_t;
+    // SAFETY: `v` and `len` are live stack values; `len` says `v`'s size,
+    // which is what the integer options checked here write.
+    let rc = unsafe {
+        libc::getsockopt(
+            fd,
+            libc::SOL_SOCKET,
+            opt,
+            (&mut v as *mut libc::c_int).cast(),
+            &mut len,
+        )
+    };
+    if rc != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(v)
 }
 
 /// Whether nobody reads stdout any more: the write end of a pipe whose

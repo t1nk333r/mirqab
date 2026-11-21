@@ -137,7 +137,10 @@ dropped.
 ### Streams added here
 
 `self`, every 2 s while subscribed (the footer is text, not a live graph;
-the stream accepts `live` for a pinned self-cost graph):
+the stream accepts `live` for a pinned self-cost graph). A `get self`
+reads CPU against a subscriber's baseline when one is 250 ms to 10 s old,
+without moving it, else over half a second of its own (audit 2026-11-21,
+L30: it moved the subscriber's baseline, and with none its CPU was 0):
 
 ```json
 {"daemon":{"cpu":0.1,"rssBytes":3145728,"threads":4},
@@ -149,6 +152,8 @@ the stream accepts `live` for a pinned self-cost graph):
 `{"event":"hide"}`, `{"event":"toggle","tab":null}`,
 `{"event":"config-changed"}`. A client that subscribes to `ui` with
 `params.role = "ui"` and its pid is the interface; the daemon remembers one.
+A `pid` that is not 1 to 2147483647 is not taken, and the client is not
+the interface (audit 2026-11-21, L37).
 
 `system` (core only; plan 002 defines the full shape):
 `{"cpu":{"percent":…},"mem":{"totalBytes":…,"availableBytes":…}}`.
@@ -170,6 +175,13 @@ the stream accepts `live` for a pinned self-cost graph):
 ```
 
 (Plan 022, 2026-11-14: the default `window.mode` is now `"window"`.)
+
+`theme.accent` and `units.clock` are reserved: the daemon accepts and
+checks them, so a config that sets them stays valid, but nothing reads
+`theme.accent` yet and no clock is shown until plan 016, so Settings
+offers no clock row (audit 2026-11-21, L11). Which key holds the clock
+format is plan 016's decision: its draft names `time.hour12`
+(`plans/016-time-tab.md:37`), not `units.clock`.
 
 `live.intervalMs` is the interval of a live graph on screen: 1000 by
 default, settable from 1000 to 5000 for a user who wants less work. It
@@ -209,7 +221,10 @@ does not change any other interval.
   stream. `subscribe(stream, interval, live, callback)` returns a handle
   that unsubscribes when dropped; subscriptions are reference-counted per
   (stream, live); reconnects with a one-shot back-off (2 s, 4 s, 8 s,
-  capped at 30 s, each `// mirqab:ui-timeout`); exposes `connected`,
+  capped at 30 s, each `// mirqab:ui-timeout`); a connection with no
+  hello within 5 s counts as a failed one, so a stopped daemon whose
+  socket is still bound gets the notice and the retry (audit 2026-11-21,
+  L49); exposes `connected`,
   `capabilities`, `unavailable`. Socket path from `MIRQAB_SOCKET` or the
   default. No thread and no async runtime: `glib::MainContext::spawn_local`.
 - `window.rs`: one `adw::ApplicationWindow` holding a horizontal box of
@@ -231,16 +246,33 @@ does not change any other interval.
   into a second `gtk::CssProvider` at
   `STYLE_PROVIDER_PRIORITY_APPLICATION + 1`, and watches both files with
   `gio::FileMonitor`.
+- `listeners.rs`: the theme's and the config's callbacks, each kept with
+  a weak reference to the widget that owns it and dropped with it at the
+  next registration or run, so pages built and dropped between two
+  changes do not pile them up (audit 2026-11-21, L52 and L58). A run
+  started from inside a callback does not recurse: it asks for one more
+  pass after the current one, and any number of asks make one pass
+  (review of the audit lows; the unit test
+  `a_run_started_from_a_callback_is_one_more_pass_not_a_recursion`).
 - `selftest.rs`: `--selftest <tab>` (architecture §7.5): window mode,
   build the page, wait for its first event or 5 s, print the widget tree
   as JSON on stdout, exit 0; exit 1 with the reason on stderr otherwise.
+  A tab the window cannot open (`mirqab_view::shell::opens`) is refused
+  at once with exit 64, like any other bad argument: `show` would have
+  opened another tab than the one the selftest waits on (audit
+  2026-11-21, L57).
 - `widgets/`: `card.rs`, `graph.rs`, `range_picker.rs`, `stat.rs` (label
   and value), `pill.rs` (a coloured status word), `meter.rs` (a
   horizontal bar), `badge.rs`, `confirm_dialog.rs` (an `adw::AlertDialog`
   showing a `wouldDo` list), `empty_state.rs` (an `adw::StatusPage`),
   `icon.rs` (the glyph label), `sidebar.rs`, `footer.rs`. Switches and
   buttons are GTK's own (`gtk::Switch`, `gtk::Button` with the `flat`
-  class); no wrapper.
+  class); no wrapper. A tile's badge count is the tile's accessible
+  description, in words from `strings::tile_badge` ("3 ports listening",
+  "1 session needs you"), since the tile's label is the tab's name
+  (audit 2026-11-21, L54; `a_tile_badge_is_the_tiles_accessible_description`
+  in `crates/mirqab-ui/tests/widgets.rs`, `a_tile_badge_says_what_it_counts`
+  in `strings.rs`).
 - `tabs/settings/page.rs`: window mode and anchor, units, colour scheme,
   theme follow path, live interval, hidden tabs, and a "Daemon" section
   (version, socket, history size, helper status). Built from
@@ -754,6 +786,12 @@ Deferred:
   `crates/mirqab-core/tests/history.rs`,
   `a_history_query_is_clamped_and_its_series_capped` in
   `crates/mirqab-core/tests/protocol.rs`).
+  An unknown series (alone or beside a known one) exits 1 with
+  "history keeps no series named …" since the audit of 2026-11-21 (L41;
+  `tests/test-cli.sh`, "an unknown series exits 1"); an unknown range
+  already did. With `--json` the answer is printed, the series is
+  `null`, and the exit is 1 as well (review of the fix; "with --json
+  too").
 - The first plan that writes events: create `history.db`, its directory
   and the lock file 0600/0700. Done by the audit fixes in PR #26
   (`history::private_dir`, `private_file`, and
@@ -878,6 +916,17 @@ above:
   the display failure comes after exec. Tested in
   `crates/mirqab/tests/cli.rs`, `open_without_an_interface_fails_cleanly`
   and `a_unit_that_fails_to_start_is_reported`.)
+  A daemon on a socket other than `$XDG_RUNTIME_DIR/mirqab/daemon.sock`
+  (given with `--socket` or in its own `$MIRQAB_SOCKET`, which the user
+  manager's environment does not carry) starts no unit: the shared
+  `mirqab-ui.service` runs `mirqab-ui` without `--socket`, so it would
+  dial the default socket, wait out the 5 s and fail, or attach to
+  another daemon. The open is `failed` with `mirqab-ui --socket <path>`
+  as the hint; an interface started that way gets the events as usual
+  (audit 2026-11-21, L61;
+  `open_on_another_socket_names_the_command_and_starts_no_unit` and
+  `open_on_a_socket_named_in_the_environment_starts_no_unit` in
+  `crates/mirqab/tests/cli.rs`).
   `ui.hide` with no interface is done. The fallback that spawns
   `mirqab-ui` with the caller's environment (Unverified, below) moves to
   plan 020, which owns the session setup.
@@ -952,7 +1001,10 @@ merge:
   `live` parameter is private to the client; a trailing timer marker
   marks only its own line, and `timeout_future` and `interval_stream`
   need markers too; the footer has one border; the exit-timer test
-  outlasts the delay it checks.
+  outlasts the delay it checks. (Review of the audit 2026-11-21 lows:
+  `glib::future_with_timeout`, used by the client's hello wait, needs a
+  marker too; `tests/test-lint-rules.sh`, "an unmarked
+  future_with_timeout".)
 
 Deferred: a failed `subscribe` reply, and accessible labels for Graph and
 Meter (plan 002, their first users); a card's pin state (plan 003); a

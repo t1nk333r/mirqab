@@ -36,14 +36,26 @@ fn read_milli(root: &Root, rel: &str) -> Option<f64> {
 /// amdgpu chip restarts the card's autosuspend timer).
 pub type Held = std::collections::BTreeMap<String, Option<Vec<Temp>>>;
 
+/// What `read` does with the disk chips (`drivetemp`, `nvme`). A
+/// drivetemp read is an ATA command, and on some drives it restarts the
+/// spin-down timer (kernel Documentation/hwmon/drivetemp.rst, Known
+/// issues), so the history minute never reads them and a live reader at
+/// most every 10 s (audit of plan 002).
+pub enum Disks<'a> {
+    /// Not read, and no rows.
+    Skip,
+    /// Read, each chip's rows recorded by its `sys/class/hwmon` directory.
+    Read(&'a mut std::collections::BTreeMap<String, Vec<Temp>>),
+    /// The rows of an earlier `Read`, by directory, repeated without
+    /// reading. A chip absent from it (a disk added since) waits for the
+    /// next `Read`; a recorded chip that is gone is left out.
+    Held(&'a std::collections::BTreeMap<String, Vec<Temp>>),
+}
+
 /// Every hwmon temperature, in hwmon order. A driver name seen twice
 /// (two NVMe drives) gets `.1`, `.2` in its id so ids stay unique.
-/// Without `disks` the disk chips (`drivetemp`, `nvme`) are not read: on
-/// some drives a temperature read restarts the spin-down timer (kernel
-/// Documentation/hwmon/drivetemp.rst, Known issues), so only a reader
-/// someone is looking at reads them, never the history minute (audit of
-/// plan 002).
-pub fn read(root: &Root, disks: bool, held: &mut Held) -> Vec<Temp> {
+/// `disks` says whether the disk chips are read, repeated or left out.
+pub fn read(root: &Root, mut disks: Disks<'_>, held: &mut Held) -> Vec<Temp> {
     let mut out = Vec::new();
     let Ok(mut dirs) = root.read_dir("sys/class/hwmon") else {
         return thermal_zones(root);
@@ -66,8 +78,15 @@ pub fn read(root: &Root, disks: bool, held: &mut Held) -> Vec<Temp> {
         };
         let name = name.trim().to_string();
         let k = kind(&name);
-        if k == "disk" && !disks {
-            continue;
+        if k == "disk" {
+            match &disks {
+                Disks::Skip => continue,
+                Disks::Held(rows) => {
+                    out.extend(rows.get(&dir).into_iter().flatten().cloned());
+                    continue;
+                }
+                Disks::Read(_) => {}
+            }
         }
         let Ok(files) = root.read_dir(&base) else {
             continue;
@@ -115,6 +134,9 @@ pub fn read(root: &Root, disks: bool, held: &mut Held) -> Vec<Temp> {
         }
         if let Some(slot) = slot {
             *slot = Some(out[first..].to_vec());
+        }
+        if let (true, Disks::Read(rows)) = (k == "disk", &mut disks) {
+            rows.insert(dir, out[first..].to_vec());
         }
     }
     if !out.iter().any(|t| t.kind == "cpu") {

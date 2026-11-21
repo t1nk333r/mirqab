@@ -327,6 +327,26 @@ fn live_only_while_mapped_at_two_minutes() {
     drop(win);
 }
 
+/// Audit 2026-11-21, L53: the wall clock steps back 100 s while a live
+/// graph runs. The ring starts again rather than keeping the later stamps,
+/// which stalled the two-minute trim and let it grow without bound.
+#[gtk::test]
+#[ignore = "needs a display: run tests/test-ui-widgets.sh"]
+fn a_clock_stepped_back_keeps_the_live_ring_to_two_minutes() {
+    let g = Graph::new();
+    for t in 990..=1000 {
+        g.push_live(t, 1.0);
+    }
+    for t in 900..=1100 {
+        g.push_live(t, 2.0);
+    }
+    // Two minutes of whole seconds, both ends included.
+    assert!(g.ring_len() <= 121, "ring holds {}", g.ring_len());
+    // A stamp one second back is the same sample again, not a new start.
+    g.push_live(1099, 3.0);
+    assert!(g.ring_len() > 100, "ring holds {}", g.ring_len());
+}
+
 #[gtk::test]
 #[ignore = "needs a display: run tests/test-ui-widgets.sh"]
 fn the_meter_draws_track_and_fill_in_a_rounded_clip() {
@@ -1362,4 +1382,149 @@ fn every_accessible_label_sits_on_a_role_that_carries_a_name() {
     ctx.client.close();
 
     assert!(bad.is_empty(), "labels no screen reader hears: {bad:#?}");
+}
+
+/// Audit 2026-11-21, L54: a tile's accessible label is its tab's name, so
+/// the badge's text inside it never reached a screen reader. The count is
+/// the tile's accessible description while it shows.
+#[gtk::test]
+#[ignore = "needs a display: run tests/test-ui-widgets.sh"]
+fn a_tile_badge_is_the_tiles_accessible_description() {
+    use mirqab_ui::widgets::sidebar::Sidebar;
+    let sidebar = Sidebar::new(|_| {});
+    let tiles = mirqab_view::shell::sidebar(mirqab_view::shell::TABS, &[], &[]);
+    sidebar.set_tiles(&tiles, "home");
+    let label = tiles.iter().find(|t| t.id == "ports").unwrap().label;
+    let mut found = None;
+    let mut stack = vec![sidebar.root.clone().upcast::<gtk::Widget>()];
+    while let Some(w) = stack.pop() {
+        if w.has_css_class("mirqab-tile") && w.tooltip_text().as_deref() == Some(label) {
+            found = Some(w.clone());
+        }
+        let mut c = w.first_child();
+        while let Some(child) = c {
+            c = child.next_sibling();
+            stack.push(child);
+        }
+    }
+    let tile = found.expect("the Ports tile");
+    let described =
+        || gtk::test_accessible_has_property(&tile, gtk::AccessibleProperty::Description);
+    assert!(!described(), "no badge: no description");
+    sidebar.set_badge("ports", 3);
+    assert!(described(), "a badge of 3 is described");
+    sidebar.set_badge("ports", 0);
+    assert!(!described(), "a hidden badge is not");
+}
+
+/// Audit 2026-11-21, L52: every meter and graph registered a theme
+/// listener that was dropped only by the next theme change, so building
+/// and dropping pages grew the list without bound. A listener goes with
+/// the widget that owns it, at the next registration.
+#[gtk::test]
+#[ignore = "needs a display: run tests/test-ui-widgets.sh"]
+fn theme_listeners_go_with_their_widgets() {
+    let before = mirqab_ui::style::listener_count();
+    for _ in 0..50 {
+        drop(Meter::new());
+        drop(Graph::new());
+    }
+    let kept = Meter::new();
+    assert!(
+        mirqab_ui::style::listener_count() <= before + 2,
+        "{} theme listeners after dropping 100 widgets (from {before})",
+        mirqab_ui::style::listener_count()
+    );
+    drop(kept);
+}
+
+/// Audit 2026-11-21, L58: the same for config listeners, which a pin
+/// button and every Home and Settings page register.
+#[gtk::test]
+#[ignore = "needs a display: run tests/test-ui-widgets.sh"]
+fn config_listeners_go_with_their_widgets() {
+    adw::init().unwrap();
+    let app = adw::Application::builder()
+        .application_id("io.github.t1nk333r.mirqab.test")
+        .flags(gtk::gio::ApplicationFlags::NON_UNIQUE)
+        .build();
+    let dir = std::env::temp_dir().join(format!("mirqab-widgets-{}", std::process::id()));
+    let ctx = mirqab_ui::app::Ctx::new(&app, dir.join("none.sock"));
+    let before = ctx.config_listener_count();
+    for _ in 0..50 {
+        drop(mirqab_ui::tabs::pin_button(&ctx, "system.cpu"));
+    }
+    let kept = mirqab_ui::tabs::pin_button(&ctx, "system.cpu");
+    assert!(
+        ctx.config_listener_count() <= before + 1,
+        "{} config listeners after dropping 50 buttons (from {before})",
+        ctx.config_listener_count()
+    );
+    drop(kept);
+    ctx.client.close();
+}
+
+/// Audit 2026-11-21, L49: a daemon that stopped with its socket still
+/// bound lets the connection complete from the backlog and then says
+/// nothing. The client gives up waiting for its hello, says it is
+/// disconnected (the footer's reconnect notice) and tries again.
+#[gtk::test]
+#[ignore = "needs a display: run tests/test-ui-widgets.sh"]
+fn a_daemon_that_never_says_hello_counts_as_disconnected() {
+    let dir = std::env::temp_dir().join(format!("mirqab-hello-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("daemon.sock");
+    let _ = std::fs::remove_file(&path);
+    // Bound and listening, never accepting or writing.
+    let listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
+    let client = mirqab_ui::client::Client::new(path);
+    let down = Rc::new(Cell::new(0));
+    let d = Rc::clone(&down);
+    client.on_state(move |c| {
+        if !c.connected() {
+            d.set(d.get() + 1);
+        }
+    });
+    settle("the client gives up on the hello", || down.get() > 0);
+    assert!(!client.connected());
+    assert!(client.retry_in() > 0, "a retry is scheduled");
+    client.close();
+    drop(listener);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Audit 2026-11-21, L11: nothing shows a clock until plan 016, so
+/// Settings offers no clock format; `units.clock` stays a valid, reserved
+/// key.
+#[gtk::test]
+#[ignore = "needs a display: run tests/test-ui-widgets.sh"]
+fn settings_offers_no_clock_format_yet() {
+    use adw::prelude::PreferencesRowExt;
+    adw::init().unwrap();
+    let app = adw::Application::builder()
+        .application_id("io.github.t1nk333r.mirqab.test")
+        .flags(gtk::gio::ApplicationFlags::NON_UNIQUE)
+        .build();
+    let dir = std::env::temp_dir().join(format!("mirqab-widgets-{}", std::process::id()));
+    let ctx = mirqab_ui::app::Ctx::new(&app, dir.join("none.sock"));
+    let page = mirqab_ui::tabs::settings::page::build(&ctx);
+    let mut titles = Vec::new();
+    let mut stack = vec![page.clone()];
+    while let Some(w) = stack.pop() {
+        if let Some(row) = w.downcast_ref::<adw::PreferencesRow>() {
+            titles.push(row.title().to_string());
+        }
+        let mut c = w.first_child();
+        while let Some(child) = c {
+            c = child.next_sibling();
+            stack.push(child);
+        }
+    }
+    let has = |t: &str| titles.iter().any(|x| x == t);
+    assert!(
+        has(mirqab_proto::strings::SETTINGS_TEMPERATURE),
+        "{titles:?}"
+    );
+    assert!(!has(mirqab_proto::strings::SETTINGS_CLOCK), "{titles:?}");
+    ctx.client.close();
 }

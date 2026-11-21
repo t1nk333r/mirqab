@@ -74,36 +74,16 @@ fn flag(params: &Value, key: &str) -> bool {
 /// what it serves. `next dev` for `node …/node_modules/.bin/next dev`,
 /// `http.server` for `python3 -m http.server --bind 0.0.0.0 8000`,
 /// `manage.py runserver`, `vite`. An interpreter's script (or `-m`
-/// module) stands for the program; then the next argument joins it when it
-/// is a word (a subcommand), not a flag, a number or a path. Never the
-/// whole command line: arguments can hold secrets.
+/// module) stands for the program, by the apps grouping's rules
+/// (`group::script_and_rest`: options and their values skipped, inline
+/// code never named); then the next argument joins it when it is a word
+/// (a subcommand), not a flag, a number or a path. Never the whole
+/// command line: arguments can hold secrets.
 pub fn label(comm: &str, cmdline: &[String]) -> String {
     let name = procfs::display_name(comm, cmdline);
     let args = cmdline.get(1..).unwrap_or(&[]);
     let (base, rest): (String, &[String]) = if group::INTERPRETERS.contains(&comm) {
-        let mut found = None;
-        let mut i = 0;
-        while let Some(a) = args.get(i) {
-            match a.as_str() {
-                "-m" => {
-                    found = args
-                        .get(i + 1)
-                        .map(|m| (m.clone(), args.get(i + 2..).unwrap_or(&[])));
-                    break;
-                }
-                // Code on the command line: the interpreter's name alone.
-                "-c" | "-e" | "--eval" => break,
-                f if f.starts_with('-') => i += 1,
-                script => {
-                    found = Some((
-                        procfs::basename(script).to_string(),
-                        args.get(i + 1..).unwrap_or(&[]),
-                    ));
-                    break;
-                }
-            }
-        }
-        found.unwrap_or((name, &[]))
+        group::script_and_rest(comm, args).unwrap_or((name, &[]))
     } else {
         (name, args)
     };
@@ -683,6 +663,16 @@ mod tests {
         assert_eq!(l("node", "node node_modules/.bin/vite --port 5173"), "vite");
         assert_eq!(l("node", "node --inspect server.js"), "server.js");
         assert_eq!(l("python3", "python3 -c print(1)"), "python3");
+        // Option values and inline code, by the apps grouping's rules
+        // (audit 2026-11-21, L18).
+        assert_eq!(
+            l("python3", "python3 -W ignore -m http.server"),
+            "http.server"
+        );
+        assert_eq!(l("node", "node -r dotenv/config server.js"), "server.js");
+        assert_eq!(l("deno", "deno run -A main.ts"), "main.ts");
+        assert_eq!(l("perl", "perl -E say+1"), "perl");
+        assert_eq!(l("perl", "perl -lne print"), "perl");
         assert_eq!(
             l("example-sync", "/usr/bin/example-sync --no-browser"),
             "example-sync"

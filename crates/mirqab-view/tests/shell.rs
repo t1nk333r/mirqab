@@ -36,6 +36,16 @@ fn sixteen_tabs_in_the_documented_order() {
     }
 }
 
+/// The one check of what the window opens on (audit 2026-11-21, L57).
+#[test]
+fn the_window_opens_on_a_tab_or_settings_only() {
+    assert!(shell::opens("home"));
+    assert!(shell::opens("ports"));
+    assert!(shell::opens("settings"));
+    assert!(!shell::opens("nonsense"));
+    assert!(!shell::opens(""));
+}
+
 #[test]
 fn unbuilt_tabs_show_whatever_the_daemon_serves() {
     let tiles = shell::sidebar(TABS, &strings(&["system", "apps"]), &[]);

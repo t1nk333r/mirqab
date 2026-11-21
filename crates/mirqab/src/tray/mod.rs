@@ -1,8 +1,9 @@
 //! The tray icon (plan 004): a StatusNotifierItem served by the daemon
 //! through `ksni`, on ksni's own thread. The item is a client of the
 //! daemon's socket like any other: a click sends `ui.toggle`, the tooltip
-//! one `get` when the host reads it (at most every 10 s), Quit `shutdown`.
-//! It holds no subscription and no timer.
+//! one `get` when ksni asks for it (a host's read, the start, each click
+//! and each menu opening), at most every 10 s; Quit `shutdown`. It holds
+//! no subscription and no timer.
 
 mod item;
 mod menu;

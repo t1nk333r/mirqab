@@ -206,6 +206,8 @@ pub struct Temp {
 pub struct Thermal {
     /// `cool`, `warm`, `hot` or `critical`.
     pub state: String,
+    /// A `temps` id, or `nvidia.N` for an nvidia-smi card not listed
+    /// there.
     pub hottest: Option<String>,
     pub throttling: bool,
 }
@@ -505,7 +507,13 @@ pub struct SystemPort {
 }
 
 /// The `ports` stream with `lite: true`: counts only, for a badge, the
-/// tray and a bar item. `total` counts every row, as in the full view.
+/// tray and a bar item. `total` counts every row of the view. While every
+/// subscriber is lite the sampler skips the owner walk, so rows fold by
+/// (port, proto, uid, bind) rather than by process: `total` and
+/// `exposedCount` can be lower than the full view's (two processes of one
+/// user on a port are one row), and `leftBehindCount` is 0, since no row
+/// has a launcher. With a full subscriber too, the counts are the full
+/// view's.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct PortsLite {

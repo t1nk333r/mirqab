@@ -4,6 +4,7 @@
 //! the process quits (architecture §4).
 
 use crate::client::{Client, Subscription};
+use crate::listeners::Listeners;
 use crate::style::Style;
 use crate::window::Window;
 use adw::prelude::*;
@@ -62,13 +63,17 @@ impl Opts {
     /// S1): `--do` outside a test run, and `--selftest` reaching an
     /// interface that is already running (`first` false: the arguments
     /// came over the session bus from a second `mirqab-ui`), which would
-    /// otherwise drive the running window and exit it. Checked where the
-    /// process starts and again where forwarded arguments arrive.
+    /// otherwise drive the running window and exit it. And a `--selftest`
+    /// of a tab the window cannot open: `show` would fall back to a tab
+    /// the selftest does not wait on (audit 2026-11-21, L57). Checked where
+    /// the process starts and again where forwarded arguments arrive.
     pub fn refusal(&self, first: bool, test_env: bool) -> Option<&'static str> {
         if self.steps.is_some() && !test_env {
             Some(strings::UI_DO_TEST_ONLY)
         } else if self.selftest.is_some() && !first {
             Some(strings::UI_SELFTEST_NOT_FORWARDED)
+        } else if self.selftest.as_deref().is_some_and(|t| !shell::opens(t)) {
+            Some(strings::UI_SELFTEST_UNKNOWN_TAB)
         } else {
             None
         }
@@ -102,7 +107,7 @@ pub struct Ctx {
     /// A show asked for before the first config arrived (a hand-run
     /// `mirqab-ui`), run once it has, or on the first failed connection.
     parked: RefCell<Option<(Option<String>, Option<Mode>)>>,
-    config_listeners: RefCell<Vec<Box<dyn Fn() -> bool>>>,
+    config_listeners: Listeners,
     /// Pages that have shown their first data since the window appeared,
     /// and what waits for one (the selftest).
     ready: RefCell<std::collections::HashSet<String>>,
@@ -137,7 +142,7 @@ impl Ctx {
             hold: RefCell::new(Some(app.hold())),
             ui_sub: RefCell::new(None),
             parked: RefCell::new(None),
-            config_listeners: RefCell::new(Vec::new()),
+            config_listeners: Listeners::new(),
             ready: RefCell::new(Default::default()),
             ready_waiters: RefCell::new(Vec::new()),
         });
@@ -254,7 +259,7 @@ impl Ctx {
         let mode = mode
             .or_else(|| self.window().filter(|w| w.is_visible()).map(|w| w.mode))
             .unwrap_or(self.config.borrow().mode);
-        let valid = |t: &&str| *t == "settings" || shell::find(t).is_some();
+        let valid = |t: &&str| shell::opens(t);
         // No tab: an open window stays where it is; otherwise Home, or the
         // last tab with `window.rememberTab` (plan 003).
         let tab = tab.filter(valid).map(str::to_string).unwrap_or_else(|| {
@@ -375,19 +380,20 @@ impl Ctx {
         }
     }
 
-    /// Runs `f` after every config or status change (Settings re-reads its
-    /// rows) until it returns false (its page is gone).
-    pub fn on_config(&self, f: impl Fn() -> bool + 'static) {
-        self.config_listeners.borrow_mut().push(Box::new(f));
+    /// Runs `f` with `owner` after every config or status change (Settings
+    /// re-reads its rows) while `owner` lives.
+    pub fn on_config<W: IsA<glib::Object>>(&self, owner: &W, f: impl Fn(&W) + 'static) {
+        self.config_listeners.add(owner, f);
+    }
+
+    /// Config listeners held (tests).
+    #[doc(hidden)]
+    pub fn config_listener_count(&self) -> usize {
+        self.config_listeners.len()
     }
 
     fn config_changed(&self) {
-        let listeners = std::mem::take(&mut *self.config_listeners.borrow_mut());
-        let kept: Vec<_> = listeners.into_iter().filter(|f| f()).collect();
-        let mut current = self.config_listeners.borrow_mut();
-        let added = std::mem::take(&mut *current);
-        *current = kept;
-        current.extend(added);
+        self.config_listeners.run();
     }
 
     pub fn refresh_config(self: &Rc<Self>) {
@@ -509,5 +515,17 @@ mod tests {
         );
         assert_eq!(opts(&["--tab", "apps"]).refusal(false, false), None);
         assert_eq!(opts(&["--selftest", "apps"]).refusal(true, false), None);
+        assert_eq!(opts(&["--selftest", "settings"]).refusal(true, false), None);
+    }
+
+    /// Audit 2026-11-21, L57: the selftest waited on Home for an unknown
+    /// tab while `show` opened the remembered one, and exited 1 after 5 s.
+    /// It is refused at once instead.
+    #[test]
+    fn a_selftest_of_an_unknown_tab_is_refused() {
+        assert_eq!(
+            opts(&["--selftest", "nonsense"]).refusal(true, true),
+            Some(strings::UI_SELFTEST_UNKNOWN_TAB)
+        );
     }
 }
