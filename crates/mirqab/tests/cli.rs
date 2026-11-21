@@ -554,3 +554,110 @@ fn a_second_daemon_refuses_even_when_the_socket_file_is_gone() {
     assert_eq!(out.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&out.stderr).contains("already listens"));
 }
+
+/// A scratch directory, removed when dropped: a failed assertion too.
+struct Scratch(PathBuf);
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// A scratch directory with a private `run`, for a daemon started by hand.
+/// Under /tmp, not $TMPDIR: a socket path must stay under 108 bytes.
+fn scratch(name: &str) -> (Scratch, PathBuf) {
+    let dir = PathBuf::from("/tmp").join(format!("mqc-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let run = dir.join("run");
+    std::fs::create_dir_all(&run).unwrap();
+    std::fs::set_permissions(&run, std::fs::Permissions::from_mode(0o700)).unwrap();
+    (Scratch(dir), run)
+}
+
+fn fixture_root() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/root-desktop")
+}
+
+#[test]
+fn socket_activation_without_a_socket_on_fd_3_is_refused() {
+    // Audit 2026-11-21, L1: with fd 3 closed, the lock file took it and
+    // was adopted as the listening socket.
+    let (scratch, run) = scratch("noact");
+    let dir = &scratch.0;
+    let out = output_within(
+        Command::new("sh")
+            .arg("-c")
+            .arg(r#"LISTEN_PID=$$ LISTEN_FDS=1 exec "$0" daemon --root "$1" 3<&-"#)
+            .arg(BIN)
+            .arg(fixture_root())
+            .env("DBUS_SESSION_BUS_ADDRESS", "unix:path=/nonexistent")
+            .env("XDG_RUNTIME_DIR", &run)
+            .env("XDG_CONFIG_HOME", dir.join("config"))
+            .env("XDG_STATE_HOME", dir.join("state"))
+            .env("HOME", dir)
+            .env_remove("MIRQAB_SOCKET")
+            .env_remove("NOTIFY_SOCKET"),
+    );
+    let (stdout, stderr) = (
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
+    );
+    assert_eq!(out.status.code(), Some(1), "{stdout}{stderr}");
+    assert!(!stdout.contains("ready"), "it served: {stdout}");
+    assert!(stderr.contains("LISTEN_FDS"), "{stderr}");
+}
+
+#[test]
+fn a_socket_systemd_passes_on_fd_3_is_adopted() {
+    // The other side of L1: a listening Unix socket on fd 3 passes the
+    // checks. python3 stands in for systemd: it binds, moves the socket to
+    // fd 3 and execs the daemon with LISTEN_PID naming itself.
+    let (scratch, run) = scratch("act");
+    let dir = scratch.0.clone();
+    let socket = run.join("mirqab/daemon.sock");
+    std::fs::create_dir_all(socket.parent().unwrap()).unwrap();
+    std::fs::set_permissions(
+        socket.parent().unwrap(),
+        std::fs::Permissions::from_mode(0o700),
+    )
+    .unwrap();
+    let activate = "import os, socket, sys\n\
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)\n\
+        s.bind(sys.argv[1])\n\
+        s.listen()\n\
+        if s.fileno() != 3: os.dup2(s.fileno(), 3)\n\
+        os.set_inheritable(3, True)\n\
+        os.environ['LISTEN_PID'] = str(os.getpid())\n\
+        os.environ['LISTEN_FDS'] = '1'\n\
+        os.execv(sys.argv[2], [sys.argv[2], 'daemon', '--root', sys.argv[3]])\n";
+    let mut child = Command::new("python3")
+        .args(["-I", "-c", activate])
+        .arg(&socket)
+        .arg(BIN)
+        .arg(fixture_root())
+        .env("DBUS_SESSION_BUS_ADDRESS", "unix:path=/nonexistent")
+        .env("XDG_RUNTIME_DIR", &run)
+        .env("XDG_CONFIG_HOME", dir.join("config"))
+        .env("XDG_STATE_HOME", dir.join("state"))
+        .env("HOME", &dir)
+        .env_remove("MIRQAB_SOCKET")
+        .env_remove("NOTIFY_SOCKET")
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut ready = String::new();
+    BufReader::new(child.stdout.take().unwrap())
+        .read_line(&mut ready)
+        .unwrap();
+    let d = Daemon {
+        child,
+        dir,
+        socket: socket.clone(),
+    };
+    assert_eq!(ready.trim(), format!("ready {}", socket.display()));
+    let out = mirqab(&d, &["status", "--json"]);
+    let status: serde_json::Value = serde_json::from_slice(&out.stdout)
+        .unwrap_or_else(|_| panic!("{}", String::from_utf8_lossy(&out.stderr)));
+    assert_eq!(status["activated"], true, "{status}");
+}

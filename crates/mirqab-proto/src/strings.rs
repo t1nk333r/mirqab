@@ -723,6 +723,27 @@ pub fn no_runtime_dir() -> &'static str {
     "mirqab: XDG_RUNTIME_DIR is not set; the daemon needs a private runtime directory"
 }
 
+/// Neither the XDG variable nor HOME is an absolute path.
+pub fn no_home_dir(var: &str) -> String {
+    format!(
+        "mirqab: neither {var} nor HOME is an absolute path; set one so mirqab knows where its files go"
+    )
+}
+
+/// LISTEN_PID and LISTEN_FDS name this process, but fd 3 is not a
+/// listening Unix socket.
+pub fn listen_fd_not_a_socket(why: &str) -> String {
+    format!(
+        "LISTEN_PID and LISTEN_FDS say a socket was passed, but fd 3 is not a listening Unix stream socket ({why}); refusing to adopt it"
+    )
+}
+
+pub fn socket_dir_not_private(dir: &str) -> String {
+    format!(
+        "{dir} is not a private directory of this user's (mode 0700, not a symlink); refusing to put the socket there"
+    )
+}
+
 pub fn runtime_dir_not_ours(dir: &str) -> String {
     format!("mirqab: {dir} is not owned by this user; refusing to put the socket there")
 }

@@ -464,7 +464,13 @@ fn make_guard(
 ) -> Result<Guard, Failure> {
     let refused_tree =
         |e: guard::WalkError| Failure::new(Code::Refused, strings::refuse_tree(&e.to_string()));
-    let mut daemon = vec![std::process::id()];
+    // On a fixture root the daemon is the tree's `proc/self`: the real pid
+    // of the process running there names nothing in the tree, and a fixture
+    // process that happened to share it was left out as the daemon.
+    let mut daemon = Vec::new();
+    if root.is_host() {
+        daemon.push(std::process::id());
+    }
     if let Some(st) = procfs::read_text(root, "proc/self/stat")
         .as_deref()
         .and_then(procfs::stat)
@@ -1135,6 +1141,13 @@ mod tests {
         std::fs::write(d.join("wayland-8"), "not a socket").unwrap();
         let listener = std::os::unix::net::UnixListener::bind(d.join("wayland-9")).unwrap();
         assert_eq!(compositor_sockets(&d), Ok(vec![std::process::id()]));
+        // Shut the listener down rather than only drop it: a test on another
+        // thread that spawns a child holds a copy of every fd between fork
+        // and exec (CLOEXEC acts only at exec), and that copy keeps the
+        // socket accepting, with SO_PEERCRED naming this process. Shutdown
+        // acts on the socket, not the fd, so every copy refuses at once.
+        let listener = std::os::unix::net::UnixStream::from(std::os::fd::OwnedFd::from(listener));
+        listener.shutdown(std::net::Shutdown::Both).unwrap();
         drop(listener);
         assert!(d.join("wayland-9").exists(), "the socket file stays");
         assert_eq!(compositor_sockets(&d), Ok(vec![]), "nobody listens");
