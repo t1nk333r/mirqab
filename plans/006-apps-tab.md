@@ -364,7 +364,10 @@ delivered, and the stream shows the result.
 **10. Every act is recorded.** One `event` row per redeemed plan, kind
 `action`, through `history.rs:285`:
 `{"action":"apps.quit","target":{"group":"…"}|{"pid":N},"caller":{"pid":N,"name":"zsh"},"results":[{"pid":N,"name":"…","signal":"TERM","result":"done|gone|failed|skipped"}],"unit":"…"}`.
-Names are `comm`; no command lines. A dry run and a `needs-confirm` reply
+Names are `comm`; no command lines. Every process the reply lists as
+skipped has a `skipped` result, a unit's processes that all started since
+the plan included (audit 2026-11-21, L27; test
+`a_unit_whose_processes_all_started_since_is_recorded_as_skipped`). A dry run and a `needs-confirm` reply
 write nothing. With no history file (`Options.history` is `None`), or one
 that cannot be opened or written, the action still runs, and the redeem
 reply's `"recorded": false` says the row is missing; `mirqab quit` then
@@ -374,11 +377,35 @@ refusing every act while the history file cannot be opened, was not
 taken.
 
 **11. The command line.**
-`mirqab quit <pid|name> [-y] [--force] [--dry-run] [--json]`.
+`mirqab quit <pid|name> [-y] [--force] [--dry-run] [--json]`, and
+`mirqab quit --group <id> …`.
 
 - A number is a pid. Anything else is a group name, matched whole and
-  case-insensitively against the `apps` view. No match: exit 1. Several
-  matches: print them with their ids and pids, exit 1; never guess.
+  case-insensitively against the `apps` view, or against the form
+  `mirqab apps` shows (`strings::shown_name`, the name column of
+  `strings::apps_row`: control and bidi characters as U+FFFD, a name
+  longer than `strings::APPS_NAME_WIDTH` cut to one less and `…`); a
+  shorter cut names nothing (audit 2026-11-21, L46). Case is folded one
+  character at a time, 'ς' as 'σ' (`quit::fold`). The first version took
+  the shown form as a prefix of the raw name, each lowercased whole; the
+  review found that an app could then miss its own shown name while a
+  look-alike matched it alone, and `-y` quit the look-alike: a cut 'Σ'
+  lowercases alone to a final 'ς' but to 'σ' inside the name, a U+202E
+  shown as U+FFFD was compared raw, and 'İ' grew to two characters.
+  Comparing with the shown form means an app always matches what was shown
+  for it, and any other app shown the same way matches too, so the
+  ambiguity refusal fires instead (tests in `crates/mirqab/src/quit.rs`:
+  `a_cut_sigma_names_its_own_app_and_never_a_look_alike_alone`,
+  `a_name_shown_with_a_replacement_names_its_own_app_and_its_look_alike`,
+  `a_cut_dotted_capital_i_names_its_own_app`,
+  `every_app_is_named_by_its_own_name_and_by_what_apps_shows`; in
+  `strings.rs`, `the_shown_name_is_the_name_column_of_an_apps_row`). No
+  match: exit 1. Several
+  matches: print them with their ids and pids, exit 1; never guess. The
+  message names `--group ID`, which sends `{"group": id}`, the subject the
+  daemon already took for a name, so every process of that group is
+  planned; a pid of it would signal that process alone unless it is in a
+  user service (audit 2026-11-21, L47).
 - `--force` selects `apps.kill`.
 - Flow: call without `confirm`; print the `wouldDo` and `skipped` lines;
   `confirm::ask`; call again with the plan. `--dry-run` sends `dryRun` and
@@ -1413,9 +1440,16 @@ with where it lives:
   (`crates/mirqab-core/src/guard.rs:37`) returns `WalkError::Unreadable`,
   `Loop` or `TooDeep`; the old quiet `ancestry` had no caller and is gone.
 - **Plans** (`crates/mirqab-core/src/plan.rs`): `make` and `redeem`
-  (`:98`, `:140`) take the boot-time clock, read once per request by
+  (`:98`, `:140`) take the boot-time clock, read first in each request by
   `Actions` (`actions::Clock`; an unreadable clock fails the request with
-  `strings::ACT_NO_CLOCK` before anything is planned or redeemed); at most `MAX_PLANS` = 64,
+  `strings::ACT_NO_CLOCK` before anything is planned or redeemed), and
+  read again for a confirmation once its targets are resolved, so the
+  walk and `systemctl show` count toward the plan's 120 s (audit
+  2026-11-21, L15; test
+  `a_plan_expires_when_the_confirmation_reaches_it_not_when_it_arrived`).
+  When that second read fails, the request fails with `ACT_NO_CLOCK` and
+  its plan is spent, as for a refused resolve (review of L15; test
+  `a_confirmation_whose_second_clock_read_fails_spends_its_plan`); at most `MAX_PLANS` = 64,
   the oldest dropped; targets are `act::Target`; `redeem` returns the
   planned targets still there (`kept`) and the rest (`gone`).
 - **Resolution** (`resolve`, `actions.rs:491`). A pid: its `Tgid:` first

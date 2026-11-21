@@ -199,7 +199,17 @@ Part 1 (2026-11-14), where it differs from the plan:
   `tests/test-cli.sh` checks that piped output has no escape codes.
 - Every CLI line goes through `out.rs`: `println!` panicked on a closed
   pipe and the release profile aborted (review of PR #10). A broken pipe
-  exits 0; any other failed write (a full disk under a redirect) prints a
+  exits 0, except once a command is in the confirm flow
+  (`confirm::ask_with` calls `out::keep_going`): then stdout is marked
+  gone, nothing more is written, and the command acts as told and exits
+  with its own code, so `mirqab quit NAME -y | head -c0` still quits and
+  no `-y` with no terminal still exits 3 (audit 2026-11-21, L40;
+  `tests/test-cli.sh`). With stdout gone, `mirqab quit` writes the lines
+  of what failed to stderr (`out::stdout_gone`, `quit::failed_lines`), so
+  a failed act is not silent (review of L40; unit test
+  `the_failed_lines_are_those_result_lines_prints_for_failures`; the
+  recording sender cannot fail, so no binary test drives a failed act into
+  a broken pipe). Any other failed write (a full disk under a redirect) prints a
   message and exits 1, so a truncated file never looks like success;
   stderr goes through `out::err`, which ignores a stderr that is gone
   (review of PR #12). A `tools/lint.sh` rule bans `println!`, `print!`,

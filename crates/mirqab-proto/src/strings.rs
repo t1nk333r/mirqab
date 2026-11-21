@@ -96,11 +96,17 @@ pub const CLI_COMMANDS: &[CliCommand] = &[
     },
     CliCommand {
         name: "quit",
-        usage: &[(
-            "quit PID|NAME [-y] [--force] [--dry-run] [--json]",
-            "quit an app or a process, after asking",
-        )],
-        help: "Asks a process to quit (SIGTERM), or with --force ends it (SIGKILL). A number is a pid; anything else is an app's name as mirqab apps shows it, matched whole and ignoring case, and quits every process of that app, its main process first. A user service is stopped with systemctl --user, so it does not restart; the list names the other services the stop takes with it, and warns before the sound server or a desktop portal is stopped. The stop is refused when one of those services holds a process mirqab never signals, and at the confirmation when a service that was not listed would now stop too; when systemd cannot say what depends on a service, the list says so. It prints what it will do and asks; -y goes ahead without asking; without a terminal and without -y it does nothing and exits 3; --dry-run prints the list and stops. With --json the list goes to stderr and stdout holds the daemon's answer. It exits 1 when anything failed, or when nothing was done because everything was left alone; a process that had already exited counts as done. Never stopped or signalled: pid 1, another user's processes, kernel threads, anything outside your user's session, the daemon, the session's compositor, your user manager, the session bus (also any process named dbus-daemon, dbus-broker or dbus-broker-launch), and the program asking and its parents. A rootless container is not quit; stop it with its runtime. When the action could not be written to mirqab's history, it is still done and a warning says so.",
+        usage: &[
+            (
+                "quit PID|NAME [-y] [--force] [--dry-run] [--json]",
+                "quit an app or a process, after asking",
+            ),
+            (
+                "quit --group ID [-y] [--force] [--dry-run] [--json]",
+                "quit an app by its id, when apps share a name",
+            ),
+        ],
+        help: "Asks a process to quit (SIGTERM), or with --force ends it (SIGKILL). A number is a pid; anything else is an app's name as mirqab apps shows it, matched whole and ignoring case (a long name it shows cut, ending in …, matches as shown; every app shown the same way matches too), and quits every process of that app, its main process first. When several apps have that name, they are listed with their ids and nothing is done; --group ID quits the one with that id. A user service is stopped with systemctl --user, so it does not restart; the list names the other services the stop takes with it, and warns before the sound server or a desktop portal is stopped. The stop is refused when one of those services holds a process mirqab never signals, and at the confirmation when a service that was not listed would now stop too; when systemd cannot say what depends on a service, the list says so. It prints what it will do and asks; -y goes ahead without asking; without a terminal and without -y it does nothing and exits 3; --dry-run prints the list and stops. With --json the list goes to stderr and stdout holds the daemon's answer. It exits 1 when anything failed, or when nothing was done because everything was left alone; a process that had already exited counts as done. Never stopped or signalled: pid 1, another user's processes, kernel threads, anything outside your user's session, the daemon, the session's compositor, your user manager, the session bus (also any process named dbus-daemon, dbus-broker or dbus-broker-launch), and the program asking and its parents. A rootless container is not quit; stop it with its runtime. When the action could not be written to mirqab's history, it is still done and a warning says so.",
     },
     CliCommand {
         name: "ports",
@@ -1746,7 +1752,7 @@ pub fn quit_no_app(name: &str) -> String {
 
 pub fn quit_ambiguous(name: &str, n: usize) -> String {
     format!(
-        "mirqab: {n} apps are named {}; quit one by a pid of it:",
+        "mirqab: {n} apps are named {}; quit one with --group ID:",
         plain(name)
     )
 }
@@ -1783,9 +1789,21 @@ pub fn verdict_packaged(name: &str, repo: Option<&str>) -> String {
 /// formatted.
 pub const APPS_HEADER: &str = "NAME                         CPU      MEMORY  PROCESSES";
 
+/// How many characters of an app's name `mirqab apps` shows: a longer name
+/// is cut to one less and an ellipsis (audit 2026-11-21, L46).
+pub const APPS_NAME_WIDTH: usize = 28;
+
+/// An app's name as `mirqab apps` shows it: `plain`, and cut to
+/// `APPS_NAME_WIDTH` with an ellipsis when longer. `mirqab quit` matches a
+/// name against this form, so what it accepts is exactly what was shown
+/// (review of audit 2026-11-21, L46).
+pub fn shown_name(name: &str) -> String {
+    fit(name, APPS_NAME_WIDTH)
+}
+
 pub fn apps_row(name: &str, cpu: &str, memory: &str, procs: u32) -> String {
-    let name = fit(name, 28);
-    format!("{name:<28} {cpu:>6} {memory:>11}  {procs}")
+    let name = shown_name(name);
+    format!("{name:<APPS_NAME_WIDTH$} {cpu:>6} {memory:>11}  {procs}")
 }
 
 /// `mirqab apps` when a row is "idle but heavy" (plan 006, part 4): the
@@ -2436,5 +2454,28 @@ mod tests {
         let row = apps_row_idle(&apps_row("cargo", "91%", "2 GB", 2), true);
         assert_eq!(row.find("idle"), APPS_HEADER_IDLE.find("IDLE"));
         assert_eq!(apps_row_idle("x", false), "x");
+    }
+
+    #[test]
+    fn the_shown_name_is_the_name_column_of_an_apps_row() {
+        let w = APPS_NAME_WIDTH;
+        let long = format!("{}\u{202e}{}", "a".repeat(20), "b\u{3a3}".repeat(10));
+        for name in [
+            "Foot",
+            "x\ny",
+            "a ",
+            &"e".repeat(w),
+            &"e".repeat(w + 1),
+            &long,
+        ] {
+            let row = apps_row(name, "1%", "1 MB", 1);
+            let col: String = row.chars().take(w).collect();
+            let shown = shown_name(name);
+            assert_eq!(col, format!("{shown:<w$}"), "{name:?}");
+            assert!(shown.chars().count() <= w);
+            assert_eq!(row.chars().nth(w), Some(' '), "{name:?}");
+        }
+        assert_eq!(shown_name(&long).chars().last(), Some('\u{2026}'));
+        assert!(!shown_name(&long).contains('\u{202e}'));
     }
 }

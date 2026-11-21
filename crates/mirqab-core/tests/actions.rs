@@ -1228,3 +1228,122 @@ fn a_confirmation_does_not_stop_a_unit_the_plan_did_not_show() {
     );
     assert_eq!(events(&history), 1);
 }
+
+#[test]
+fn a_plan_expires_when_the_confirmation_reaches_it_not_when_it_arrived() {
+    // Audit 2026-11-21, L15: resolving the targets walks every process and
+    // may wait on `systemctl show` twice, so the clock is read again when
+    // the plan is redeemed. A confirmation that arrives at 119 s and is
+    // resolved by 121 s is past the 120 s a plan lives.
+    let root = fixture("root-desktop");
+    let ticks = Arc::new(Mutex::new(vec![1000u64, 1119, 1121]));
+    let clock: actions::Clock = {
+        let ticks = Arc::clone(&ticks);
+        Arc::new(move || {
+            let mut t = ticks.lock().unwrap();
+            let s = if t.len() > 1 { t.remove(0) } else { t[0] };
+            Ok(Duration::from_secs(s))
+        })
+    };
+    let rec = Arc::new(Recording::default());
+    let a = Actions::with_clock(rec.clone(), clock);
+    let data = plan(&a, &root, Action::Quit, pid(7100));
+    let f = confirm(
+        &a,
+        &root,
+        Action::Quit,
+        pid(7100),
+        data["plan"].as_str().unwrap(),
+        None,
+    )
+    .unwrap_err();
+    assert_eq!(f.code, Code::BadRequest);
+    assert_eq!(f.message, mirqab_core::proto::strings::PLAN_EXPIRED);
+    assert!(rec.lines().is_empty(), "nothing sent");
+    assert_eq!(a.live_plans(), 0, "the plan is spent");
+}
+
+#[test]
+fn a_unit_whose_processes_all_started_since_is_recorded_as_skipped() {
+    // Audit 2026-11-21, L27: a unit is not stopped when every process in
+    // it started after the plan; each is skipped, and the `action` event
+    // says so for each, as it does for a signal.
+    let s = scratch("unitlate");
+    let root = Root::new(&s.0);
+    let hist = scratch("unitlatehistory");
+    let history = Mutex::new(History::open(&hist.0.join("history.db"), 0).unwrap());
+    let (a, rec) = recorded();
+    let data = plan(&a, &root, Action::Quit, pid(1300));
+    assert_eq!(data["wouldDo"][0]["unit"], SYNC, "{data}");
+    // 1300 is another process now: the same pid, a later start.
+    let stat = s.0.join("proc/1300/stat");
+    let text = std::fs::read_to_string(&stat).unwrap();
+    std::fs::write(&stat, text.replace(" 8 0 2600 ", " 8 0 9999 ")).unwrap();
+    let v = confirm(
+        &a,
+        &root,
+        Action::Quit,
+        pid(1300),
+        data["plan"].as_str().unwrap(),
+        Some(&history),
+    )
+    .unwrap();
+    assert!(rec.lines().is_empty(), "nothing ran: {:?}", rec.lines());
+    assert_eq!(pids(&v["skipped"]), [1300]);
+    let rows = history
+        .lock()
+        .unwrap()
+        .events(Some("action"), 0, i64::MAX)
+        .unwrap();
+    let results = &rows[0]["data"]["results"];
+    let late: Vec<&Value> = results
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|r| r["result"] == "skipped")
+        .collect();
+    assert_eq!(
+        late,
+        [&json!({"pid": 1300, "name": "example-sync", "signal": "TERM", "result": "skipped"})],
+        "{results}"
+    );
+    assert!(rows[0]["data"].get("unit").is_none(), "no unit was stopped");
+}
+
+#[test]
+fn a_confirmation_whose_second_clock_read_fails_spends_its_plan() {
+    // Review of audit 2026-11-21, L15: a confirmation that cannot read the
+    // clock again once its targets are resolved fails as a refused
+    // resolve does, and its plan is spent all the same: it was for this
+    // subject.
+    let root = fixture("root-desktop");
+    let reads = Arc::new(AtomicU64::new(0));
+    let clock: actions::Clock = {
+        let reads = Arc::clone(&reads);
+        Arc::new(move || match reads.fetch_add(1, Ordering::SeqCst) {
+            0 | 1 => Ok(Duration::from_secs(1000)),
+            _ => Err(std::io::Error::other("no clock")),
+        })
+    };
+    let rec = Arc::new(Recording::default());
+    let a = Actions::with_clock(rec.clone(), clock);
+    let data = plan(&a, &root, Action::Quit, pid(7100));
+    let f = confirm(
+        &a,
+        &root,
+        Action::Quit,
+        pid(7100),
+        data["plan"].as_str().unwrap(),
+        None,
+    )
+    .unwrap_err();
+    assert_eq!(f.code, Code::Failed);
+    assert_eq!(f.message, mirqab_core::proto::strings::ACT_NO_CLOCK);
+    assert_eq!(
+        reads.load(Ordering::SeqCst),
+        3,
+        "read again after resolving"
+    );
+    assert!(rec.lines().is_empty(), "nothing sent");
+    assert_eq!(a.live_plans(), 0, "the plan is spent");
+}
