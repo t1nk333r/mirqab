@@ -45,6 +45,13 @@ capture "$BIN/mirqab" --mcp --help
 status_is "--mcp --help exits 0" 0 "$STATUS"
 like "--mcp --help prints mcp's usage" "$OUTPUT" "usage: mirqab mcp"
 
+# A usage error is a usage error even with no socket to name: the
+# arguments are read before the socket (audit 2026-11-21, L44).
+for c in history apps ports quit; do
+    capture env -u XDG_RUNTIME_DIR -u MIRQAB_SOCKET "$BIN/mirqab" "$c" --bogus
+    status_is "$c --bogus with no runtime dir exits 64" 64 "$STATUS"
+done
+
 # The daemon refuses a runtime dir that is missing.
 capture env -u XDG_RUNTIME_DIR "$BIN/mirqab" daemon
 status_is "the daemon needs XDG_RUNTIME_DIR" 1 "$STATUS"

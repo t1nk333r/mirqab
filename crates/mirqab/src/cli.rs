@@ -308,10 +308,6 @@ pub(crate) fn exit_for(socket: &Path, e: CallError) -> ExitCode {
 }
 
 pub fn run(command: &str, args: Args) -> ExitCode {
-    let socket = match socket_or_exit(&args) {
-        Ok(s) => s,
-        Err(code) => return code,
-    };
     let mut json_out = false;
     let mut window = false;
     let mut dry_run = false;
@@ -345,6 +341,12 @@ pub fn run(command: &str, args: Args) -> ExitCode {
     if command == "history" && !list && series.is_empty() {
         return usage(&strings::command_help("history").unwrap_or_default());
     }
+    // The arguments first: a usage error is 64 even with no socket to
+    // name (audit 2026-11-21).
+    let socket = match socket_or_exit(&args) {
+        Ok(s) => s,
+        Err(code) => return code,
+    };
     let req = match command {
         "status" => Request::new(1, "status"),
         "load" | "sensors" => Request::new(1, "get").with_stream("system"),
