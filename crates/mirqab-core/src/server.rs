@@ -768,7 +768,7 @@ const WAKE_SLACK_MS: u128 = 5000;
 /// the last one with part of a minute (audit 2026-11-21, L50).
 fn wake_ts(now_ms: u128, period_ms: u128) -> Option<i64> {
     let slack = WAKE_SLACK_MS.min(period_ms / 2);
-    (now_ms % period_ms.max(1) <= slack).then(|| (now_ms / 1000) as i64)
+    (now_ms % period_ms.max(1) <= slack).then_some((now_ms / 1000) as i64)
 }
 
 /// Whether the hourly prune is due: an hour since the last, or the clock
