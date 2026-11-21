@@ -187,6 +187,11 @@ status_is "an unknown --proto is a usage error" 64 "$STATUS"
 capture "$BIN/mirqab" status --json
 is "no ports subscriber lingers after the commands" "0" "$(jq '.streams.ports.subscribers' <<<"$OUTPUT")"
 
+# perl hands mirqab a pipe whose read end is already closed, so every
+# write fails with EPIPE; a closed stdout would not do, since Rust treats
+# EBADF as success.
+broken_pipe() { perl -e 'pipe(my $r, my $w) or die; close $r; open(STDOUT, ">&", $w) or die; exec @ARGV' "$@"; }
+
 # mirqab quit (plan 006, part 2), against the recording sender.
 act_log() { cat "$MIRQAB_ACT_LOG"; }
 capture "$BIN/mirqab" quit 2001 --dry-run
@@ -241,6 +246,34 @@ capture "$BIN/mirqab" quit python3 -y
 status_is "a name two apps share exits 1" 1 "$STATUS"
 like "and lists both" "$OUTPUT" "session:3050"
 like "with their pids" "$OUTPUT" "scope:app-Hyprland-script-1a2b3c4d  pids 7500"
+# Either is then quit by its id with --group, every process of it, not
+# by a pid that would signal that process alone (audit 2026-11-21, L47).
+like "and says to choose one with --group" "$OUTPUT" "with --group ID"
+unlike "not by a pid of it" "$OUTPUT" "by a pid"
+capture "$BIN/mirqab" quit --group scope:app-Hyprland-script-1a2b3c4d --dry-run
+status_is "quit --group --dry-run exits 0" 0 "$STATUS"
+like "and plans that group" "$OUTPUT" "7500  python3"
+is "a dry run by group sends nothing" "" "$(act_log)"
+capture "$BIN/mirqab" quit --group scope:app-Hyprland-script-1a2b3c4d -y
+status_is "quit --group -y exits 0" 0 "$STATUS"
+is "--group quits the group it names" "TERM 7500 36000" "$(act_log)"
+: >"$MIRQAB_ACT_LOG"
+capture "$BIN/mirqab" quit --group "scope:app-Hyprland-browser.sh-5650fedc" -y
+status_is "quit --group on a group of five exits 0" 0 "$STATUS"
+is "--group quits every process of it, its main process first" "TERM 2001 5010
+TERM 2000 5000
+TERM 2010 5100
+TERM 2011 5200
+TERM 2012 5300" "$(act_log)"
+: >"$MIRQAB_ACT_LOG"
+capture "$BIN/mirqab" quit --group scope:app-none-0 -y
+status_is "an unknown group exits 1" 1 "$STATUS"
+like "and says so" "$OUTPUT" "no app group scope:app-none-0"
+capture "$BIN/mirqab" quit --group
+status_is "--group needs an id" 64 "$STATUS"
+capture "$BIN/mirqab" quit 2001 --group scope:app-Hyprland-script-1a2b3c4d
+status_is "--group and a target together are a usage error" 64 "$STATUS"
+is "nothing was sent for them" "" "$(act_log)"
 capture "$BIN/mirqab" quit Hyprland --dry-run
 status_is "a group with a refused member exits 0" 0 "$STATUS"
 like "and lists that member as left alone" "$OUTPUT" "left alone    1050  Hyprland: pid 1050 is the session's compositor"
@@ -265,6 +298,26 @@ status_is "quit -y on it exits 0" 0 "$STATUS"
 is "only the unit asked for is stopped by name" \
     "RUN systemctl --user stop --no-block -- pipewire.service" "$(act_log)"
 : >"$MIRQAB_ACT_LOG"
+# A reader that went away does not end a command that changes something
+# before it has done what it was told, and its exit code is its own
+# (audit 2026-11-21, L40): -y still quits and exits 0 for what it did; no
+# -y and no terminal still exits 3 and sends nothing.
+code=0
+broken_pipe "$BIN/mirqab" quit 2001 -y 2>"$SANDBOX/pipe.err" || code=$?
+is "quit -y into a broken pipe still quits" "TERM 2001 5010" "$(act_log)"
+is "and exits 0 for what it did" 0 "$code"
+is "and prints no panic" "" "$(<"$SANDBOX/pipe.err")"
+: >"$MIRQAB_ACT_LOG"
+code=0
+broken_pipe "$BIN/mirqab" quit 7100 -y --force --json 2>/dev/null || code=$?
+is "quit -y --json into a broken pipe still quits" "KILL 7100 34000" "$(act_log)"
+is "and exits 0" 0 "$code"
+: >"$MIRQAB_ACT_LOG"
+code=0
+broken_pipe "$BIN/mirqab" quit 2001 </dev/null 2>"$SANDBOX/pipe.err" || code=$?
+is "quit into a broken pipe with no -y exits 3" 3 "$code"
+like "and says why" "$(<"$SANDBOX/pipe.err")" "no terminal"
+is "and sends nothing" "" "$(act_log)"
 capture "$BIN/mirqab" quit 0
 status_is "pid 0 is a usage error" 64 "$STATUS"
 capture "$BIN/mirqab" quit
@@ -294,6 +347,44 @@ capture "$BIN/mirqab" status --json
 is "status --json is one line" 1 "$(wc -l <<<"$OUTPUT" | tr -d ' ')"
 capture "$BIN/mirqab" load
 unlike "no escape codes when piped" "$OUTPUT" $'\e['
+stop_daemon
+
+# A name too long for `mirqab apps` is shown cut, and quits by that shown
+# form: a prefix that must name exactly one app (audit 2026-11-21, L46).
+# A copy of root-desktop whose apps have long names, two sharing the part
+# that is shown.
+LONG="$SANDBOX/root-long"
+cp -r "$FIXTURES/root-desktop" "$LONG"
+sed -i 's/^Name=Example Browser$/Name=Example Browser Developer Edition X/' \
+    "$LONG/usr/share/applications/example-browser.desktop"
+sed -i 's/^Name=Example Sync$/Name=Example Notes And Sync Tool One/' \
+    "$LONG/usr/share/applications/org.example.Sync.desktop"
+sed -i 's/^Name=Example Notes$/Name=Example Notes And Sync Tool Two/' \
+    "$LONG/var/lib/flatpak/exports/share/applications/org.example.Notes.desktop"
+rm -f "$SANDBOX/daemon.out"
+: >"$MIRQAB_ACT_LOG"
+start_daemon "$LONG"
+capture "$BIN/mirqab" apps --sort name
+like "apps cuts a long name" "$OUTPUT" "Example Browser Developer E… "
+capture "$BIN/mirqab" quit "Example Browser Developer E…" --dry-run
+status_is "quit by a shown name exits 0" 0 "$STATUS"
+like "and plans that app" "$OUTPUT" "2001  browser"
+capture "$BIN/mirqab" quit "example browser developer e…" -y
+status_is "quit -y by a shown name exits 0" 0 "$STATUS"
+is "a shown name quits the app, its main process first" "TERM 2001 5010
+TERM 2000 5000
+TERM 2010 5100
+TERM 2011 5200
+TERM 2012 5300" "$(act_log)"
+: >"$MIRQAB_ACT_LOG"
+capture "$BIN/mirqab" quit "Example Notes And Sync Tool…" -y
+status_is "a shown name two apps share exits 1" 1 "$STATUS"
+like "and lists one" "$OUTPUT" "flatpak:org.example.Notes"
+like "and the other" "$OUTPUT" "service:app-org.example.Sync@autostart"
+capture "$BIN/mirqab" quit "Example Browser…" -y
+status_is "a cut shorter than the shown one names no app" 1 "$STATUS"
+like "and says so" "$OUTPUT" "no app is named"
+is "nothing was sent for either" "" "$(act_log)"
 stop_daemon
 
 # Help, docs and completions come from one table (plan 005).
@@ -341,10 +432,7 @@ capture "$BIN/mirqab" bar --help
 like "a command's help is its table entry" "$OUTPUT" "usage: mirqab bar ITEM"
 
 # A reader that went away ends the command quietly, never with a panic
-# (the release profile turns one into an abort). perl hands mirqab a pipe
-# whose read end is already closed, so every write fails with EPIPE; a
-# closed stdout would not do, since Rust treats EBADF as success.
-broken_pipe() { perl -e 'pipe(my $r, my $w) or die; close $r; open(STDOUT, ">&", $w) or die; exec @ARGV' "$@"; }
+# (the release profile turns one into an abort); broken_pipe is above.
 for cmd in "bar --list" "help --markdown" "completions bash"; do
     code=0
     # shellcheck disable=SC2086

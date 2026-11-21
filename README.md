@@ -74,7 +74,8 @@ QR code and the badge follow in later parts.
   (each listener on one port, with its reach and process),
   `quit PID|NAME [-y] [--force]
   [--dry-run] [--json]` (quits a
-  process or an app after asking; `--force` sends SIGKILL, and a user
+  process or an app after asking; `--group ID` names one of several apps
+  that share a name; `--force` sends SIGKILL, and a user
   service is stopped through systemctl, and the list shows the other
   services that stop with it and warns before the sound server or a
   desktop portal is stopped; it never signals pid 1, the daemon, the
