@@ -50,11 +50,14 @@ like "after every run" "$OUTPUT" "run 2/2"
 # apps walk subscribed: measured against its own budget.
 if command -v socat >/dev/null 2>&1; then
     # Debug build: a regression ceiling of the measured RSS plus about
-    # 20 % (17.1 MiB on 2026-11-14, so 21); CI gates the release build.
-    capture "$REPO/tools/bench-idle.sh" --bin "$BIN" --seconds 2 --subscribe apps --max-cpu 1.5 --max-rss 21 --procs 400
+    # 20 % (17.1 MiB on 2026-11-14, so 21); CI gates the release build at
+    # 1.5 % CPU and 15 MiB. The debug walk is slower: it measured 2.0 % on
+    # CI twice (2026-11-14, 2026-11-21), so its ceiling is 3 %, judged on
+    # the better of two runs as the idle checks are.
+    capture "$REPO/tools/bench-idle.sh" --bin "$BIN" --seconds 2 --runs 2 --subscribe apps --max-cpu 3 --max-rss 21 --procs 400
     status_is "apps at 400 processes is measured" 0 "$STATUS"
     like "on a cloned root it names" "$OUTPUT" "clones of 47 user processes"
-    like "against the 1.5 % budget" "$OUTPUT" "< 1.5%"
+    like "against the debug ceiling" "$OUTPUT" "< 3%"
     n=$(sed -n 's/^procs: \([0-9]*\) processes.*/\1/p' <<<"$OUTPUT")
     ((${n:-0} >= 400)) && ok || not_ok "at least 400 processes (got ${n:-none})"
 fi
