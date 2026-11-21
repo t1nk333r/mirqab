@@ -5,10 +5,14 @@
 //! from haseen's QML graph.
 //!
 //! It owns the live rule (architecture §5.3, plan 001 "The `live` flag"):
-//! it holds a live subscription only while it is mapped (so its window is
-//! visible) and its range is `2m`, and drops it on unmap, on a range change
-//! and when the window hides (which unmaps it). It is the one caller of
-//! `Source::subscribe_live`; lint fails anywhere else.
+//! it holds a live subscription only while it is on screen, that is mapped
+//! in a window the compositor has not suspended, and its range is `2m`
+//! (`mirqab_view::graph::wants_live`). It drops it on unmap, on a range
+//! change, when the window hides (which unmaps it) and when the window is
+//! suspended (minimised or on a workspace out of view: GTK keeps it
+//! mapped), and takes it again when the window comes back. That last part
+//! depends on the compositor sending xdg_toplevel `suspended`. It is the
+//! one caller of `Source::subscribe_live`; lint fails anywhere else.
 
 use crate::client::Source;
 use crate::style;
@@ -56,6 +60,9 @@ pub struct State {
     pub format: Option<Format>,
     /// Shorter, for a card on Home (plan 003).
     pub compact: bool,
+    /// The `notify::suspended` handler on the window the graph is mapped
+    /// in, dropped on unmap.
+    pub suspend_watch: Option<(glib::WeakRef<gtk::Window>, glib::SignalHandlerId)>,
 }
 
 impl Default for State {
@@ -73,6 +80,7 @@ impl Default for State {
             name: String::new(),
             format: None,
             compact: false,
+            suspend_watch: None,
         }
     }
 }
@@ -99,6 +107,7 @@ mod imp {
 
     impl ObjectImpl for Graph {
         fn dispose(&self) {
+            self.obj().unwatch_suspended();
             self.state.borrow_mut().handle = None;
         }
     }
@@ -115,10 +124,12 @@ mod imp {
 
         fn map(&self) {
             self.parent_map();
+            self.obj().watch_suspended();
             self.obj().update_live();
         }
 
         fn unmap(&self) {
+            self.obj().unwatch_suspended();
             self.obj().update_live_mapped(false);
             self.parent_unmap();
         }
@@ -313,10 +324,53 @@ impl Graph {
         self.update_live_mapped(self.is_mapped());
     }
 
+    /// Whether the window the graph is in is suspended: not on screen
+    /// although mapped.
+    fn suspended(&self) -> bool {
+        self.root()
+            .and_downcast::<gtk::Window>()
+            .is_some_and(|w| w.is_suspended())
+    }
+
+    /// Follows the window's `suspended` state while mapped, so a minimised
+    /// window or one on a workspace out of view drops live (§9.2).
+    fn watch_suspended(&self) {
+        self.unwatch_suspended();
+        let Some(win) = self.root().and_downcast::<gtk::Window>() else {
+            return;
+        };
+        let weak = self.downgrade();
+        let id = win.connect_suspended_notify(move |_| {
+            if let Some(g) = weak.upgrade() {
+                g.update_live();
+            }
+        });
+        self.imp().state.borrow_mut().suspend_watch = Some((win.downgrade(), id));
+    }
+
+    fn unwatch_suspended(&self) {
+        let watch = self.imp().state.borrow_mut().suspend_watch.take();
+        if let Some((win, id)) = watch
+            && let Some(win) = win.upgrade()
+        {
+            win.disconnect(id);
+        }
+    }
+
+    /// Whether a `notify::suspended` handler is connected (tests).
+    pub fn watches_suspended(&self) -> bool {
+        self.imp().state.borrow().suspend_watch.is_some()
+    }
+
     fn update_live_mapped(&self, mapped: bool) {
         let want = {
             let st = self.imp().state.borrow();
-            mapped && st.range == "2m" && st.live.is_some()
+            graph::wants_live(
+                mapped,
+                mapped && self.suspended(),
+                &st.range,
+                st.live.is_some(),
+            )
         };
         let have = self.is_live();
         if want == have {

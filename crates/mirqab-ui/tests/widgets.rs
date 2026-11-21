@@ -292,6 +292,12 @@ fn live_only_while_mapped_at_two_minutes() {
     let win = shown(&g, 400, 100);
     assert_eq!(fake.live.get(), 1, "mapped at 2m");
     assert!(g.is_live());
+    // While mapped it follows the window's `suspended` state (a minimised
+    // window stays mapped); a notify while the window is shown keeps live.
+    assert!(g.watches_suspended());
+    assert!(!win.0.is_suspended());
+    win.0.notify("suspended");
+    assert_eq!(fake.live.get(), 1, "a shown window keeps live");
 
     // A live event becomes a point on the ring and is drawn.
     let cb = fake.on_event.borrow().clone().unwrap();
@@ -311,6 +317,7 @@ fn live_only_while_mapped_at_two_minutes() {
     win.0.set_visible(false);
     settle("the graph is unmapped", || !g.is_mapped());
     assert_eq!(fake.live.get(), 0, "a hidden window drops live");
+    assert!(!g.watches_suspended(), "the watch goes with the map");
     win.0.present();
     settle("the graph is mapped again", || g.is_mapped());
     assert_eq!(fake.live.get(), 1, "shown again");
