@@ -501,7 +501,11 @@ Streams: `system`, `apps`, `process`, `ports`, `agents`, `awake`, `disk`,
   does not go through `Root` (lint checks for string literals starting
   `"/proc`, `"/sys`, `"/etc`, `"/run`, `"/dev` outside `root.rs`).
 - External commands go through one module, `exec.rs`: fixed argv, no shell,
-  a timeout, `LC_ALL=C`. Tests put stubs first on `PATH`.
+  a timeout, `LC_ALL=C`. Output that is not UTF-8 is kept lossily. After
+  the child exits its pipes are read only until the same deadline (plus a
+  100 ms grace), and the result is the child's status with what was read:
+  a process it left running holding the pipes cannot stall the call. Tests
+  put stubs first on `PATH`.
 
 ### 5.4 Actions and the dry-run contract
 
