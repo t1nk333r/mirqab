@@ -107,7 +107,7 @@ done
 ipv4='\b([0-9]{1,3}\.){3}[0-9]{1,3}\b'
 allowed='^(192\.0\.2\.|198\.51\.100\.|203\.0\.113\.|127\.|0\.0\.0\.0$|255\.|1\.1\.1\.1$)'
 {
-    git grep -nIoE -e "$ipv4(/[0-9]+)?" -- . ':!tools/secrets.sh' || true
+    git grep -nIoE -e "$ipv4(/[0-9]+)?" -- . ':!tools/secrets.sh' ':!tools/secrets-deny.txt' || true
     grep -oE -e "$ipv4(/[0-9]+)?" "$added" || true
 } | while IFS= read -r hit; do
     addr="${hit##*:}"
@@ -158,9 +158,10 @@ function v6ok(w,    zero5) {
 # dotted quad read as two words. A token that is not all hex and colons is
 # an address joined to a word (`addr:2a01:...`, `host_2a01:...`) only when
 # what follows its last other character and that word's separator (the
-# character itself when it is `_` or `.`, else one colon) is an address of
-# at least two hex groups: Rust paths such as std::fs and Kind::abc, and
-# times such as at:12:30:45, are not.
+# character itself when it is `_` or `.`, else the word's hex tail and one
+# colon, as in `inet6:` or `src:`) is an address of at least two hex
+# groups: Rust paths such as std::fs and Kind::abc, and times such as
+# at:12:30:45, are not.
 v6re='[0-9A-Za-z_.:]*:[0-9A-Za-z_.:]*'
 {
     git grep -nIoE -e "$v6re" -- . ':!tools/secrets.sh' ':!tools/secrets-deny.txt' |
@@ -181,8 +182,7 @@ v6re='[0-9A-Za-z_.:]*:[0-9A-Za-z_.:]*'
             sep = substr(t, RLENGTH, 1)
             t = substr(t, RLENGTH + 1)
             if (sep != "_" && sep != ".") {
-                if (substr(t, 1, 1) != ":") next
-                t = substr(t, 2)
+                if (!sub(/^[0-9A-Fa-f]*:/, "", t)) next
             }
             joined = 1
         }

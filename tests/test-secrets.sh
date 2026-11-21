@@ -100,6 +100,13 @@ scan "addr${c}$global6"
 status_is "an address after a word and a colon is flagged" 1 "$STATUS"
 scan "host_$global6"
 status_is "an address after a word and an underscore is flagged" 1 "$STATUS"
+scan "host.$global6"
+status_is "an address after a word and a dot is flagged" 1 "$STATUS"
+# A word that ends in hex digits: its hex tail is not part of the address.
+for word in inet6 ipv6 v6 dns6 id src; do
+    scan "$word${c}$global6"
+    status_is "an address after $word and a colon is flagged" 1 "$STATUS"
+done
 scan "$global6${c} refused"
 status_is "an address followed by a colon is flagged" 1 "$STATUS"
 

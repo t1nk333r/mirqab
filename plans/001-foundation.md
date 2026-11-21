@@ -451,8 +451,9 @@ sandbox, export `GDK_BACKEND=broadway`, `BROADWAY_DISPLAY=:N`,
    the same ranges. On review, `fe80::/9` means `fe80` to `feff` with
    words 2 to 7 zero, so `febf::1` and `fec0::1` pass and a subnet or
    middle-word identifier is flagged; multicast is flagged, as the
-   repository uses none; an address joined to a word by `:`, `_` or `.`,
-   or followed by one colon, is still read; `tests/test-secrets.sh`
+   repository uses none; an address joined to a word by `:`, `_` or `.`
+   (a word ending in hex digits such as `inet6` or `src` included), or
+   followed by one colon, is still read; `tests/test-secrets.sh`
    "a link-local address with non-zero middle words is flagged" through
    "an address followed by a colon is flagged".)
 10. `.github/workflows/ci.yml`, the only workflow this plan adds. Triggers:
