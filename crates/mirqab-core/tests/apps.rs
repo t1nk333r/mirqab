@@ -14,7 +14,10 @@
 //! `prime` (D1). From the audit: code on an interpreter's command line
 //! never names a terminal job; a `process` get's primed reading serves
 //! that get only, and a get whose baseline a tick replaced does not wait
-//! under the lock.
+//! under the lock. Plan 023's follow-up, the same for `apps`: a get whose
+//! baseline a tick replaced, or whose subscriber left in its gap, does not
+//! wait under the lock, never takes a reading another get is still
+//! waiting on, and leaves none queued.
 
 use mirqab_core::Root;
 use mirqab_core::desktop::{Focus, FocusedSince, focused_since};
@@ -1395,8 +1398,9 @@ fn each_get_is_served_its_own_primed_reading_oldest_first() {
     let second = cargo_cpu(a.snapshot(&t1, Instant::now()));
     assert!(near(second), "{second}");
     assert_eq!(a.primed(), 0);
-    // A reading 2 ms old is too young: dropped, and the snapshot takes its
-    // own two readings half a second apart.
+    // A reading 2 ms old is too young: the snapshot takes its own two
+    // readings half a second apart, and leaves it for the get still in its
+    // gap, whose snapshot takes it at once (plan 023's follow-up).
     a.prime(&t0, Instant::now()).unwrap();
     std::thread::sleep(Duration::from_millis(2));
     let t = Instant::now();
@@ -1406,9 +1410,9 @@ fn each_get_is_served_its_own_primed_reading_oldest_first() {
         "{:?}",
         t.elapsed()
     );
-    // idle clears the queue.
-    a.prime(&t0, Instant::now()).unwrap();
-    a.idle();
+    assert_eq!(a.primed(), 1);
+    let (took, _) = timed(|| a.snapshot(&t0, Instant::now()));
+    assert!(took < Duration::from_millis(400), "{took:?}");
     assert_eq!(a.primed(), 0);
     // A young subscriber baseline needs no wait.
     let now = Instant::now();
@@ -1570,4 +1574,117 @@ fn a_get_whose_baseline_a_tick_replaced_does_not_wait_under_the_lock() {
     let cpu = got["cpu"].as_f64().expect("a rate");
     assert!((cpu - 40.0).abs() < 4.0, "{cpu}");
     assert_eq!(p.primed(), 0);
+}
+
+/// How long `f` ran, and what it gave.
+fn timed<T>(f: impl FnOnce() -> T) -> (Duration, T) {
+    let t = Instant::now();
+    let v = f();
+    (t.elapsed(), v)
+}
+
+#[test]
+fn an_apps_get_whose_baseline_a_tick_replaced_does_not_wait_under_the_lock() {
+    // Plan 023's follow-up: `prime` found the subscribers' baseline young
+    // and queued nothing; a tick between the get's two locked steps
+    // replaced it with one too young to serve, and `snapshot` slept half a
+    // second holding the lock.
+    let s = scratch("ticked");
+    let mut a = probed(&pacman(&s.0));
+    let (t0, t1) = (fixture("root-desktop"), fixture("root-desktop.t1"));
+    a.sample(&t0, Instant::now() - Duration::from_secs(2));
+    assert!(
+        a.prime(&t0, Instant::now()).is_none(),
+        "the baseline serves"
+    );
+    a.sample(&t1, Instant::now());
+    let (took, got) = timed(|| a.snapshot(&t1, Instant::now()));
+    assert!(took < Duration::from_millis(400), "{took:?}");
+    // The twin's two seconds of ticks over the 2 s since the baseline the
+    // get primed with: 91 % of a core.
+    let cpu = cargo_cpu(got);
+    assert!((cpu - 91.0).abs() < 9.0, "{cpu}");
+    assert_eq!(a.primed(), 0, "the get's reading went with it");
+}
+
+#[test]
+fn an_apps_get_never_takes_another_gets_primed_reading() {
+    // Plan 023's follow-up: a get with no reading of its own popped the
+    // next get's, too young to use, dropped it and slept under the lock;
+    // that get then found none and slept under the lock too.
+    let s = scratch("steal");
+    let mut a = probed(&pacman(&s.0));
+    let (t0, t1) = (fixture("root-desktop"), fixture("root-desktop.t1"));
+    a.sample(&t0, Instant::now() - Duration::from_secs(2));
+    // Get A: the baseline serves.
+    assert!(a.prime(&t0, Instant::now()).is_none());
+    // A tick replaces it; get B finds it too young and primes.
+    a.sample(&t0, Instant::now());
+    let gap = a
+        .prime(&t0, Instant::now())
+        .expect("a fresh baseline: a wait");
+    // A's snapshot, at once.
+    let (took, got) = timed(|| a.snapshot(&t1, Instant::now()));
+    assert!(took < Duration::from_millis(400), "A waited {took:?}");
+    assert!(cargo_cpu(got) > 0.0);
+    assert_eq!(a.primed(), 1, "B's reading is left for B");
+    // B's snapshot, after its gap without the lock.
+    std::thread::sleep(gap);
+    let (took, got) = timed(|| a.snapshot(&t1, Instant::now()));
+    assert!(took < Duration::from_millis(400), "B waited {took:?}");
+    let near = |c: f64| (c - 364.0).abs() < 364.0 * 0.2;
+    let cpu = cargo_cpu(got);
+    assert!(near(cpu), "{cpu}");
+    assert_eq!(a.primed(), 0);
+}
+
+#[test]
+fn an_apps_get_answered_from_the_baseline_leaves_no_reading_queued() {
+    // A get that primed, and whose snapshot found the subscribers' baseline
+    // grown old enough in its gap, left its reading for some later get.
+    let s = scratch("leftover");
+    let mut a = probed(&pacman(&s.0));
+    let (t0, t1) = (fixture("root-desktop"), fixture("root-desktop.t1"));
+    let now = Instant::now();
+    a.sample(&t0, now - Duration::from_millis(800));
+    a.prime(&t0, now).expect("a baseline under 1 s: a wait");
+    std::thread::sleep(Duration::from_millis(500));
+    cargo_cpu(a.snapshot(&t1, Instant::now()));
+    assert_eq!(a.primed(), 0);
+}
+
+#[test]
+fn the_last_subscriber_leaving_keeps_a_pending_apps_gets_reading() {
+    // Plan 023's follow-up: `idle` in a get's gap dropped its reading, and
+    // `snapshot` slept half a second under the lock.
+    let s = scratch("idlegap");
+    let mut a = probed(&pacman(&s.0));
+    let (t0, t1) = (fixture("root-desktop"), fixture("root-desktop.t1"));
+    a.sample(&t0, Instant::now());
+    let gap = a
+        .prime(&t0, Instant::now())
+        .expect("a fresh baseline: a wait");
+    a.idle();
+    std::thread::sleep(gap);
+    let (took, got) = timed(|| a.snapshot(&t1, Instant::now()));
+    assert!(took < Duration::from_millis(400), "{took:?}");
+    assert!(cargo_cpu(got) > 0.0);
+    assert_eq!(a.primed(), 0);
+}
+
+#[test]
+fn an_apps_baseline_about_to_go_stale_is_not_queued_for_a_get() {
+    // As for `process` (review of PR #26): a baseline that would expire
+    // before `snapshot` is not relied on; the get takes a fresh reading.
+    let s = scratch("stale");
+    let mut a = probed(&pacman(&s.0));
+    let t0 = fixture("root-desktop");
+    a.sample(&t0, Instant::now() - Duration::from_millis(9700));
+    assert_eq!(
+        a.prime(&t0, Instant::now()),
+        Some(Duration::from_millis(500))
+    );
+    let mut a = probed(&pacman(&s.0));
+    a.sample(&t0, Instant::now() - Duration::from_secs(9));
+    assert_eq!(a.prime(&t0, Instant::now()), None);
 }

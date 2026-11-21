@@ -3409,6 +3409,46 @@ real-machine basis for the 64 cap (counted: 13 at most, recorded above),
 "freezes for good" (the next click or an unmap clears a press), and a
 longer wait in the Home test (the cause was item 1).
 
+### `get apps` under the lock, plan 023's follow-up (2026-11-21)
+
+Plan 023 ("Review follow-ups") left `apps` with the sleep under the
+sampler's lock that PR #26 removed from `process`. `Apps::snapshot`
+slept 500 ms holding the lock in three sequences the server reaches
+(`server.rs`, the `get` path: `prime` locked, the gap unlocked,
+`snapshot` locked):
+
+- `prime` found the subscribers' baseline 1–10 s old and queued nothing;
+  a tick between the two locked steps replaced it with one under 1 s old,
+  and `snapshot` found no reading.
+- In that case `take_primed` also popped the next pending get's reading,
+  dropped it as under 250 ms old, and that get then slept under the lock
+  too.
+- The last subscriber left during a get's gap, and `idle` cleared the
+  queue.
+
+A get that primed and found the baseline grown 1 s old by its
+`snapshot` also left its reading queued for a later one (harmless for
+`apps`, whose readings are whole walks, unlike `process`'s per pid).
+
+Changed (`samplers/apps/mod.rs`, `Apps::prime`, `take_mine`, `snapshot`,
+`idle`): `prime` queues a reading for every get, a copy of the baseline
+when it serves and is at most 9.5 s old, else a fresh walk and the wait;
+`snapshot` takes the oldest reading 250 ms to 10 s old whichever way it
+answers, dropping older ones and leaving younger ones to the gets still
+in their gap; `idle` keeps the queue. `take_primed` is gone; the 16-entry
+cap stays. This supersedes "`idle` clears the queue" and "drops younger
+… ones" in item 2 of "Review of PR #20" above. Tests (`tests/apps.rs`):
+`an_apps_get_whose_baseline_a_tick_replaced_does_not_wait_under_the_lock`,
+`an_apps_get_never_takes_another_gets_primed_reading`,
+`an_apps_get_answered_from_the_baseline_leaves_no_reading_queued`,
+`the_last_subscriber_leaving_keeps_a_pending_apps_gets_reading`,
+`an_apps_baseline_about_to_go_stale_is_not_queued_for_a_get`; all five
+failed before the change (three on a 0.50 s wait, one on a reading left
+queued, one on `None` for a 9.7 s baseline).
+`each_get_is_served_its_own_primed_reading_oldest_first` now checks that
+a too-young reading is left for its own get. `Process::idle` still
+clears its queue, the third case for `process`; left for its own change.
+
 
 ## Unverified
 
