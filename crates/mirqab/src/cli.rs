@@ -59,11 +59,11 @@ fn call_within(socket: &Path, req: Request, timeout: Duration) -> Result<Value, 
     loop {
         line.clear();
         match reader.read_line(&mut line) {
-            Ok(0) => return Err(CallError::NoDaemon("the connection closed".into())),
+            Ok(0) => return Err(CallError::NoDaemon(strings::CONNECTION_CLOSED.into())),
             Err(e) if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {
                 return Err(CallError::Timeout(timeout.as_secs().max(1)));
             }
-            Err(_) => return Err(CallError::NoDaemon("the connection closed".into())),
+            Err(_) => return Err(CallError::NoDaemon(strings::CONNECTION_CLOSED.into())),
             Ok(_) => {}
         }
         if let Ok(ServerFrame::Reply(Reply {
@@ -113,7 +113,7 @@ fn print_status(v: &Value) {
     }
     if let Some(m) = v["unavailable"].as_object() {
         for (k, why) in m {
-            notes.push(format!("unavailable {k}: {}", why.as_str().unwrap_or("")));
+            notes.push(strings::status_unavailable(k, why.as_str().unwrap_or("")));
         }
     }
     crate::out::print(&strings::status_lines(
@@ -146,11 +146,12 @@ fn print_history(v: &Value, list: bool) {
         }
         let unit = s["unit"].as_str().unwrap_or("");
         for p in s["points"].as_array().into_iter().flatten() {
-            crate::out::line(&format!(
-                "{}\t{key}\tavg {:.2}\tmax {:.2}\t{unit}",
+            crate::out::line(&strings::history_row(
                 p[0].as_i64().unwrap_or(0),
+                key,
                 p[1].as_f64().unwrap_or(0.0),
-                p[2].as_f64().unwrap_or(0.0)
+                p[2].as_f64().unwrap_or(0.0),
+                unit,
             ));
         }
     }
@@ -273,8 +274,8 @@ pub(crate) fn socket_or_exit(args: &Args) -> Result<PathBuf, ExitCode> {
         .or_else(server::default_socket)
         .ok_or_else(|| {
             crate::out::err(&strings::no_daemon(
-                "$XDG_RUNTIME_DIR/mirqab/daemon.sock",
-                "XDG_RUNTIME_DIR is not set",
+                strings::DEFAULT_SOCKET_HINT,
+                strings::NO_RUNTIME_DIR_WHY,
             ));
             ExitCode::from(EXIT_NO_DAEMON)
         })

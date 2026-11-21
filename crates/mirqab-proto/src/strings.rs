@@ -664,6 +664,23 @@ pub fn no_such_series(key: &str) -> String {
     format!("mirqab: history keeps no series named {key}")
 }
 
+/// One bucket of `mirqab history`: unix time, series, average, peak, unit.
+pub fn history_row(time: i64, key: &str, avg: f64, max: f64, unit: &str) -> String {
+    format!("{time}\t{key}\tavg {avg:.2}\tmax {max:.2}\t{unit}")
+}
+
+/// A stream `mirqab status` lists as unavailable, and why.
+pub fn status_unavailable(stream: &str, why: &str) -> String {
+    format!("unavailable {stream}: {why}")
+}
+
+/// Why a CLI command found no daemon: the socket closed under it.
+pub const CONNECTION_CLOSED: &str = "the connection closed";
+/// The socket a CLI command would have used, when there is none to name.
+pub const DEFAULT_SOCKET_HINT: &str = "$XDG_RUNTIME_DIR/mirqab/daemon.sock";
+/// Why there is no socket to name.
+pub const NO_RUNTIME_DIR_WHY: &str = "XDG_RUNTIME_DIR is not set";
+
 pub fn output_failed(why: &str) -> String {
     format!("mirqab: could not write the output: {why}")
 }

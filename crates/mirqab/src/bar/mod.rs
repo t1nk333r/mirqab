@@ -173,7 +173,7 @@ fn watch(o: &Opts, combo: &[String], socket: &std::path::Path) -> ExitCode {
         .with_stream(stream::SYSTEM)
         .with_params(json!({"interval": o.secs.saturating_mul(1000)}));
     if (&conn).write_all(&frame::encode(&req)).is_err() {
-        no_daemon(socket, "the connection closed");
+        no_daemon(socket, strings::CONNECTION_CLOSED);
         return ExitCode::from(EXIT_NO_DAEMON);
     }
     let mut reader = BufReader::new(&conn);
@@ -187,7 +187,7 @@ fn watch(o: &Opts, combo: &[String], socket: &std::path::Path) -> ExitCode {
         line.clear();
         match reader.read_line(&mut line) {
             Ok(0) | Err(_) => {
-                no_daemon(socket, "the connection closed");
+                no_daemon(socket, strings::CONNECTION_CLOSED);
                 return ExitCode::from(EXIT_NO_DAEMON);
             }
             Ok(_) => {}
