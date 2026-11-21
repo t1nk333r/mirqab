@@ -331,12 +331,92 @@ pub fn main_process(procs: &[Proc], members: &[usize]) -> usize {
 
 /// A job's name: the script an interpreter runs, else the process's name.
 fn job_name(p: &Proc) -> String {
-    if INTERPRETERS.contains(&p.stat.comm.as_str())
-        && let Some(script) = p.info.cmdline.iter().skip(1).find(|a| !a.starts_with('-'))
+    let comm = p.stat.comm.as_str();
+    if INTERPRETERS.contains(&comm)
+        && let Some(script) = script_of(comm, p.info.cmdline.get(1..).unwrap_or(&[]))
     {
-        return basename(script).to_string();
+        return script;
     }
     p.name()
+}
+
+/// The longest script name a job takes.
+const SCRIPT_MAX: usize = 64;
+
+/// The script (or python's `-m` module) an interpreter's arguments
+/// clearly name, else None. None for code given inline (`python3 -c`,
+/// `perl -e` and `-lne`, `ruby -e`, `node -e`/`-p`/`--eval`, `deno eval`)
+/// and for an argument that is not a plain file name: a job's name
+/// reaches the top-apps history row and agents, which never hold a
+/// command line (audit of plan 006). An option whose value comes as the
+/// next argument (`-W ignore`, `-r dotenv/config`) skips that value.
+fn script_of(comm: &str, mut args: &[String]) -> Option<String> {
+    // Letters that put code on the command line, alone or in a bundle.
+    let code: &[char] = match comm {
+        "python" | "python3" => &['c'],
+        "perl" => &['e', 'E'],
+        "ruby" => &['e'],
+        "node" => &['e', 'p'],
+        _ => &[],
+    };
+    let takes_value: &[&str] = match comm {
+        "python" | "python3" => &["-W", "-X", "--check-hash-based-pycs"],
+        "node" => &[
+            "-r",
+            "--require",
+            "--import",
+            "--loader",
+            "--experimental-loader",
+            "-C",
+            "--conditions",
+            "--input-type",
+            "--env-file",
+            "--title",
+            "--inspect-port",
+        ],
+        "ruby" => &["-I", "-r", "-C", "-E"],
+        "perl" => &["-I", "-r"],
+        "deno" => &["-c", "--config", "-L", "--log-level", "--import-map"],
+        _ => &[],
+    };
+    if comm == "deno" {
+        match args.first().map(String::as_str) {
+            Some("run" | "serve") => args = &args[1..],
+            // Another subcommand (eval, task, test): no script to name.
+            Some(a) if !a.starts_with('-') && !a.contains(['.', '/']) => return None,
+            _ => {}
+        }
+    }
+    let mut i = 0;
+    let found = loop {
+        let a = args.get(i)?.as_str();
+        match a {
+            "--" => break args.get(i + 1)?.as_str(),
+            "-" => return None,
+            "-m" if comm.starts_with("python") => break args.get(i + 1)?.as_str(),
+            _ if a.starts_with("--") => {
+                let flag = a.split('=').next().unwrap_or(a);
+                if matches!(flag, "--eval" | "--print") {
+                    return None;
+                }
+                i += if takes_value.contains(&a) { 2 } else { 1 };
+            }
+            _ if a.starts_with('-') => {
+                if a[1..].contains(code) {
+                    return None;
+                }
+                i += if takes_value.contains(&a) { 2 } else { 1 };
+            }
+            script => break script,
+        }
+    };
+    let name = basename(found);
+    let plain = |c: char| c.is_ascii_alphanumeric() || "._-+@".contains(c);
+    (!name.is_empty()
+        && name.len() <= SCRIPT_MAX
+        && !found.chars().any(|c| c.is_whitespace() || c.is_control())
+        && name.chars().all(plain))
+    .then(|| name.to_string())
 }
 
 fn named(entry: Option<&Entry>, fallback: String) -> (String, Option<String>) {
