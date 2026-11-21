@@ -161,6 +161,12 @@ fn print_history(v: &Value, list: bool) -> bool {
     all_found
 }
 
+fn has_null_series(v: &Value) -> bool {
+    v["series"]
+        .as_object()
+        .is_some_and(|m| m.values().any(Value::is_null))
+}
+
 /// The `system` frame, or the message for an answer this mirqab cannot
 /// read (audit 2026-11-21: it used to read as an all-empty frame).
 pub(crate) fn system(v: &Value) -> Result<SystemData, String> {
@@ -391,6 +397,11 @@ pub fn run(command: &str, args: Args) -> ExitCode {
                 }
             } else if matches!(command, "status" | "history" | "load" | "sensors") || dry_run {
                 crate::out::line(&format!("{v}"));
+                // A series history does not keep is null in the answer,
+                // and a failure with --json too (review of audit 2026-11-21).
+                if command == "history" && !list && has_null_series(&v) {
+                    return ExitCode::from(EXIT_FAILED);
+                }
             }
             ExitCode::SUCCESS
         }

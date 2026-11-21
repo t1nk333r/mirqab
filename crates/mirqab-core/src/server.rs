@@ -311,6 +311,13 @@ pub fn default_socket() -> Option<PathBuf> {
     if let Some(s) = std::env::var_os("MIRQAB_SOCKET").filter(|s| !s.is_empty()) {
         return Some(PathBuf::from(s));
     }
+    unit_socket()
+}
+
+/// The socket `mirqab-ui.service` dials: the runtime-dir default, without
+/// `$MIRQAB_SOCKET`, which the user manager's environment does not carry
+/// unless someone imported it.
+fn unit_socket() -> Option<PathBuf> {
     let run = std::env::var_os("XDG_RUNTIME_DIR").filter(|s| !s.is_empty())?;
     Some(PathBuf::from(run).join("mirqab/daemon.sock"))
 }
@@ -1473,11 +1480,12 @@ impl Inner {
             }
             return Ok(());
         }
-        // The shared unit runs `mirqab-ui` with no `--socket`, so it dials
-        // the default socket: for a daemon on another one it would wait out
-        // the start and fail, or attach to another daemon (audit
-        // 2026-11-21). Name the command that reaches this one instead.
-        if default_socket().as_deref() != Some(self.socket.as_path()) {
+        // The shared unit runs `mirqab-ui` with no `--socket` in the user
+        // manager's environment, so it dials the runtime-dir socket: for a
+        // daemon on another one it would wait out the start and fail, or
+        // attach to another daemon (audit 2026-11-21). Name the command
+        // that reaches this one instead.
+        if unit_socket().as_deref() != Some(self.socket.as_path()) {
             return Err((
                 Code::Failed,
                 strings::interface_other_socket(&self.socket.display().to_string()),

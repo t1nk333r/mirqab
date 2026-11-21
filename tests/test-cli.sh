@@ -286,6 +286,9 @@ status_is "an unknown series exits 1" 1 "$STATUS"
 like "and says which" "$OUTPUT" "no series named nope"
 capture "$BIN/mirqab" history cpu.total nope
 status_is "a known series beside an unknown one still exits 1" 1 "$STATUS"
+capture "$BIN/mirqab" history cpu.total nope --json
+status_is "with --json too" 1 "$STATUS"
+is "where the unknown series is null" "null" "$(jq -c '.series.nope' <<<"$OUTPUT")"
 # --json is one line, and nothing piped carries an escape code.
 capture "$BIN/mirqab" status --json
 is "status --json is one line" 1 "$(wc -l <<<"$OUTPUT" | tr -d ' ')"

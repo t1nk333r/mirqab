@@ -63,7 +63,7 @@ pub const CLI_COMMANDS: &[CliCommand] = &[
             ),
             ("history --list", "the series history keeps"),
         ],
-        help: "Prints the average and peak of each bucket of stored minutes. The range is 1h (default), 24h, 7d or 30d. --list names the series history keeps.",
+        help: "Prints the average and peak of each bucket of stored minutes. The range is 1h (default), 24h, 7d or 30d. --list names the series history keeps. A series it does not keep exits 1, with --json too, where its entry is null.",
     },
     CliCommand {
         name: "load",
