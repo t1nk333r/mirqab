@@ -174,6 +174,11 @@ status_is "an unknown --proto is a usage error" 64 "$STATUS"
 capture "$BIN/mirqab" status --json
 is "no ports subscriber lingers after the commands" "0" "$(jq '.streams.ports.subscribers' <<<"$OUTPUT")"
 
+# perl hands mirqab a pipe whose read end is already closed, so every
+# write fails with EPIPE; a closed stdout would not do, since Rust treats
+# EBADF as success.
+broken_pipe() { perl -e 'pipe(my $r, my $w) or die; close $r; open(STDOUT, ">&", $w) or die; exec @ARGV' "$@"; }
+
 # mirqab quit (plan 006, part 2), against the recording sender.
 act_log() { cat "$MIRQAB_ACT_LOG"; }
 capture "$BIN/mirqab" quit 2001 --dry-run
@@ -252,6 +257,26 @@ status_is "quit -y on it exits 0" 0 "$STATUS"
 is "only the unit asked for is stopped by name" \
     "RUN systemctl --user stop --no-block -- pipewire.service" "$(act_log)"
 : >"$MIRQAB_ACT_LOG"
+# A reader that went away does not end a command that changes something
+# before it has done what it was told, and its exit code is its own
+# (audit 2026-11-21, L40): -y still quits and exits 0 for what it did; no
+# -y and no terminal still exits 3 and sends nothing.
+code=0
+broken_pipe "$BIN/mirqab" quit 2001 -y 2>"$SANDBOX/pipe.err" || code=$?
+is "quit -y into a broken pipe still quits" "TERM 2001 5010" "$(act_log)"
+is "and exits 0 for what it did" 0 "$code"
+is "and prints no panic" "" "$(<"$SANDBOX/pipe.err")"
+: >"$MIRQAB_ACT_LOG"
+code=0
+broken_pipe "$BIN/mirqab" quit 7100 -y --force --json 2>/dev/null || code=$?
+is "quit -y --json into a broken pipe still quits" "KILL 7100 34000" "$(act_log)"
+is "and exits 0" 0 "$code"
+: >"$MIRQAB_ACT_LOG"
+code=0
+broken_pipe "$BIN/mirqab" quit 2001 </dev/null 2>"$SANDBOX/pipe.err" || code=$?
+is "quit into a broken pipe with no -y exits 3" 3 "$code"
+like "and says why" "$(<"$SANDBOX/pipe.err")" "no terminal"
+is "and sends nothing" "" "$(act_log)"
 capture "$BIN/mirqab" quit 0
 status_is "pid 0 is a usage error" 64 "$STATUS"
 capture "$BIN/mirqab" quit
@@ -318,10 +343,7 @@ capture "$BIN/mirqab" bar --help
 like "a command's help is its table entry" "$OUTPUT" "usage: mirqab bar ITEM"
 
 # A reader that went away ends the command quietly, never with a panic
-# (the release profile turns one into an abort). perl hands mirqab a pipe
-# whose read end is already closed, so every write fails with EPIPE; a
-# closed stdout would not do, since Rust treats EBADF as success.
-broken_pipe() { perl -e 'pipe(my $r, my $w) or die; close $r; open(STDOUT, ">&", $w) or die; exec @ARGV' "$@"; }
+# (the release profile turns one into an abort); broken_pipe is above.
 for cmd in "bar --list" "help --markdown" "completions bash"; do
     code=0
     # shellcheck disable=SC2086
