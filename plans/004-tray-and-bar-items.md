@@ -69,10 +69,13 @@ plan adds the tray icon and bar items.
 - `Activate` (left click) is `toggle`. `SecondaryActivate` (middle click)
   opens Home. `Scroll` does nothing.
 - Menu: Open; one entry per visible tab; Pin window; Settings; Quit daemon.
-- Tooltip: one line, `CPU 12% · Mem 41% · 52°`. It is computed **only when
-  the host asks** (a property read), from one `get system`; the tray holds
-  no subscription. Hosts that read the tooltip on a timer would defeat
-  this, so the value is cached for 10 s.
+- Tooltip: one line, `CPU 12% · Mem 41% · 52°`. It is computed on demand,
+  from one `get system`; the tray holds no subscription and no timer.
+  ksni 0.3.7 asks for it when the host reads the property, and also at
+  start, after each click and each time the menu opens (it rebuilds every
+  property then, `State::update_properties` in its `service.rs`; audit
+  2026-11-21, L45). Those and hosts that read the tooltip on a timer are
+  bounded by a 10 s cache: at most one `get` per 10 s.
 - A "needs attention" state (`Status=NeedsAttention`, `AttentionIconName`)
   is set by later plans: an exposed port (007), an agent that needs the
   user (008), an alert (018).

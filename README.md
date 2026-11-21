@@ -317,8 +317,9 @@ window, and a middle click opens Home. The menu has Open, one entry for
 each tab the sidebar shows (a tab in `tabs.hidden` is left out, and the
 list is read each time the menu opens), Settings, and Quit daemon, which
 stops the daemon. The tooltip shows CPU, memory and temperature. It is
-computed only when the host reads it, so a host that reads it on a timer
-costs at most one reading every 10 s. The tray holds no subscription and
+computed when asked for: when the host reads it, at start, after a click
+and when the menu opens. A reading is kept 10 s, so even a host that reads
+it on a timer costs at most one reading every 10 s. The tray holds no subscription and
 no timer. Set `tray.enabled` to false to turn it off; it is read when the
 daemon starts.
 
