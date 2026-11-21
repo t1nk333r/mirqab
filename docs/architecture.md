@@ -383,7 +383,8 @@ Streams: `system`, `apps`, `process`, `ports`, `agents`, `awake`, `disk`,
   subscribers before each sample (`Sampler::wants`), so it reads only what
   they name. When a stream is left with no subscriber, the sampler is
   told once, within an interval (`Sampler::idle`), and forgets and stops
-  what it kept for the earlier subscribers. No sampler sleeps or asks
+  what it kept for the earlier subscribers. A `get` of a stream nobody
+  subscribes to tells it too, right after the get's snapshot. No sampler sleeps or asks
   another program while holding its lock, except the `apps` sampler:
   its focus source waits on the compositor under the lock, up to 1.5 s
   once when the page opens (two connects and a request) and up to 0.5 s

@@ -1156,7 +1156,22 @@ impl Inner {
             let mut sampler = lock(&slot.sampler);
             // A tick in the gap handed the sampler its subscribers' params.
             sampler.wants(std::slice::from_ref(&params));
-            sampler.snapshot(&self.root, Instant::now())
+            let data = sampler.snapshot(&self.root, Instant::now());
+            // With nobody subscribed, what the get made the sampler keep
+            // (a procfs cache with command lines, an owner map) is dropped
+            // now, not when a later subscriber leaves (audit 2026-11-21,
+            // L20). After the snapshot, so the get's own reading is used
+            // first. The state lock is taken under the sampler's: no path
+            // takes them the other way round, and a subscriber that joins
+            // after this check samples only once the lock is released.
+            let watched = lock(&self.state)
+                .clients
+                .values()
+                .any(|c| c.subs.contains_key(name));
+            if !watched {
+                sampler.idle();
+            }
+            data
         };
         match slot.view {
             Some(view) => Reply::ok(req.id, view(&data, &params)),

@@ -457,7 +457,9 @@ fn a_bad_request_with_a_usable_id_is_answered_with_that_id() {
         other => panic!("expected an error reply, got {other:?}"),
     }
     // An id that is not a whole number is not guessed at.
-    c.stream.write_all(b"{\"id\":\"x\",\"method\":5}\n").unwrap();
+    c.stream
+        .write_all(b"{\"id\":\"x\",\"method\":5}\n")
+        .unwrap();
     match c.frame() {
         Some(ServerFrame::Reply(r)) => assert_eq!(r.id, 0),
         other => panic!("expected an error reply, got {other:?}"),
@@ -1305,6 +1307,26 @@ fn a_stream_left_without_subscribers_is_told_before_its_next_sample() {
     c.call("subscribe", Some("counted"), json!({})).unwrap();
     assert_eq!(c.event("counted").unwrap()["idle"], 1, "one call");
     assert_eq!(c.event("counted").unwrap()["idle"], 1, "and only one");
+}
+
+#[test]
+fn a_get_with_no_subscriber_leaves_nothing_kept() {
+    // Audit 2026-11-21, L20: a `get` left what the sampler kept for it
+    // (the procfs cache, the owner map) until a later subscribe came and
+    // went. With a subscriber, the sampler keeps what it serves.
+    let d = start("getidle");
+    let mut c = Client::connect(&d);
+    c.hello();
+    let idle =
+        |c: &mut Client| c.call("status", None, Value::Null).unwrap()["counted_idle"].clone();
+    c.call("get", Some("counted"), json!({})).unwrap();
+    assert_eq!(idle(&mut c), 1, "told once, after the get");
+    let mut sub = Client::connect(&d);
+    sub.hello();
+    sub.call("subscribe", Some("counted"), json!({})).unwrap();
+    sub.event("counted").unwrap();
+    c.call("get", Some("counted"), json!({})).unwrap();
+    assert_eq!(idle(&mut c), 1, "not told while a subscriber is served");
 }
 
 /// A stream whose minute writes one event naming the config it was given.
