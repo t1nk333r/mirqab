@@ -745,7 +745,9 @@ minute running now is never half-written in a query.
 
 `history.query` returns `avg` and `max` per bucket, so a short spike stays
 visible at 30 d. The 2 min range arrives on the live stream itself (each
-event carries the newest point; the interface keeps the ring). Choosing
+event carries the newest point; the interface keeps the ring, stamped
+with the wall clock, and starts it again when that clock steps back by
+more than a second). Choosing
 any other range on a graph ends its `live` subscription (§5.3): a graph of
 stored minutes is redrawn once a minute, not once a second.
 

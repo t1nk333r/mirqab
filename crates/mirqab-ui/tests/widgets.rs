@@ -327,6 +327,26 @@ fn live_only_while_mapped_at_two_minutes() {
     drop(win);
 }
 
+/// Audit 2026-11-21, L53: the wall clock steps back 100 s while a live
+/// graph runs. The ring starts again rather than keeping the later stamps,
+/// which stalled the two-minute trim and let it grow without bound.
+#[gtk::test]
+#[ignore = "needs a display: run tests/test-ui-widgets.sh"]
+fn a_clock_stepped_back_keeps_the_live_ring_to_two_minutes() {
+    let g = Graph::new();
+    for t in 990..=1000 {
+        g.push_live(t, 1.0);
+    }
+    for t in 900..=1100 {
+        g.push_live(t, 2.0);
+    }
+    // Two minutes of whole seconds, both ends included.
+    assert!(g.ring_len() <= 121, "ring holds {}", g.ring_len());
+    // A stamp one second back is the same sample again, not a new start.
+    g.push_live(1099, 3.0);
+    assert!(g.ring_len() > 100, "ring holds {}", g.ring_len());
+}
+
 #[gtk::test]
 #[ignore = "needs a display: run tests/test-ui-widgets.sh"]
 fn the_meter_draws_track_and_fill_in_a_rounded_clip() {
