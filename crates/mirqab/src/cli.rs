@@ -388,7 +388,7 @@ mod tests {
     /// socket path must stay under 108 bytes.
     fn scratch_socket(name: &str) -> (PathBuf, UnixListener) {
         let dir = PathBuf::from("/tmp").join(format!("mqt-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let _ = mirqab_core::act::remove_path(&dir, false);
         std::fs::create_dir_all(&dir).unwrap();
         let socket = dir.join("daemon.sock");
         let listener = UnixListener::bind(&socket).unwrap();
@@ -424,7 +424,7 @@ mod tests {
         assert!(strings::daemon_no_answer(1).contains("did not answer"));
         assert!(!strings::daemon_no_answer(1).contains("start it with"));
         handle.join().unwrap();
-        let _ = std::fs::remove_dir_all(socket.parent().unwrap());
+        let _ = mirqab_core::act::remove_path(socket.parent().unwrap(), false);
     }
 
     #[test]
@@ -434,7 +434,7 @@ mod tests {
         let r = call_within(&socket, Request::new(1, "status"), Duration::from_secs(5));
         assert!(matches!(r, Err(CallError::NoDaemon(_))), "no daemon");
         handle.join().unwrap();
-        let _ = std::fs::remove_dir_all(socket.parent().unwrap());
+        let _ = mirqab_core::act::remove_path(socket.parent().unwrap(), false);
     }
 
     #[test]
