@@ -309,11 +309,13 @@ impl Sampler for Process {
     }
 
     /// No subscriber since the last sample: the pins and the baseline were
-    /// theirs (review of PR #18).
+    /// theirs (review of PR #18). The primed readings are the pending
+    /// gets': they stay, or a get in its gap would find none and sleep
+    /// under the lock (audit 2026-11-21, L23). `take_mine` drops any past
+    /// 10 s, and the queue stays capped at `MAX_PRIMED`.
     fn idle(&mut self) {
         self.pins.clear();
         self.base = None;
-        self.get_base.clear();
     }
 
     /// `get`: the first reading, under the lock; half a second without it

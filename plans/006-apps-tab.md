@@ -3446,8 +3446,13 @@ cap stays. This supersedes "`idle` clears the queue" and "drops younger
 failed before the change (three on a 0.50 s wait, one on a reading left
 queued, one on `None` for a 9.7 s baseline).
 `each_get_is_served_its_own_primed_reading_oldest_first` now checks that
-a too-young reading is left for its own get. `Process::idle` still
-clears its queue, the third case for `process`; left for its own change.
+a too-young reading is left for its own get. `Process::idle` cleared
+its queue too, the third case for `process` (audit 2026-11-21, L23:
+prime, idle, snapshot slept 500 ms under the lock); in its own commit
+it keeps the queue (`samplers/process.rs`, `idle`; `take_mine` drops
+readings past 10 s, the cap stays 16). Test:
+`the_last_subscriber_leaving_keeps_a_pending_process_gets_reading`
+(failed before on a 0.50 s wait).
 
 
 ## Unverified

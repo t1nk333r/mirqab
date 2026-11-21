@@ -1673,6 +1673,27 @@ fn the_last_subscriber_leaving_keeps_a_pending_apps_gets_reading() {
 }
 
 #[test]
+fn the_last_subscriber_leaving_keeps_a_pending_process_gets_reading() {
+    // Audit 2026-11-21, L23: `Process::idle` in a get's gap dropped its
+    // reading, and `snapshot` slept half a second under the lock.
+    let (t0, t1) = (fixture("root-desktop"), fixture("root-desktop.t1"));
+    let ask = [json!({"pid": 2001})];
+    let mut p = process_probed();
+    p.wants(&ask);
+    p.sample(&t0, Instant::now());
+    p.wants(&ask);
+    let gap = p
+        .prime(&t0, Instant::now())
+        .expect("a fresh baseline: a wait");
+    p.idle();
+    std::thread::sleep(gap);
+    let (took, got) = timed(|| process_get(&mut p, &t1, 2001));
+    assert!(took < Duration::from_millis(400), "{took:?}");
+    assert!(got["cpu"].is_number(), "{got}");
+    assert_eq!(p.primed(), 0);
+}
+
+#[test]
 fn an_apps_baseline_about_to_go_stale_is_not_queued_for_a_get() {
     // As for `process` (review of PR #26): a baseline that would expire
     // before `snapshot` is not relied on; the get takes a fresh reading.
