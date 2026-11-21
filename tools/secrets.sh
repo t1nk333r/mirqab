@@ -2,14 +2,15 @@
 # tools/secrets.sh — run before every push to the public repository
 # (CLAUDE.md "The repository is public", architecture §10, plan 001 step 9).
 #   1. gitleaks over every ref a push can reach;
-#   2. privacy patterns gitleaks does not know, over tracked files and every
-#      added line in history: IPv4 hosts outside the documentation ranges
+#   2. privacy patterns gitleaks does not know, over tracked files, every
+#      added line in history and every commit message: IPv4 hosts outside the
+#      documentation ranges
 #      (private, tailnet and public alike), MAC addresses, coordinates finer than a
 #      city, token shapes, home paths, personal e-mail addresses, private keys,
 #      and the literal strings of tools/secrets-deny.txt plus the local file
 #      named by MIRQAB_SECRETS_DENY (a machine's own hostnames).
-# The history scan skips the commits tools/secrets-allow.txt lists, each with
-# its reason: commits already pushed whose matches were reviewed and found
+# The history scan, messages included, skips the commits
+# tools/secrets-allow.txt lists, each with its reason: commits already pushed whose matches were reviewed and found
 # synthetic. A full 40-character hash per line; nothing else is skippable.
 # GITLEAKS overrides the binary. Exit 1 on any finding.
 #
@@ -59,6 +60,20 @@ git log -p --format='@@commit %H' "${REFS[@]}" -- . \
         /^@@ / { hunk = 1; next }
         hunk && !skip && /^\+/ { print }
     ' >"$added"
+# Commit messages, of every commit a push can reach: a squash merge copies
+# the branch's messages into main's, so an address pasted into one while
+# checking an Unverified item would reach the public history unscanned.
+# Identity trailers (Co-authored-by, Signed-off-by) are left out: git and
+# GitHub write them from the committers' own addresses, which every commit's
+# author and committer fields publish anyway.
+git log --format='@@commit %H%n%B' "${REFS[@]}" |
+    awk -v allow="$allow" '
+        BEGIN { n = split(allow, a, "\n"); for (i = 1; i <= n; i++) ok[a[i]] = 1 }
+        /^@@commit [0-9a-f]+$/ && length($2) == 40 { skip = ($2 in ok); next }
+        skip { next }
+        tolower($0) ~ /^(co-authored-by|signed-off-by):[^<>]*<[^<>]*>[[:space:]]*$/ { next }
+        { print }
+    ' >>"$added"
 
 # scan ERE — matches in tracked files and in lines added in history.
 scan() {

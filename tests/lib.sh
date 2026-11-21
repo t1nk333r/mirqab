@@ -92,6 +92,19 @@ sandbox() {
     # Coding agents' credential homes: the Agents tab (plan 008) must never
     # reach the live account's.
     unset CLAUDE_CONFIG_DIR CODEX_HOME
+    # The caller's git repository: a pre-commit hook exports GIT_INDEX_FILE
+    # (and in a linked worktree GIT_DIR), and git obeys them over `-C`, so
+    # a test's scratch `git init`, `add` or `commit` would write into the
+    # real repository's index. The list is `git rev-parse --local-env-vars`
+    # plus the variables that point git at other config or discovery.
+    # tests/test-rust.sh's selector call still reads the right checkout: it
+    # runs in $REPO, and its working-tree diff names the same paths either
+    # way.
+    unset GIT_DIR GIT_WORK_TREE GIT_IMPLICIT_WORK_TREE GIT_INDEX_FILE \
+        GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_COMMON_DIR \
+        GIT_PREFIX GIT_GRAFT_FILE GIT_SHALLOW_FILE GIT_NO_REPLACE_OBJECTS \
+        GIT_REPLACE_REF_BASE GIT_NAMESPACE GIT_CEILING_DIRECTORIES GIT_CONFIG \
+        GIT_CONFIG_PARAMETERS GIT_CONFIG_COUNT GIT_CONFIG_GLOBAL GIT_CONFIG_SYSTEM
     export LC_ALL=C MIRQAB_TEST=1
 }
 

@@ -156,3 +156,16 @@ fn every_range_has_the_bucket_of_architecture_6_4() {
     assert!(Window::for_range("1y", now).is_none());
     assert_eq!(graph::RANGES, ["2m", "1h", "24h", "7d", "30d"]);
 }
+
+#[test]
+fn live_only_on_screen_at_two_minutes() {
+    use graph::wants_live;
+    // Mapped in a window the compositor shows, at 2m, with a live source.
+    assert!(wants_live(true, false, "2m", true));
+    // A suspended window (minimised, another workspace) is not on screen
+    // (architecture §9.2: 1 s only while the live graph is on screen).
+    assert!(!wants_live(true, true, "2m", true), "suspended");
+    assert!(!wants_live(false, false, "2m", true), "unmapped");
+    assert!(!wants_live(true, false, "1h", true), "a stored range");
+    assert!(!wants_live(true, false, "2m", false), "no live source");
+}

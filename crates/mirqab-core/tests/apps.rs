@@ -11,7 +11,10 @@
 //! `top-apps` minute row, `apps.inspect` with a start time (S5), GPU
 //! memory read only from DRM fds and capped (D2), `.flatpak-info` read
 //! only as a regular file (D7), and `get`'s first reading taken in
-//! `prime` (D1).
+//! `prime` (D1). From the audit: code on an interpreter's command line
+//! never names a terminal job; a `process` get's primed reading serves
+//! that get only, and a get whose baseline a tick replaced does not wait
+//! under the lock.
 
 use mirqab_core::Root;
 use mirqab_core::desktop::{Focus, FocusedSince, focused_since};
@@ -628,6 +631,74 @@ fn a_process_moved_after_its_first_sample_is_regrouped() {
     .unwrap();
     let third = data(a.sample(&root, t0 + Duration::from_secs(4)));
     assert_eq!(ids(&third), ["scope:app-Hyprland-late-0a0a0a0a"]);
+}
+
+#[test]
+fn code_on_an_interpreters_command_line_never_names_a_job() {
+    // A terminal job is named after the script an interpreter runs. Code
+    // given inline (`python3 -c CODE`) or an option's value is no script:
+    // the job is named after the interpreter, since its name reaches the
+    // top-apps history row and agents (audit of plan 006).
+    let s = bare_root("inline");
+    let write = |pid: u32, ppid: u32, sid: u32, tpgid: u32, start: u32, argv: &[&str]| {
+        let p = s.0.join(format!("proc/{pid}"));
+        std::fs::create_dir_all(&p).unwrap();
+        let comm = argv[0].trim_start_matches('-');
+        std::fs::write(
+            p.join("stat"),
+            format!("{pid} ({comm}) S {ppid} {pid} {sid} 34816 {tpgid} 4194560 0 0 0 0 5 5 0 0 20 0 1 0 {start} 0 0 0"),
+        )
+        .unwrap();
+        std::fs::write(p.join("status"), "Uid:\t1000\t1000\t1000\t1000\n").unwrap();
+        std::fs::write(
+            p.join("cgroup"),
+            "0::/user.slice/user-1000.slice/user@1000.service/app.slice/app-Hyprland-foot-0b0b0b0b.scope\n",
+        )
+        .unwrap();
+        let mut cmdline = argv.join("\0");
+        cmdline.push('\0');
+        std::fs::write(p.join("cmdline"), cmdline).unwrap();
+    };
+    write(9500, 1, 9500, 0, 50, &["foot"]);
+    let cases: &[(&[&str], &str)] = &[
+        (
+            &[
+                "python3",
+                "-c",
+                "import urllib.request as u; u.urlopen('https://api.example.org/v1/items?token=s3cr3t')",
+            ],
+            "python3",
+        ),
+        (&["python3", "-c", "x/y?token=z"], "python3"),
+        (&["python3", "-Bc", "print(1)"], "python3"),
+        (&["node", "-e", "require('a/b')"], "node"),
+        (&["node", "--eval=require('a/b')"], "node"),
+        (&["perl", "-lne", "print if /x/", "notes.txt"], "perl"),
+        (&["ruby", "-e", "puts 1"], "ruby"),
+        (&["deno", "eval", "console.log(1)"], "deno"),
+        (&["python3", "-W", "ignore", "tool.py"], "tool.py"),
+        (&["node", "-r", "dotenv/config", "app.js"], "app.js"),
+        (&["node", "--env-file", ".env", "app.js"], "app.js"),
+        (&["ruby", "-E", "UTF-8", "x.rb"], "x.rb"),
+        (&["ruby", "-C", "../proj", "x.rb"], "x.rb"),
+        (&["deno", "run", "-A", "app.ts"], "app.ts"),
+        (&["node", "node_modules/.bin/vite"], "vite"),
+        (&["python3", "-m", "http.server"], "http.server"),
+        (&["python3", "-u", "my script.py"], "python3"),
+    ];
+    for (n, (argv, _)) in cases.iter().enumerate() {
+        let shell = 9510 + 10 * n as u32;
+        write(shell, 9500, shell, shell + 1, 100, &["-zsh"]);
+        write(shell + 1, shell, shell, shell + 1, 200, argv);
+    }
+    let root = Root::new(&s.0);
+    let mut a = Apps::with_pacman(s.0.join("pacman").to_string_lossy());
+    a.probe(&root).unwrap();
+    let d = data(a.sample(&root, Instant::now()));
+    for (n, (argv, name)) in cases.iter().enumerate() {
+        let g = by_id(&d, &format!("session:{}", 9510 + 10 * n as u32));
+        assert_eq!(g.name, *name, "{argv:?}");
+    }
 }
 
 #[test]
@@ -1390,4 +1461,113 @@ fn the_process_stream_serves_each_get_its_own_primed_reading() {
         t.elapsed() >= Duration::from_millis(400),
         "the queue is empty"
     );
+}
+
+/// A get of `pid` on `root`, with its `wants` set as the server sets it.
+fn process_get(p: &mut Process, root: &Root, pid: u32) -> Value {
+    let ask = json!({"pid": pid});
+    p.wants(std::slice::from_ref(&ask));
+    let got = p.snapshot(root, Instant::now());
+    process::view(&got, &ask)
+}
+
+#[test]
+fn a_primed_reading_left_by_one_get_never_answers_another_pid() {
+    // Audit: a get answered from the subscribers' baseline left its primed
+    // reading queued, and the next get of another pid took it and answered
+    // `cpu: null`.
+    let (t0, t1) = (fixture("root-desktop"), fixture("root-desktop.t1"));
+    let mut p = process_probed();
+    p.wants(&[json!({"pid": 2001})]);
+    p.sample(&t0, Instant::now());
+    // The baseline is too young for the get, which primes; by its snapshot
+    // the baseline serves, and the primed reading goes with the get.
+    p.prime(&t0, Instant::now())
+        .expect("a young baseline: a wait");
+    p.wants(&[json!({"pid": 2001})]);
+    let from_base = p.snapshot(&t1, Instant::now() + Duration::from_millis(1200));
+    assert!(process::view(&from_base, &json!({"pid": 2001}))["cpu"].is_number());
+    assert_eq!(p.primed(), 0, "the get's reading went with it");
+
+    // The process left in the gap: its reading goes too.
+    let s = scratch("procleft");
+    std::fs::create_dir_all(s.0.join("proc")).unwrap();
+    p.wants(&[json!({"pid": 2010})]);
+    p.prime(&t0, Instant::now()).expect("a wait");
+    assert_eq!(
+        process_get(&mut p, &Root::new(&s.0), 2010),
+        json!({"pid": 2010, "gone": true})
+    );
+    assert_eq!(p.primed(), 0);
+
+    // Two gets whose snapshots run in the other order each take their own.
+    let mut p = process_probed();
+    p.wants(&[json!({"pid": 2001})]);
+    p.prime(&t0, Instant::now()).expect("a wait");
+    p.wants(&[json!({"pid": 2010})]);
+    p.prime(&t0, Instant::now()).expect("a wait");
+    std::thread::sleep(Duration::from_millis(500));
+    let t = Instant::now();
+    assert!(process_get(&mut p, &t1, 2010)["cpu"].is_number());
+    assert!(process_get(&mut p, &t1, 2001)["cpu"].is_number());
+    assert!(
+        t.elapsed() < Duration::from_millis(400),
+        "{:?}",
+        t.elapsed()
+    );
+    assert_eq!(p.primed(), 0);
+}
+
+#[test]
+fn a_baseline_about_to_go_stale_is_not_queued_for_a_get() {
+    // Review of PR #26: a baseline 9.7 s old was queued, went stale before
+    // `snapshot`, which then waited half a second under the lock.
+    let t0 = fixture("root-desktop");
+    let ask = [json!({"pid": 2001})];
+    let mut p = process_probed();
+    p.wants(&ask);
+    p.sample(&t0, Instant::now() - Duration::from_millis(9700));
+    p.wants(&ask);
+    assert_eq!(
+        p.prime(&t0, Instant::now()),
+        Some(Duration::from_millis(500)),
+        "a fresh reading and the wait"
+    );
+    // One 9 s old still serves at once.
+    let mut p = process_probed();
+    p.wants(&ask);
+    p.sample(&t0, Instant::now() - Duration::from_secs(9));
+    p.wants(&ask);
+    assert_eq!(p.prime(&t0, Instant::now()), None);
+}
+
+#[test]
+fn a_get_whose_baseline_a_tick_replaced_does_not_wait_under_the_lock() {
+    // Audit: `prime` found the subscribers' baseline usable and queued
+    // nothing; a tick between the get's two locked steps replaced it with
+    // a fresh one, and `snapshot` slept half a second holding the lock.
+    let (t0, t1) = (fixture("root-desktop"), fixture("root-desktop.t1"));
+    let ask = [json!({"pid": 2001})];
+    let mut p = process_probed();
+    let past = Instant::now() - Duration::from_secs(2);
+    p.wants(&ask);
+    p.sample(&t0, past);
+    p.wants(&ask);
+    assert!(
+        p.prime(&t0, Instant::now()).is_none(),
+        "the baseline serves"
+    );
+    p.wants(&ask);
+    p.sample(&t1, Instant::now());
+    let t = Instant::now();
+    let got = process_get(&mut p, &t1, 2001);
+    assert!(
+        t.elapsed() < Duration::from_millis(400),
+        "{:?}",
+        t.elapsed()
+    );
+    // 80 ticks of 100 over the 2 s since the baseline the get primed with.
+    let cpu = got["cpu"].as_f64().expect("a rate");
+    assert!((cpu - 40.0).abs() < 4.0, "{cpu}");
+    assert_eq!(p.primed(), 0);
 }

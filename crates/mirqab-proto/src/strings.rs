@@ -690,6 +690,14 @@ pub fn no_daemon(socket: &str, why: &str) -> String {
     )
 }
 
+/// A request the daemon took but did not answer in time: it is running,
+/// so this is not "no daemon", and an action may still have run.
+pub fn daemon_no_answer(secs: u64) -> String {
+    format!(
+        "mirqab: the daemon did not answer within {secs} s; it is running, and a requested action may still have run"
+    )
+}
+
 pub fn daemon_error(code: &str, message: &str) -> String {
     format!("mirqab: {code}: {message}")
 }
@@ -722,14 +730,19 @@ pub fn ready(socket: &str) -> String {
     format!("ready {socket}")
 }
 
+/// `systemctl --user start` itself failed: the unit is missing or broken,
+/// or there is no user manager. A unit that cannot see the display still
+/// starts (it is Type=simple), so that hint is on the next message.
 pub fn interface_start_failed(why: &str) -> String {
     format!(
-        "could not start mirqab-ui.service ({why}); if the unit cannot see the display, run: systemctl --user import-environment WAYLAND_DISPLAY"
+        "could not start mirqab-ui.service ({why}); is the unit installed in ~/.config/systemd/user? If you just copied it, run: systemctl --user daemon-reload"
     )
 }
 
+/// The unit started and nothing attached: most often it cannot see the
+/// display, since GTK opens it after systemd reported the start.
 pub fn interface_did_not_attach() -> &'static str {
-    "mirqab-ui.service started but the interface did not connect within 5 s; see: journalctl --user -u mirqab-ui.service"
+    "mirqab-ui.service started but the interface did not connect within 5 s; if journalctl --user -u mirqab-ui.service says it cannot open the display, run: systemctl --user import-environment WAYLAND_DISPLAY"
 }
 
 pub fn config_broken(why: &str) -> String {
@@ -761,6 +774,104 @@ pub fn status_lines(
         out.push('\n');
     }
     out
+}
+
+// --- The daemon's replies and checks (architecture §5.2) ------------------
+
+pub fn bad_json(why: &str) -> String {
+    format!("bad json: {why}")
+}
+
+pub fn unknown_method(method: &str) -> String {
+    format!("unknown method: {method}")
+}
+
+pub const STREAM_REQUIRED: &str = "stream is required";
+
+pub fn unknown_stream(name: &str) -> String {
+    format!("unknown stream: {name}")
+}
+
+pub const UI_EVENTS_ONLY: &str = "ui has events only";
+pub const KEY_REQUIRED: &str = "key is required";
+pub const NAME_REQUIRED: &str = "name is required";
+
+pub fn unknown_action(name: &str) -> String {
+    format!("unknown action: {name}")
+}
+
+pub const HISTORY_IS_OFF: &str = "history is off";
+pub const SERIES_REQUIRED: &str = "series is required";
+
+pub fn too_many_series(max: usize) -> String {
+    format!("at most {max} series in one query")
+}
+
+pub fn unknown_range(name: &str) -> String {
+    format!("unknown range: {name}")
+}
+
+pub const RANGE_REQUIRED: &str = "range, or from and to, are required";
+pub const SPAN_NOT_KEPT: &str = "from and to lie outside the 30 days history keeps";
+pub const SPAN_IN_FUTURE: &str = "from and to lie in the future, where history has nothing yet";
+pub const HISTORY_ASIDE_TAKEN: &str = "every name to move the damaged history file to is taken";
+
+pub fn history_damaged_again(hours: i64) -> String {
+    format!(
+        "history was damaged again within {hours} hours of being replaced; it is off and the file is left in place until then"
+    )
+}
+
+pub fn history_schema_newer(found: &str, ours: &str) -> String {
+    format!("history schema {found} is newer than {ours}")
+}
+
+pub fn history_series_full(max: usize) -> String {
+    format!("history holds at most {max} series")
+}
+
+pub fn cannot_start(why: &str) -> String {
+    format!("cannot start: {why}")
+}
+
+pub const TIMED_OUT: &str = "timed out";
+
+// `config.set`'s checks, one per kind of value.
+
+pub fn setting_one_of(key: &str, allowed: &[&str]) -> String {
+    format!("{key} must be one of {}", allowed.join(", "))
+}
+
+pub fn setting_range(key: &str, lo: f64, hi: f64) -> String {
+    format!("{key} must be a number from {lo} to {hi}")
+}
+
+pub fn setting_string_or_null(key: &str) -> String {
+    format!("{key} must be a string or null")
+}
+
+pub fn setting_strings(key: &str) -> String {
+    format!("{key} must be a list of strings")
+}
+
+pub fn setting_bool(key: &str) -> String {
+    format!("{key} must be true or false")
+}
+
+pub fn setting_tab_or_null(key: &str) -> String {
+    format!("{key} must be a tab id or null")
+}
+
+pub fn setting_interval_ms(key: &str, lo: u64, hi: u64) -> String {
+    format!("{key} must be a whole number of milliseconds from {lo} to {hi}")
+}
+
+pub fn setting_bar_combo(key: &str) -> String {
+    format!("{key} must be a list of bar items other than combo (mirqab bar --list)")
+}
+
+pub fn unknown_setting(key: &str) -> String {
+    format!("unknown setting: {key}")
 }
 
 // --- The interface (plan 001 phase D) -------------------------------------
@@ -1547,6 +1658,21 @@ pub fn plan_dependents_unknown(unit: &str) -> String {
     format!(
         "nothing was done: which services stop with {} cannot be told now, and the confirmation listed them; ask again",
         plain(unit)
+    )
+}
+
+/// A confirmation whose target is now stopped through another unit than
+/// the plan showed: a unit where the plan showed signals by pid, another
+/// unit, or signals where it showed a unit (audit of plan 006).
+pub fn plan_unit_changed(planned: Option<&str>, now: Option<&str>) -> String {
+    let how = |u: Option<&str>| match u {
+        Some(u) => format!("a stop of {}", plain(u)),
+        None => "signals by pid".to_string(),
+    };
+    format!(
+        "nothing was done: the confirmation showed {}, and the target now needs {}; ask again",
+        how(planned),
+        how(now)
     )
 }
 

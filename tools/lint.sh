@@ -179,6 +179,43 @@ grep_rules() {
             grep -vxE 'crates/mirqab-ui/src/(client|widgets/graph)\.rs' |
             xargs -r grep -HnE 'subscribe_live|"live"' |
             hits "live sampling asked for outside widgets/graph.rs (§5.3)"
+
+        # tools/affected-tests.sh selects a test only through its covers
+        # lines. A test that starts the daemon passes through server.rs,
+        # act.rs and the protocol, so it declares covers-shared, and it
+        # covers each fixture tree it starts the daemon on or copies:
+        # otherwise a pull request that changes them skips it (audit of the
+        # gates: test-cli, test-bar, test-ui-apps and test-ui-home did not).
+        local t
+        for t in tests/test-*.sh; do
+            # A call: start_daemon in command position, after any VAR=value.
+            [[ -f $t ]] && grep -qE '^[[:space:]]*([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+)*start_daemon\b' "$t" ||
+                continue
+            awk -v f="$t" '
+                FNR == 1 { head = 1 }
+                head && !/^#/ && !/^[[:space:]]*$/ { head = 0 }
+                head && /^# mirqab:covers-shared[[:space:]]*$/ { shared = 1 }
+                head && /^# mirqab:covers[[:space:]]/ {
+                    n = split($0, g, /[[:space:]]+/)
+                    for (i = 3; i <= n; i++) cov[g[i]] = 1
+                }
+                head { next }
+                /^[[:space:]]*#/ { next }
+                {
+                    l = $0
+                    while (match(l, /(\$FIXTURES\/|start_daemon[[:space:]]+)root-[A-Za-z0-9._-]+/)) {
+                        m = substr(l, RSTART, RLENGTH)
+                        l = substr(l, RSTART + RLENGTH)
+                        sub(/.*[\/[:space:]]/, "", m)
+                        if (!(("tests/fixtures/" m "/**") in cov) && !("tests/fixtures/**" in cov) && !(m in told)) {
+                            told[m] = 1
+                            print f ":" FNR ": fixture " m " is not in a covers line"
+                        }
+                    }
+                }
+                END { if (!shared) print f ":1: starts the daemon without # mirqab:covers-shared" }
+            ' "$t"
+        done | hits "a daemon test that misses a covers declaration (tools/affected-tests.sh)"
     )
     [[ ! -s $viol ]]
 }

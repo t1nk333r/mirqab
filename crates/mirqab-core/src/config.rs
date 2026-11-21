@@ -7,6 +7,7 @@
 //! a test below checks that the two name the same keys and defaults.
 
 use crate::act;
+use crate::proto::strings;
 use serde_json::{Map, Value, json};
 use std::path::{Path, PathBuf};
 
@@ -29,19 +30,19 @@ pub fn defaults() -> Value {
 fn check(key: &str, v: &Value) -> Option<String> {
     let one_of = |allowed: &[&str]| match v.as_str() {
         Some(s) if allowed.contains(&s) => None,
-        _ => Some(format!("{key} must be one of {}", allowed.join(", "))),
+        _ => Some(strings::setting_one_of(key, allowed)),
     };
     let number = |lo: f64, hi: f64| match v.as_f64() {
         Some(n) if (lo..=hi).contains(&n) => None,
-        _ => Some(format!("{key} must be a number from {lo} to {hi}")),
+        _ => Some(strings::setting_range(key, lo, hi)),
     };
     let string_or_null = || match v {
         Value::Null | Value::String(_) => None,
-        _ => Some(format!("{key} must be a string or null")),
+        _ => Some(strings::setting_string_or_null(key)),
     };
     let strings = || match v.as_array() {
         Some(a) if a.iter().all(Value::is_string) => None,
-        _ => Some(format!("{key} must be a list of strings")),
+        _ => Some(strings::setting_strings(key)),
     };
     match key {
         "window.mode" => one_of(&["popover", "window"]),
@@ -58,7 +59,7 @@ fn check(key: &str, v: &Value) -> Option<String> {
         "window.heightEm" => number(20.0, 80.0),
         "window.rememberTab" | "home.seeded" | "tray.enabled" | "trends.topApps" => match v {
             Value::Bool(_) => None,
-            _ => Some(format!("{key} must be true or false")),
+            _ => Some(strings::setting_bool(key)),
         },
         "window.lastTab" => match v {
             Value::Null => None,
@@ -68,13 +69,11 @@ fn check(key: &str, v: &Value) -> Option<String> {
             {
                 None
             }
-            _ => Some(format!("{key} must be a tab id or null")),
+            _ => Some(strings::setting_tab_or_null(key)),
         },
         "live.intervalMs" => match v.as_u64() {
             Some(n) if (1000..=5000).contains(&n) => None,
-            _ => Some(format!(
-                "{key} must be a whole number of milliseconds from 1000 to 5000"
-            )),
+            _ => Some(strings::setting_interval_ms(key, 1000, 5000)),
         },
         "theme.follow" | "theme.accent" => string_or_null(),
         "theme.scheme" => one_of(&["dark", "light", "system"]),
@@ -85,20 +84,15 @@ fn check(key: &str, v: &Value) -> Option<String> {
             Some(a)
                 if a.iter().all(|x| {
                     x.as_str().is_some_and(|n| {
-                        n != "combo"
-                            && crate::proto::strings::BAR_ITEMS
-                                .iter()
-                                .any(|(i, _)| *i == n)
+                        n != "combo" && strings::BAR_ITEMS.iter().any(|(i, _)| *i == n)
                     })
                 }) =>
             {
                 None
             }
-            _ => Some(format!(
-                "{key} must be a list of bar items other than combo (mirqab bar --list)"
-            )),
+            _ => Some(strings::setting_bar_combo(key)),
         },
-        _ => Some(format!("unknown setting: {key}")),
+        _ => Some(strings::unknown_setting(key)),
     }
 }
 

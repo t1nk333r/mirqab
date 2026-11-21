@@ -244,14 +244,20 @@ Stop a daemon you started by hand first; only one can hold the socket.
 The units run `/usr/bin/mirqab daemon` and `/usr/bin/mirqab-ui`, so
 install the binaries there or change `ExecStart=` in your copies.
 
-If `mirqab open` reports that it could not start `mirqab-ui.service`, the
-unit cannot see the display. Run this, then try `mirqab open` again:
+If `mirqab open` reports that `mirqab-ui.service` started but the
+interface did not connect within 5 s, the unit most often cannot see the
+display: `journalctl --user -u mirqab-ui.service` then says it cannot
+open it. Run this, then try `mirqab open` again:
 
 ```sh
 systemctl --user import-environment WAYLAND_DISPLAY
 ```
 
 The setting lasts until the end of the login session.
+
+If it reports that it could not start `mirqab-ui.service`, the unit is
+missing or broken: check that it is in `~/.config/systemd/user`, and run
+`systemctl --user daemon-reload` after copying it.
 
 Stored history is read with `mirqab history`. This prints the last hour of
 `cpu.total`, one bucket a minute:

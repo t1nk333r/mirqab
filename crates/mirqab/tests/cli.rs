@@ -302,10 +302,14 @@ fn open_without_an_interface_fails_cleanly() {
     assert_eq!(stub_log(&d), "");
     let out = output_within(mirqab_cmd().arg("--socket").arg(&d.socket).arg("open"));
     assert_eq!(out.status.code(), Some(1));
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("did not connect"), "{err}");
+    // A Type=simple unit reports a start before GTK opens the display, so
+    // a unit that cannot see it ends here: this is where the fix belongs
+    // (audit: it was only on "could not start").
     assert!(
-        String::from_utf8_lossy(&out.stderr).contains("did not connect"),
-        "{}",
-        String::from_utf8_lossy(&out.stderr)
+        err.contains("systemctl --user import-environment WAYLAND_DISPLAY"),
+        "{err}"
     );
     assert_eq!(stub_log(&d), "--user start mirqab-ui.service\n");
 }
@@ -319,6 +323,9 @@ fn a_unit_that_fails_to_start_is_reported() {
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(err.contains("could not start mirqab-ui.service"), "{err}");
     assert!(err.contains("not found"), "{err}");
+    // A failed start is the unit missing or broken, not the display.
+    assert!(err.contains("~/.config/systemd/user"), "{err}");
+    assert!(!err.contains("WAYLAND_DISPLAY"), "{err}");
 }
 
 #[test]
