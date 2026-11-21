@@ -779,6 +779,61 @@ fn one_act_one_dialog_and_go_ahead_sends_what_it_showed() {
 
 #[gtk::test]
 #[ignore = "needs a display: run tests/test-ui-widgets.sh"]
+fn the_dialog_goes_when_the_sheet_leaves_the_screen() {
+    use mirqab_ui::tabs::apps::inspector::Inspector;
+    use mirqab_view::tabs::apps::{self as model, Key};
+    let fake = Rc::new(Fake::new());
+    let i = Inspector::new(
+        fake.clone(),
+        Rc::new(|| true),
+        Rc::new(|| {}),
+        Rc::new(|_| {}),
+    );
+    let win = shown(&i.root, 400, 600);
+    let frame = golden_frame();
+    let quit = named(i.root.upcast_ref(), "apps-quit")
+        .and_downcast::<gtk::Button>()
+        .unwrap();
+    let p = Key::Process {
+        pid: 2001,
+        start: 5010,
+    };
+    let would = json!([{"signal": "TERM", "pid": 2001, "start": 5010, "name": "browser"}]);
+    i.show(model::selection(&frame, p, 1), &frame, true);
+
+    // A dialog open when the window hides closes with it: its Go ahead
+    // must not survive as a button that silently sends nothing.
+    fake.answers
+        .borrow_mut()
+        .push_back(needs_confirm("p1", would.clone()));
+    quit.emit_clicked();
+    let d = i.dialog().expect("a dialog");
+    let sent = fake.requests.borrow().len();
+    win.0.set_visible(false);
+    settle("the sheet is unmapped", || !i.root.is_mapped());
+    assert_eq!(i.dialog(), None, "closed with the sheet");
+    assert!(quit.is_sensitive(), "Quit is free again");
+    d.emit_by_name::<()>("response", &[&"confirm"]);
+    assert_eq!(fake.requests.borrow().len(), sent, "nothing redeemed");
+
+    // A plan that comes back while the sheet is off screen opens no
+    // dialog over whatever shows instead.
+    win.0.present();
+    settle("the sheet is mapped again", || i.root.is_mapped());
+    fake.defer.set(true);
+    quit.emit_clicked();
+    fake.defer.set(false);
+    win.0.set_visible(false);
+    settle("the sheet is unmapped", || !i.root.is_mapped());
+    let held = fake.held.borrow_mut().take().expect("a held reply");
+    held(needs_confirm("p2", would));
+    assert_eq!(i.dialog(), None, "no dialog off screen");
+    assert!(quit.is_sensitive(), "not left busy");
+    drop(win);
+}
+
+#[gtk::test]
+#[ignore = "needs a display: run tests/test-ui-widgets.sh"]
 fn hiding_the_sheet_clears_the_selection() {
     use mirqab_view::tabs::apps::Key;
     adw::init().unwrap();

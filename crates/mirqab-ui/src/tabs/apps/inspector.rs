@@ -279,7 +279,23 @@ impl Inspector {
                 i.act(true);
             }
         });
+        // The sheet off screen (the page unmapped, a tab switch, the window
+        // hid): the dialog goes with it. It sits in the window's dialog
+        // host, so it would outlive a dropped page, and its Go ahead would
+        // find no inspector and send nothing (audit).
+        let weak = Rc::downgrade(&i);
+        i.root.connect_unmap(move |_| {
+            if let Some(i) = weak.upgrade() {
+                i.hidden();
+            }
+        });
         i
+    }
+
+    /// The sheet went off screen: an open dialog is closed, sending
+    /// nothing, and Quit and Force quit are free again.
+    pub fn hidden(&self) {
+        self.close_dialog();
     }
 
     fn clear_messages(&self) {
@@ -549,6 +565,12 @@ impl Inspector {
 
     /// The dialog for a plan; Go ahead redeems it.
     fn confirm(&self, force: bool, data: &Value) {
+        // The plan came back after the sheet left the screen (another tab,
+        // the window hid): a dialog now would sit over whatever shows
+        // instead. Nothing is asked and nothing is sent.
+        if !self.root.is_mapped() {
+            return;
+        }
         let Some(sel) = self.sel.borrow().clone() else {
             return;
         };
