@@ -230,6 +230,13 @@ Part 1 (2026-11-13), where it differs from the plan:
   Deferred: output that survives a closed pipe for every command
   (`println!` aborts on EPIPE) to plan 005; `bar.combo` end to end to
   part 2.
+- "Only when the text would change" compares the text, the class and the
+  percentage, not the whole output line: the tooltips of cpu, mem and
+  load hold figures that move every sample, so comparing whole lines
+  printed every interval with the text unchanged (audit 2026-11-21, L33).
+  A tooltip may lag until the text next changes; a bar redraws only when
+  what it shows changes. `a_tooltip_alone_changing_is_no_change` in
+  `crates/mirqab/src/bar/mod.rs`.
 - The haseen widget validates with `haseen plugin validate` against
   haseen's schema on the development machine; its one unmet requirement
   there was `mirqab` not on `PATH` (not installed). `Widget.qml` passes
