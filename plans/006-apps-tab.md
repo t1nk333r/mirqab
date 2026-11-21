@@ -281,7 +281,7 @@ when nothing is left to act on.
 | Refused | Rule | Source |
 | --- | --- | --- |
 | pid ≤ 1 | as today | §5.4; `act.rs:69` |
-| the daemon | `std::process::id()`, and the pid in `proc/self/stat` read through `Root` (4321 in the fixture) | §5.4; `act.rs:72` |
+| the daemon | the pid in `proc/self/stat` read through `Root` (4321 in the fixture), and `std::process::id()` on the live root | §5.4; `act.rs:72` |
 | another user's process, uid 0 included | all four numbers of `Uid:` must be the user's. Today only the real uid is read, so a setuid-root program passes. | §5.4, §8.2; `act.rs:47-54` |
 | a kernel thread | `PF_KTHREAD` in `stat` flags | follows from uid 0; stated for the message |
 | outside the user's cgroup subtree | the cgroup path must start with `/user.slice/user-<uid>.slice/` | §5.4 |
@@ -1389,7 +1389,12 @@ with where it lives:
   (`crates/mirqab-core/src/root.rs:30`).
 - **Refusals** (`act::refusal`, `act.rs:228`), checked when the plan is
   made and again inside `act::signal`: pid ≤ 1; the daemon
-  (`std::process::id()` and `proc/self/stat` under the root); a kernel
+  (`std::process::id()` on the live root, and `proc/self/stat` under the
+  root; on a fixture root only the latter since 2026-11-21: a CI
+  container's daemon ran as pid 2011, the fixture browser's content
+  process, which a quit by name then left out as the daemon;
+  `a_fixture_process_that_shares_the_test_daemons_pid_is_not_the_daemon`
+  in `tests/actions.rs`); a kernel
   thread (`PF_KTHREAD`, before the uid so the message says so); any of the
   four `Uid:` numbers not the user's; a cgroup outside
   `/user.slice/user-<uid>.slice/`; `user@<uid>.service/init.scope`; and
@@ -1765,8 +1770,17 @@ Deviations from the brief, each with its reason:
 - **`capped`.** The brief caps the pids at eight but does not say what
   the ninth subscriber gets; it gets `capped: true`, not a false `gone`.
 - **`name` is `comm`.** The `apps` list's name may come from `cmdline`
-  when `comm` was cut short; the stream reads `stat` and `statm` only, as
-  designed.
+  when `comm` was cut short (also when the cut at byte 15 splits a UTF-8
+  character, whose stray bytes read as one U+FFFD; audit 2026-11-21, L5);
+  the stream reads `stat` and `statm` only, as designed. *Review of the
+  L5 fix:* only one trailing U+FFFD is dropped, and the 12 to 14 bytes
+  before it must hold no other U+FFFD, since a replaced byte makes the
+  decoded length differ from the kernel's: five invalid bytes, or nine
+  letters and two invalid bytes, decode to 15 bytes but were never cut,
+  and keep their name. Tests:
+  `display_name_survives_a_name_cut_inside_a_character`,
+  `display_name_keeps_a_name_the_kernel_did_not_cut`
+  (`samplers/apps/procfs.rs`).
 - **A `get process` goes through `wants`.** `snapshot` takes no params,
   so the `get` hands its own over first; the next tick hands the
   subscribers' back. A `get` never moves the pins or the baseline, and
@@ -2987,7 +3001,13 @@ Known limits (part 4a):
 
 - Discovery takes the newest live instance; if its event socket refuses
   the connect, `start` fails and does not try an older one (the next
-  page open tries again).
+  page open tries again). *Changed by the audit of 2026-11-21, L22:* a
+  crashed instance whose lock's pid was reused looked live and won, so
+  `start` now tries each live directory in turn (`instances`) and goes on
+  when the event socket refuses or is missing; a connect that times out
+  (a compositor there but stuck) still ends the search. Test:
+  `a_dead_instance_whose_pid_was_reused_gives_way_to_a_live_one`
+  (`tests/focus.rs`).
 - A burst of more than ten new windows a second leaves the focus on the
   last answered one until the next event.
 - The tag uses the time the reader saw each focus change (`Instant`), and
@@ -3069,10 +3089,15 @@ dropped the rest. What changed, with its test:
 3. **S2 (reduced), the compositor waits are bounded and said.**
    `ask_active` (`hyprland.rs:135`) arms every read with what is left of
    one 500 ms deadline, so a trickled answer cannot hold the reader;
-   `stop` (`:442`) joins within that deadline. Architecture §5.3 now
-   says: no sampler sleeps or asks another program while holding its
-   lock; the focus source may wait on the compositor up to 1.5 s once
-   when the page opens and up to 0.5 s when it closes. Test:
+   `stop` (`:442`) joins within that deadline (with the request's
+   500 ms connect, 1 s; and since the audit of 2026-11-21, L21, `stop`
+   raises a flag the reader checks before each line and each request, so
+   lines still queued on the socket ask nothing more: test
+   `stop_reads_no_queued_line_and_asks_nothing_more`). Architecture
+   §5.3 now says: no sampler sleeps or asks another program while
+   holding its lock; the focus source may wait on the compositor up to
+   1.5 s once when the page opens and up to 0.5 s when it closes (1 s
+   with the connect, audit 2026-11-21, L21). Test:
    `a_trickled_answer_ends_in_time_and_stop_is_bounded`
    (`tests/focus.rs:351`: `stop` under 1 s during a one-byte-per-100 ms
    answer; a `start` whose request hangs ends within 1.2 s).
@@ -3408,6 +3433,80 @@ AT-SPI readback of the selected state (owner check, Orca). Dropped: a
 real-machine basis for the 64 cap (counted: 13 at most, recorded above),
 "freezes for good" (the next click or an unmap clears a press), and a
 longer wait in the Home test (the cause was item 1).
+
+### `get apps` under the lock, plan 023's follow-up (2026-11-21)
+
+Plan 023 ("Review follow-ups") left `apps` with the sleep under the
+sampler's lock that PR #26 removed from `process`. `Apps::snapshot`
+slept 500 ms holding the lock in three sequences the server reaches
+(`server.rs`, the `get` path: `prime` locked, the gap unlocked,
+`snapshot` locked):
+
+- `prime` found the subscribers' baseline 1–10 s old and queued nothing;
+  a tick between the two locked steps replaced it with one under 1 s old,
+  and `snapshot` found no reading.
+- In that case `take_primed` also popped the next pending get's reading,
+  dropped it as under 250 ms old, and that get then slept under the lock
+  too.
+- The last subscriber left during a get's gap, and `idle` cleared the
+  queue.
+
+A get that primed and found the baseline grown 1 s old by its
+`snapshot` also left its reading queued for a later one (harmless for
+`apps`, whose readings are whole walks, unlike `process`'s per pid).
+
+Changed (`samplers/apps/mod.rs`, `Apps::prime`, `take_mine`, `snapshot`,
+`idle`): `prime` queues a reading for every get, a copy of the baseline
+when it serves and is at most 9.5 s old, else a fresh walk and the wait;
+`snapshot` takes the oldest reading 250 ms to 10 s old whichever way it
+answers, dropping older ones and leaving younger ones to the gets still
+in their gap; `idle` keeps the queue. `take_primed` is gone; the 16-entry
+cap stays. This supersedes "`idle` clears the queue" and "drops younger
+… ones" in item 2 of "Review of PR #20" above. Tests (`tests/apps.rs`):
+`an_apps_get_whose_baseline_a_tick_replaced_does_not_wait_under_the_lock`,
+`an_apps_get_never_takes_another_gets_primed_reading`,
+`an_apps_get_answered_from_the_baseline_leaves_no_reading_queued`,
+`the_last_subscriber_leaving_keeps_a_pending_apps_gets_reading`,
+`an_apps_baseline_about_to_go_stale_is_not_queued_for_a_get`; all five
+failed before the change (three on a 0.50 s wait, one on a reading left
+queued, one on `None` for a 9.7 s baseline).
+`each_get_is_served_its_own_primed_reading_oldest_first` now checks that
+a too-young reading is left for its own get. `Process::idle` cleared
+its queue too, the third case for `process` (audit 2026-11-21, L23:
+prime, idle, snapshot slept 500 ms under the lock); in its own commit
+it keeps the queue (`samplers/process.rs`, `idle`; `take_mine` drops
+readings past 10 s, the cap stays 16). Test:
+`the_last_subscriber_leaving_keeps_a_pending_process_gets_reading`
+(failed before on a 0.50 s wait).
+
+Review of this follow-up (2026-11-21), three lows:
+
+1. `Process::take_mine` took the first reading queued for the same pids
+   whatever its age, and only then did `snapshot` check the 250 ms
+   floor. G1 primes a fresh reading; a tick leaves a 2 s baseline; G2
+   primes a copy of it; a tick replaces it; G2's snapshot took G1's
+   2 ms-old reading, could not use it, and slept 500 ms under the lock.
+   Changed (`samplers/process.rs`, `take_mine`, `snapshot`): as in
+   `apps`, it takes the first reading for these pids that is 250 ms to
+   10 s old, so a younger one stays for the get still in its gap; the
+   floor check in `snapshot` went with it. No get is left without a
+   reading: its own is at least 500 ms old at its snapshot (the gap) or
+   at least 1 s (a copy of a baseline), so a get that took another's
+   leaves its own old enough for that one. Test (`tests/apps.rs`):
+   `a_process_get_never_takes_another_gets_reading_too_young_to_use`
+   (failed before on "G2 waited 500.18 ms"); G1 then takes its own at
+   once and none is left. `a_primed_reading_left_by_one_get_never_answers_another_pid`
+   now waits the gap before the snapshot of a process that left, as the
+   server does: without it the reading is 0 ms old and stays queued.
+2. Declined: letting `take_mine` keep a baseline copy a little past 10 s
+   for a get that waited on the lock. A copy is queued only at 9.5 s or
+   younger (review of PR #26), so it misses only when the lock was held
+   over 500 ms between `prime` and `snapshot`; any slack moves that edge
+   rather than removing it, as nothing bounds the lock wait, and the
+   miss costs the bounded 500 ms wait, never a wrong rate.
+3. The `Sampler::prime` doc (`sampler.rs`) and `docs/architecture.md`
+   said the readings are "served in order"; both now say each
+   `snapshot` takes the oldest that fits it and is 250 ms to 10 s old.
 
 
 ## Unverified

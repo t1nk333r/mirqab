@@ -24,7 +24,9 @@ pub const MAX_SERIES: usize = 64;
 
 /// Every series history keeps: key, unit, scale. Plan 001 fixed the first
 /// four; plan 002 adds the System tab's (architecture §6.1). Page counts are
-/// per minute (`page.*` in KiB, as vmstat counts them; `swap.*` in pages).
+/// per minute (`page.*` in KiB, as vmstat counts them; `swap.*` in pages),
+/// scaled to 60 s from the minute's real gap; a minute whose gap is under
+/// 10 s (a start in its last seconds) has no page or swap point.
 pub const SERIES: &[(&str, &str, i64)] = &[
     ("cpu.total", "percent", 100),
     ("mem.used", "bytes", 1),

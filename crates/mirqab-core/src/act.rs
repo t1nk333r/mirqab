@@ -406,7 +406,8 @@ pub fn sender_for(root: &Root) -> Arc<dyn Sender> {
 #[derive(Debug, Clone, Default)]
 pub struct Guard {
     pub own_uid: u32,
-    /// This process and the pid `proc/self/stat` names under the root.
+    /// The pid `proc/self/stat` names under the root, and on the live root
+    /// this process too.
     pub daemon: Vec<u32>,
     pub refused: Vec<(u32, String)>,
 }

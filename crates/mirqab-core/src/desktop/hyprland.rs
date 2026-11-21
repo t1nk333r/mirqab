@@ -6,7 +6,8 @@
 //! first line is the compositor's pid. It is found by
 //! `$HYPRLAND_INSTANCE_SIGNATURE` on the live machine when that names a
 //! directory with an event socket, otherwise by the directories whose lock
-//! names a pid with a `proc/<pid>/` under the root, the newest first. The
+//! names a pid with a `proc/<pid>/` under the root, the newest first;
+//! `start` takes the first whose event socket accepts the connect. The
 //! variable may be missing (a daemon started before Hyprland exported it)
 //! or stale (Hyprland restarted), so the lock is the fallback. Everything
 //! is read through `Root`: on the live machine the runtime directory is
@@ -23,8 +24,10 @@
 //! title, and no window title is ever kept or logged. At most ten
 //! requests a second are made; five failed requests in a row, an end of
 //! file or a read error end the thread, and the source counts as stopped
-//! until `start` runs again. `stop` shuts the event socket down, which
-//! returns the blocked read, and joins the thread.
+//! until `start` runs again. `stop` raises a flag the reader checks before
+//! each line and each request, shuts the event socket down, which returns
+//! the blocked read, and joins the thread: lines still queued on the
+//! socket are not read (audit 2026-11-21, L21).
 
 use super::{Focus, FocusedSince, focused_since, runtime_rel};
 use crate::proto::strings;
@@ -36,6 +39,7 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::net::Shutdown;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -173,38 +177,49 @@ fn live(root: &Root, dir: &str) -> bool {
         && root.exists(&format!("{dir}/.socket2.sock"))
 }
 
-/// The instance directory, as a path under the root: by `signature` (the
-/// environment's, on the live machine only) when that instance is live,
-/// else the newest live directory. A daemon keeps the signature of the
-/// session it started in, so after a Hyprland restart the signature
-/// names a dead instance and must not win (review of PR #20, S3).
+/// The instance directory, as a path under the root: the first of
+/// `instances`.
 pub fn instance(root: &Root, runtime: &str, signature: Option<&str>) -> Result<String, String> {
+    instances(root, runtime, signature)
+        .into_iter()
+        .next()
+        .ok_or_else(|| strings::FOCUS_NO_HYPRLAND.to_string())
+}
+
+/// The live instance directories, as paths under the root, in the order
+/// `start` tries them: by `signature` (the environment's, on the live
+/// machine only) when that instance is live, then the others, newest
+/// first. A daemon keeps the signature of the session it started in, so
+/// after a Hyprland restart the signature names a dead instance and must
+/// not win (review of PR #20, S3). A crashed instance whose lock's pid
+/// was reused still looks live, so `start` goes on to the next directory
+/// when the event socket refuses (audit 2026-11-21, L22).
+pub fn instances(root: &Root, runtime: &str, signature: Option<&str>) -> Vec<String> {
     let base = format!("{runtime}/hypr");
     let plain = |s: &str| !s.is_empty() && s != "." && s != ".." && !s.contains('/');
-    if let Some(sig) = signature.filter(|s| plain(s)) {
-        let dir = format!("{base}/{sig}");
-        if live(root, &dir) {
-            return Ok(dir);
-        }
-    }
-    let mut best: Option<(std::time::SystemTime, String)> = None;
+    let first = signature
+        .filter(|s| plain(s))
+        .map(|sig| format!("{base}/{sig}"))
+        .filter(|dir| live(root, dir));
+    let mut rest: Vec<(std::time::SystemTime, String)> = Vec::new();
     for name in root.read_dir(&base).unwrap_or_default() {
         if !plain(&name) {
             continue;
         }
         let dir = format!("{base}/{name}");
-        if !live(root, &dir) {
+        if first.as_ref() == Some(&dir) || !live(root, &dir) {
             continue;
         }
         let mtime = root
             .modified(&dir)
             .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
-        if best.as_ref().is_none_or(|(t, _)| mtime > *t) {
-            best = Some((mtime, dir));
-        }
+        rest.push((mtime, dir));
     }
-    best.map(|(_, d)| d)
-        .ok_or_else(|| strings::FOCUS_NO_HYPRLAND.to_string())
+    rest.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+    first
+        .into_iter()
+        .chain(rest.into_iter().map(|(_, d)| d))
+        .collect()
 }
 
 /// What the reader knows, shared with the sampler.
@@ -285,11 +300,21 @@ fn read_line(reader: &mut BufReader<UnixStream>, buf: &mut Vec<u8>) -> std::io::
     }
 }
 
-/// The reader thread's body.
-fn read_events(mut reader: BufReader<UnixStream>, requests: PathBuf, state: Arc<Mutex<State>>) {
+/// The reader thread's body. `stopping` is checked before each line and
+/// each request: after `stop`'s shutdown, lines already queued can still
+/// be read, and each could ask the compositor (audit 2026-11-21, L21).
+fn read_events(
+    mut reader: BufReader<UnixStream>,
+    requests: PathBuf,
+    state: Arc<Mutex<State>>,
+    stopping: Arc<AtomicBool>,
+) {
     let mut buf = Vec::new();
     let mut errors = 0u32;
     loop {
+        if stopping.load(Ordering::Acquire) {
+            break;
+        }
         match read_line(&mut reader, &mut buf) {
             Ok(0) | Err(_) => break,
             Ok(_) => {}
@@ -313,6 +338,9 @@ fn read_events(mut reader: BufReader<UnixStream>, requests: PathBuf, state: Arc<
                     continue;
                 }
                 drop(st);
+                if stopping.load(Ordering::Acquire) {
+                    break;
+                }
                 match ask_active(&requests) {
                     Ok((addr, pid)) => {
                         errors = 0;
@@ -340,6 +368,8 @@ struct Running {
     state: Arc<Mutex<State>>,
     /// The event socket, to shut down from `stop`.
     events: UnixStream,
+    /// Raised by `stop` before the shutdown.
+    stopping: Arc<AtomicBool>,
     thread: Option<JoinHandle<()>>,
 }
 
@@ -388,14 +418,33 @@ impl Focus for Hyprland {
         } else {
             None
         };
-        let dir = instance(root, &runtime, signature.as_deref())?;
-        let path = |name: &str| {
-            root.path(&format!("{dir}/{name}"))
-                .map_err(|e| e.to_string())
-        };
-        let (events_path, requests) = (path(".socket2.sock")?, path(".socket.sock")?);
-        let events = sys::connect_timeout(&events_path, CONNECT)
-            .map_err(|e| format!("{}: {e}", events_path.display()))?;
+        // The first live directory whose event socket takes the connect. A
+        // refused or missing socket is a dead instance (a lock whose pid
+        // was reused): the next is tried. A connect that times out is a
+        // compositor that is there but stuck, and ends the search, so a
+        // start still waits at most one connect on the event socket.
+        let mut last = strings::FOCUS_NO_HYPRLAND.to_string();
+        let mut found = None;
+        for dir in instances(root, &runtime, signature.as_deref()) {
+            let path = |name: &str| {
+                root.path(&format!("{dir}/{name}"))
+                    .map_err(|e| e.to_string())
+            };
+            let (events_path, requests) = (path(".socket2.sock")?, path(".socket.sock")?);
+            match sys::connect_timeout(&events_path, CONNECT) {
+                Ok(events) => {
+                    found = Some((events, requests));
+                    break;
+                }
+                Err(e) => {
+                    last = format!("{}: {e}", events_path.display());
+                    if e.raw_os_error() == Some(libc::ETIMEDOUT) {
+                        break;
+                    }
+                }
+            }
+        }
+        let (events, requests) = found.ok_or(last)?;
         let (addr, now) =
             ask_active(&requests).map_err(|e| format!("{}: {e}", requests.display()))?;
         let state = Arc::new(Mutex::new(State {
@@ -412,14 +461,17 @@ impl Focus for Hyprland {
         }
         let reader = BufReader::new(events.try_clone().map_err(|e| e.to_string())?);
         let shared = Arc::clone(&state);
+        let stopping = Arc::new(AtomicBool::new(false));
+        let flag = Arc::clone(&stopping);
         let thread = std::thread::Builder::new()
             .name("focus-hyprland".into())
             .stack_size(STACK)
-            .spawn(move || read_events(reader, requests, shared))
+            .spawn(move || read_events(reader, requests, shared, flag))
             .map_err(|e| e.to_string())?;
         self.run = Some(Running {
             state,
             events,
+            stopping,
             thread: Some(thread),
         });
         Ok(SOURCE)
@@ -443,8 +495,11 @@ impl Focus for Hyprland {
         let Some(mut run) = self.run.take() else {
             return;
         };
-        // Returns the blocked read with 0: the thread ends on its own,
-        // within a request's deadline (`REQUEST`) if it is asking.
+        // The flag first, so no queued line is read and no new request is
+        // made; the shutdown returns a blocked read with 0. A request
+        // already under way ends within its connect and its deadline
+        // (`CONNECT` + `REQUEST`, 1 s).
+        run.stopping.store(true, Ordering::Release);
         let _ = run.events.shutdown(Shutdown::Both);
         if let Some(t) = run.thread.take() {
             let _ = t.join();

@@ -193,11 +193,12 @@ pub fn parse_nvidia(text: &str) -> Vec<NvidiaRow> {
         .collect()
 }
 
-/// Runs `nvidia-smi` (an experimental path: no NVIDIA machine has
-/// confirmed the field names, plan 002 Unverified).
-pub fn query_nvidia() -> Vec<NvidiaRow> {
+/// Runs `program`, `nvidia-smi` unless a test passes a stub (an
+/// experimental path: no NVIDIA machine has confirmed the field names,
+/// plan 002 Unverified).
+pub fn query_nvidia(program: &str) -> Vec<NvidiaRow> {
     match exec::run(
-        &["nvidia-smi", NVIDIA_QUERY, "--format=csv,noheader,nounits"],
+        &[program, NVIDIA_QUERY, "--format=csv,noheader,nounits"],
         None,
         Duration::from_secs(2),
     ) {

@@ -392,12 +392,14 @@ Streams: `system`, `apps`, `process`, `ports`, `agents`, `awake`, `disk`,
   sleeps or asks another program while holding its lock, except the
   `apps` sampler: its focus source waits on the compositor under the
   lock, up to 1.5 s once when the page opens (two connects and a
-  request) and up to 0.5 s when it closes (a request's deadline), and
-  its `get` sleeps 500 ms under the lock only when no primed reading
-  fits. A `get` whose rates need two readings takes the first in
-  `Sampler::prime`, which returns the wait and queues the
-  reading (one per pending `get`, served in order, used at 250 ms to
-  10 s old), and the server sleeps it without the lock before
+  request) and up to 1 s when it closes (a request under way: its
+  connect and its deadline), and its `get` sleeps 500 ms under the lock
+  only when no primed reading fits. A `get` whose rates need two
+  readings takes the first in `Sampler::prime`, which returns the wait
+  and queues the reading (one per pending `get`; each `snapshot` takes
+  the oldest that fits it and is 250 ms to 10 s old, leaving younger
+  ones to the gets still in their gap), and the server sleeps it
+  without the lock before
   `snapshot`; a query may answer
   `Answer::Later(closure)`, which the server runs after it released the
   lock (the inspector's `pacman`). Once a minute `Sampler::minute_events`
