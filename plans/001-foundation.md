@@ -174,7 +174,9 @@ the stream accepts `live` for a pinned self-cost graph):
 `theme.accent` and `units.clock` are reserved: the daemon accepts and
 checks them, so a config that sets them stays valid, but nothing reads
 `theme.accent` yet and no clock is shown until plan 016, so Settings
-offers no clock row (audit 2026-11-21, L11).
+offers no clock row (audit 2026-11-21, L11). Which key holds the clock
+format is plan 016's decision: its draft names `time.hour12`
+(`plans/016-time-tab.md:37`), not `units.clock`.
 
 `live.intervalMs` is the interval of a live graph on screen: 1000 by
 default, settable from 1000 to 5000 for a user who wants less work. It
