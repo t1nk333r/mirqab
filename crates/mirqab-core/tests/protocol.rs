@@ -877,6 +877,58 @@ fn copy_tree(from: &std::path::Path, to: &std::path::Path) {
 }
 
 #[test]
+fn a_get_of_self_leaves_the_subscribers_baseline() {
+    // Audit 2026-11-21, L30: `get self` read the subscriber's meter, so
+    // the next event's CPU covered only the time since the get.
+    let dir = PathBuf::from("/tmp").join(format!("mqp-selfget-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let tree = dir.join("root");
+    std::fs::create_dir_all(tree.join("proc/self")).unwrap();
+    let stat = |ticks: u64| {
+        format!("4321 (mirqab) S 1 4321 4321 0 -1 0 0 0 0 0 {ticks} 0 0 0 20 0 4 0 100 0 0 0\n")
+    };
+    std::fs::write(tree.join("proc/self/stat"), stat(100)).unwrap();
+    std::fs::write(
+        tree.join("proc/self/status"),
+        "VmRSS:\t100 kB\nThreads:\t2\n",
+    )
+    .unwrap();
+    let socket = dir.join("run/daemon.sock");
+    let server = server::listen(Options {
+        socket: socket.clone(),
+        root: Root::new(&tree),
+        config_path: dir.join("config.json"),
+        samplers: Vec::new(),
+        history: None,
+        minute_period: None,
+    })
+    .expect("listens");
+    std::thread::spawn(move || server.serve());
+    let d = Daemon { socket, dir };
+    let mut sub = Client::connect(&d);
+    let mut cli = Client::connect(&d);
+    sub.hello();
+    cli.hello();
+    sub.call("subscribe", Some("self"), json!({"interval": 2000}))
+        .unwrap();
+    assert_eq!(
+        sub.event("self").unwrap()["daemon"]["cpu"],
+        0.0,
+        "the first"
+    );
+    std::thread::sleep(Duration::from_millis(400));
+    // The only CPU the process ever uses comes before the get.
+    std::fs::write(d.dir.join("root/proc/self/stat"), stat(150)).unwrap();
+    let got = cli.call("get", Some("self"), Value::Null).unwrap();
+    assert!(got["daemon"]["cpu"].as_f64().unwrap() > 0.0, "{got}");
+    let next = sub.event("self").unwrap();
+    assert!(
+        next["daemon"]["cpu"].as_f64().unwrap() > 0.0,
+        "the get moved the baseline: {next}"
+    );
+}
+
+#[test]
 fn an_act_with_no_writable_history_runs_and_says_it_was_not_recorded() {
     let dir = PathBuf::from("/tmp").join(format!("mqp-unrec-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);

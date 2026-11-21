@@ -4,7 +4,7 @@
 //! cost is read the same way from the pid its `ui` hello gave.
 
 use crate::root::Root;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 /// Clock ticks per second when the auxiliary vector does not say. Linux has
 /// used 100 on every architecture mirqab targets.
@@ -94,6 +94,7 @@ pub fn rss_and_threads(status: &str) -> (u64, u32) {
 }
 
 /// One process's cost over time. `proc_dir` is "proc/self" or "proc/<pid>".
+#[derive(Clone)]
 pub struct Meter {
     proc_dir: String,
     tck: u64,
@@ -119,6 +120,23 @@ impl Meter {
     /// None when the process is gone. The first reading's CPU is 0: there is
     /// nothing to take a difference from.
     pub fn read(&mut self, root: &Root, now: Instant) -> Option<Reading> {
+        let (reading, ticks) = self.measure(root, now)?;
+        self.last = Some((ticks, now));
+        Some(reading)
+    }
+
+    /// `read` against the baseline as it is, which stays where it was: a
+    /// `get` must not move a subscriber's baseline (audit 2026-11-21, L30).
+    pub fn peek(&self, root: &Root, now: Instant) -> Option<Reading> {
+        self.measure(root, now).map(|(r, _)| r)
+    }
+
+    /// How old the baseline is at `now`; None before the first reading.
+    pub fn age(&self, now: Instant) -> Option<Duration> {
+        self.last.map(|(_, at)| now.saturating_duration_since(at))
+    }
+
+    fn measure(&self, root: &Root, now: Instant) -> Option<(Reading, u64)> {
         let stat = root.read(&format!("{}/stat", self.proc_dir)).ok()?;
         let status = root
             .read(&format!("{}/status", self.proc_dir))
@@ -132,19 +150,18 @@ impl Meter {
             }
             _ => 0.0,
         };
-        self.last = Some((ticks, now));
-        Some(Reading {
+        let reading = Reading {
             cpu: (cpu * 100.0).round() / 100.0,
             rss_bytes,
             threads,
-        })
+        };
+        Some((reading, ticks))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::Duration;
 
     const STAT: &str = "4321 (mir qab) (x)) S 1 4321 4321 0 -1 4194560 300 0 0 0 150 50 0 0 20 0 4 0 100 1000 200 18446744073709551615";
 
@@ -177,6 +194,15 @@ mod tests {
             STAT.replace(" 150 50 ", " 175 75 "),
         )
         .unwrap();
+        // A peek reads against the baseline and leaves it.
+        assert_eq!(
+            m.peek(&root, t0 + Duration::from_secs(5)).unwrap().cpu,
+            10.0
+        );
+        assert_eq!(
+            m.age(t0 + Duration::from_secs(5)),
+            Some(Duration::from_secs(5))
+        );
         let r = m.read(&root, t0 + Duration::from_secs(10)).unwrap();
         assert_eq!(r.cpu, 5.0);
         assert_eq!(r.rss_bytes, 100 * 1024);

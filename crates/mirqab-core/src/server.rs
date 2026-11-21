@@ -26,10 +26,10 @@ use crate::samplers::apps::actions::{self, Action, Actions};
 use crate::samplers::ports::Ports;
 use crate::samplers::process::Process;
 use crate::samplers::system::System;
-use crate::selfcost::{self, Meter};
+use crate::selfcost::{self, Meter, Reading};
 use crate::sys;
 use serde_json::{Value, json};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::io::{ErrorKind, Read, Write};
 use std::net::Shutdown;
 use std::os::unix::fs::{DirBuilderExt, FileTypeExt, OpenOptionsExt, PermissionsExt};
@@ -221,35 +221,70 @@ pub fn log(msg: &str) {
     eprintln!("mirqab: {msg}");
 }
 
+/// The wait between a `get self`'s two readings.
+const SELF_GAP: Duration = Duration::from_millis(500);
+/// The ages a reading may have to serve a `get self` as its baseline, as
+/// for the `apps` stream (plan 006): younger is too short a span to read a
+/// rate over, older says little about now.
+const SELF_MIN_AGE: Duration = Duration::from_millis(250);
+const SELF_MAX_AGE: Duration = Duration::from_secs(10);
+/// Readings queued for pending `get self`s.
+const SELF_PRIMED: usize = 4;
+
 /// The `self` stream (plan 001): the daemon's and the interface's cost.
 struct SelfSampler {
     shared: Arc<Mutex<SelfShared>>,
     started: Instant,
+    /// The subscribers' baselines, moved only by `sample`.
     daemon: Option<Meter>,
     ui: Option<(u32, Meter)>,
+    /// What `prime` took for each pending `get`, oldest first: the daemon's
+    /// meter and the interface's, with its pid (audit 2026-11-21, L30: a
+    /// `get` read the subscribers' meters, moving their baselines, and with
+    /// none its CPU was 0).
+    primed: VecDeque<(Meter, Option<(u32, Meter)>)>,
     /// Read once: the CPU does not change while the daemon runs.
     cpu_model: Option<Option<String>>,
 }
 
-impl Sampler for SelfSampler {
-    fn stream(&self) -> &'static str {
-        stream::SELF
+/// Whether `meter`'s baseline can serve a `get` at `now`.
+fn serves(meter: &Meter, now: Instant) -> bool {
+    meter
+        .age(now)
+        .is_some_and(|a| (SELF_MIN_AGE..=SELF_MAX_AGE).contains(&a))
+}
+
+impl SelfSampler {
+    fn new(shared: Arc<Mutex<SelfShared>>, started: Instant) -> Self {
+        SelfSampler {
+            shared,
+            started,
+            daemon: None,
+            ui: None,
+            primed: VecDeque::new(),
+            cpu_model: None,
+        }
     }
-    fn live(&self) -> bool {
-        true
+
+    fn shared(&self) -> (BTreeMap<String, u32>, Option<u32>) {
+        let s = lock(&self.shared);
+        (s.subscribers.clone(), s.ui_pid)
     }
-    fn probe(&mut self, _root: &Root) -> Result<(), String> {
-        Ok(())
+
+    /// The subscribers' interface meter, when it is for `pid`.
+    fn ui_meter(&self, pid: u32) -> Option<&Meter> {
+        self.ui.as_ref().filter(|(p, _)| *p == pid).map(|(_, m)| m)
     }
-    fn sample(&mut self, root: &Root, now: Instant) -> Value {
-        let (subscribers, ui_pid) = {
-            let s = lock(&self.shared);
-            (s.subscribers.clone(), s.ui_pid)
-        };
-        let daemon = self
-            .daemon
-            .get_or_insert_with(|| Meter::new(root, "proc/self"))
-            .read(root, now)
+
+    fn data(
+        &mut self,
+        root: &Root,
+        now: Instant,
+        subscribers: BTreeMap<String, u32>,
+        daemon: Option<Reading>,
+        ui: Option<(u32, Reading)>,
+    ) -> Value {
+        let daemon = daemon
             .map(|r| ProcessCost {
                 cpu: r.cpu,
                 rss_bytes: r.rss_bytes,
@@ -260,16 +295,10 @@ impl Sampler for SelfSampler {
                 rss_bytes: 0,
                 threads: 0,
             });
-        let ui = ui_pid.and_then(|pid| {
-            if self.ui.as_ref().is_none_or(|(p, _)| *p != pid) {
-                self.ui = Some((pid, Meter::new(root, format!("proc/{pid}"))));
-            }
-            let (_, meter) = self.ui.as_mut()?;
-            meter.read(root, now).map(|r| UiCost {
-                cpu: r.cpu,
-                rss_bytes: r.rss_bytes,
-                pid,
-            })
+        let ui = ui.map(|(pid, r)| UiCost {
+            cpu: r.cpu,
+            rss_bytes: r.rss_bytes,
+            pid,
         });
         let cpu_model = self
             .cpu_model
@@ -293,6 +322,105 @@ impl Sampler for SelfSampler {
             },
         };
         serde_json::to_value(data).unwrap_or(Value::Null)
+    }
+}
+
+impl Sampler for SelfSampler {
+    fn stream(&self) -> &'static str {
+        stream::SELF
+    }
+    fn live(&self) -> bool {
+        true
+    }
+    fn probe(&mut self, _root: &Root) -> Result<(), String> {
+        Ok(())
+    }
+    fn sample(&mut self, root: &Root, now: Instant) -> Value {
+        let (subscribers, ui_pid) = self.shared();
+        let daemon = self
+            .daemon
+            .get_or_insert_with(|| Meter::new(root, "proc/self"))
+            .read(root, now);
+        let ui = ui_pid.and_then(|pid| {
+            if self.ui.as_ref().is_none_or(|(p, _)| *p != pid) {
+                self.ui = Some((pid, Meter::new(root, format!("proc/{pid}"))));
+            }
+            let (_, meter) = self.ui.as_mut()?;
+            meter.read(root, now).map(|r| (pid, r))
+        });
+        self.data(root, now, subscribers, daemon, ui)
+    }
+
+    /// The `get`'s baselines: the subscribers' when they serve now (copied,
+    /// so a tick before `snapshot` cannot take them away), else a first
+    /// reading of each, and the wait before the second.
+    fn prime(&mut self, root: &Root, now: Instant) -> Option<Duration> {
+        let (_, ui_pid) = self.shared();
+        let sub_ui = ui_pid.map(|pid| (pid, self.ui_meter(pid)));
+        let usable = self.daemon.as_ref().is_some_and(|m| serves(m, now))
+            && sub_ui.is_none_or(|(_, m)| m.is_some_and(|m| serves(m, now)));
+        let (entry, wait) = if usable {
+            let daemon = self
+                .daemon
+                .clone()
+                .unwrap_or_else(|| Meter::new(root, "proc/self"));
+            let ui = sub_ui.and_then(|(pid, m)| m.cloned().map(|m| (pid, m)));
+            ((daemon, ui), None)
+        } else {
+            let mut daemon = Meter::new(root, "proc/self");
+            daemon.read(root, now);
+            let ui = ui_pid.map(|pid| {
+                let mut m = Meter::new(root, format!("proc/{pid}"));
+                m.read(root, now);
+                (pid, m)
+            });
+            ((daemon, ui), Some(SELF_GAP))
+        };
+        self.primed.push_back(entry);
+        while self.primed.len() > SELF_PRIMED {
+            self.primed.pop_front();
+        }
+        wait
+    }
+
+    /// Against the oldest queued baseline that serves, else the
+    /// subscribers' when theirs does, read without moving either; else a
+    /// first reading, whose CPU is 0.
+    fn snapshot(&mut self, root: &Root, now: Instant) -> Value {
+        let (subscribers, ui_pid) = self.shared();
+        // Older ones are left over from gets answered otherwise; a younger
+        // one belongs to a later get.
+        while self
+            .primed
+            .front()
+            .is_some_and(|(m, _)| m.age(now).is_some_and(|a| a > SELF_MAX_AGE))
+        {
+            self.primed.pop_front();
+        }
+        let primed = match self.primed.front() {
+            Some((m, _)) if serves(m, now) => self.primed.pop_front(),
+            _ => None,
+        };
+        let pick = |own: Option<&Meter>, sub: Option<&Meter>| {
+            own.filter(|m| serves(m, now))
+                .or(sub.filter(|m| serves(m, now)))
+                .cloned()
+        };
+        let daemon = pick(primed.as_ref().map(|(m, _)| m), self.daemon.as_ref())
+            .unwrap_or_else(|| Meter::new(root, "proc/self"))
+            .peek(root, now);
+        let ui = ui_pid.and_then(|pid| {
+            let own = primed
+                .as_ref()
+                .and_then(|(_, u)| u.as_ref())
+                .filter(|(p, _)| *p == pid)
+                .map(|(_, m)| m);
+            pick(own, self.ui_meter(pid))
+                .unwrap_or_else(|| Meter::new(root, format!("proc/{pid}")))
+                .peek(root, now)
+                .map(|r| (pid, r))
+        });
+        self.data(root, now, subscribers, daemon, ui)
     }
 }
 
@@ -386,13 +514,8 @@ pub fn listen(opts: Options) -> Result<Server, ListenError> {
 
     let started = Instant::now();
     let shared = Arc::new(Mutex::new(SelfShared::default()));
-    let mut samplers: Vec<Box<dyn Sampler>> = vec![Box::new(SelfSampler {
-        shared: Arc::clone(&shared),
-        started,
-        daemon: None,
-        ui: None,
-        cpu_model: None,
-    })];
+    let mut samplers: Vec<Box<dyn Sampler>> =
+        vec![Box::new(SelfSampler::new(Arc::clone(&shared), started))];
     samplers.push(Box::new(System::new()));
     samplers.push(Box::new(Apps::new()));
     // Its own slot and so its own lock: a 1 s reading never waits behind
@@ -1708,5 +1831,59 @@ mod tests {
             Some(3060)
         );
         assert_eq!(caller_for(&Root::new("/tmp/x"), Some(7), None), Some(7));
+    }
+
+    /// A scratch root whose `proc/self` has used `ticks` of CPU.
+    fn self_root(name: &str) -> (PathBuf, Root) {
+        let d = std::env::temp_dir().join(format!("mirqab-self-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(d.join("proc/self")).unwrap();
+        std::fs::write(d.join("proc/self/status"), "VmRSS:\t100 kB\nThreads:\t2\n").unwrap();
+        set_ticks(&d, 100);
+        let root = Root::new(&d);
+        (d, root)
+    }
+
+    fn set_ticks(d: &Path, ticks: u64) {
+        std::fs::write(
+            d.join("proc/self/stat"),
+            format!("1 (m) S 1 1 1 0 -1 0 0 0 0 0 {ticks} 0 0 0 20 0 2 0 1 0 0 0\n"),
+        )
+        .unwrap();
+    }
+
+    fn cpu(v: &Value) -> f64 {
+        v["daemon"]["cpu"].as_f64().unwrap()
+    }
+
+    #[test]
+    fn a_first_get_of_self_reads_cpu_over_its_own_gap() {
+        // Audit 2026-11-21, L30: with no subscriber the get's CPU was 0.
+        let (d, root) = self_root("first");
+        let mut s = SelfSampler::new(Arc::default(), Instant::now());
+        let t0 = Instant::now();
+        assert_eq!(s.prime(&root, t0), Some(SELF_GAP));
+        // 50 ticks at 100 Hz over half a second: 100 %.
+        set_ticks(&d, 150);
+        assert_eq!(cpu(&s.snapshot(&root, t0 + SELF_GAP)), 100.0);
+        assert!(s.daemon.is_none(), "no subscriber baseline was made");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn a_get_of_self_reads_the_subscribers_baseline_and_leaves_it() {
+        let (d, root) = self_root("sub");
+        let mut s = SelfSampler::new(Arc::default(), Instant::now());
+        let t0 = Instant::now();
+        assert_eq!(cpu(&s.sample(&root, t0)), 0.0);
+        set_ticks(&d, 200);
+        let t1 = t0 + Duration::from_secs(1);
+        // The subscriber's baseline serves: no wait, and the get reads
+        // against it, 100 ticks in 1 s.
+        assert_eq!(s.prime(&root, t1), None);
+        assert_eq!(cpu(&s.snapshot(&root, t1)), 100.0);
+        // The next tick still reads from t0: 100 ticks in 2 s.
+        assert_eq!(cpu(&s.sample(&root, t0 + Duration::from_secs(2))), 50.0);
+        let _ = std::fs::remove_dir_all(&d);
     }
 }
