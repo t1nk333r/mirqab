@@ -3434,6 +3434,80 @@ real-machine basis for the 64 cap (counted: 13 at most, recorded above),
 "freezes for good" (the next click or an unmap clears a press), and a
 longer wait in the Home test (the cause was item 1).
 
+### `get apps` under the lock, plan 023's follow-up (2026-11-21)
+
+Plan 023 ("Review follow-ups") left `apps` with the sleep under the
+sampler's lock that PR #26 removed from `process`. `Apps::snapshot`
+slept 500 ms holding the lock in three sequences the server reaches
+(`server.rs`, the `get` path: `prime` locked, the gap unlocked,
+`snapshot` locked):
+
+- `prime` found the subscribers' baseline 1–10 s old and queued nothing;
+  a tick between the two locked steps replaced it with one under 1 s old,
+  and `snapshot` found no reading.
+- In that case `take_primed` also popped the next pending get's reading,
+  dropped it as under 250 ms old, and that get then slept under the lock
+  too.
+- The last subscriber left during a get's gap, and `idle` cleared the
+  queue.
+
+A get that primed and found the baseline grown 1 s old by its
+`snapshot` also left its reading queued for a later one (harmless for
+`apps`, whose readings are whole walks, unlike `process`'s per pid).
+
+Changed (`samplers/apps/mod.rs`, `Apps::prime`, `take_mine`, `snapshot`,
+`idle`): `prime` queues a reading for every get, a copy of the baseline
+when it serves and is at most 9.5 s old, else a fresh walk and the wait;
+`snapshot` takes the oldest reading 250 ms to 10 s old whichever way it
+answers, dropping older ones and leaving younger ones to the gets still
+in their gap; `idle` keeps the queue. `take_primed` is gone; the 16-entry
+cap stays. This supersedes "`idle` clears the queue" and "drops younger
+… ones" in item 2 of "Review of PR #20" above. Tests (`tests/apps.rs`):
+`an_apps_get_whose_baseline_a_tick_replaced_does_not_wait_under_the_lock`,
+`an_apps_get_never_takes_another_gets_primed_reading`,
+`an_apps_get_answered_from_the_baseline_leaves_no_reading_queued`,
+`the_last_subscriber_leaving_keeps_a_pending_apps_gets_reading`,
+`an_apps_baseline_about_to_go_stale_is_not_queued_for_a_get`; all five
+failed before the change (three on a 0.50 s wait, one on a reading left
+queued, one on `None` for a 9.7 s baseline).
+`each_get_is_served_its_own_primed_reading_oldest_first` now checks that
+a too-young reading is left for its own get. `Process::idle` cleared
+its queue too, the third case for `process` (audit 2026-11-21, L23:
+prime, idle, snapshot slept 500 ms under the lock); in its own commit
+it keeps the queue (`samplers/process.rs`, `idle`; `take_mine` drops
+readings past 10 s, the cap stays 16). Test:
+`the_last_subscriber_leaving_keeps_a_pending_process_gets_reading`
+(failed before on a 0.50 s wait).
+
+Review of this follow-up (2026-11-21), three lows:
+
+1. `Process::take_mine` took the first reading queued for the same pids
+   whatever its age, and only then did `snapshot` check the 250 ms
+   floor. G1 primes a fresh reading; a tick leaves a 2 s baseline; G2
+   primes a copy of it; a tick replaces it; G2's snapshot took G1's
+   2 ms-old reading, could not use it, and slept 500 ms under the lock.
+   Changed (`samplers/process.rs`, `take_mine`, `snapshot`): as in
+   `apps`, it takes the first reading for these pids that is 250 ms to
+   10 s old, so a younger one stays for the get still in its gap; the
+   floor check in `snapshot` went with it. No get is left without a
+   reading: its own is at least 500 ms old at its snapshot (the gap) or
+   at least 1 s (a copy of a baseline), so a get that took another's
+   leaves its own old enough for that one. Test (`tests/apps.rs`):
+   `a_process_get_never_takes_another_gets_reading_too_young_to_use`
+   (failed before on "G2 waited 500.18 ms"); G1 then takes its own at
+   once and none is left. `a_primed_reading_left_by_one_get_never_answers_another_pid`
+   now waits the gap before the snapshot of a process that left, as the
+   server does: without it the reading is 0 ms old and stays queued.
+2. Declined: letting `take_mine` keep a baseline copy a little past 10 s
+   for a get that waited on the lock. A copy is queued only at 9.5 s or
+   younger (review of PR #26), so it misses only when the lock was held
+   over 500 ms between `prime` and `snapshot`; any slack moves that edge
+   rather than removing it, as nothing bounds the lock wait, and the
+   miss costs the bounded 500 ms wait, never a wrong rate.
+3. The `Sampler::prime` doc (`sampler.rs`) and `docs/architecture.md`
+   said the readings are "served in order"; both now say each
+   `snapshot` takes the oldest that fits it and is 250 ms to 10 s old.
+
 
 ## Unverified
 
