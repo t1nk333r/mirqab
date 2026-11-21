@@ -408,11 +408,20 @@ mirqab --mcp           # MCP server on stdio
 
 ## Development
 
-On Arch, install the toolchain and the gate tools:
+On Arch, install the toolchain and the gate tools, and what the tests
+run (the packages CI installs, `.github/workflows/ci.yml`):
 
 ```sh
 pacman -S --needed base-devel git dbus rust pkgconf gtk4 libadwaita gtk4-layer-shell sqlite shellcheck jq cargo-deny gitleaks
+pacman -S --needed socat desktop-file-utils zsh fish python python-gobject qt6-declarative
 ```
+
+The second line is for the tests: `socat` talks to the daemon's socket
+(the UI tests and `tools/bench-idle.sh`), `desktop-file-validate` checks
+the desktop entry, `zsh` and `fish` parse the completion scripts,
+`python` runs the Apps tab test's socket helpers and, with
+`python-gobject`, its D-Bus check, and
+`qt6-declarative` brings `qmllint` for the haseen widget.
 
 Run the first three gates before every commit, and `tools/secrets.sh`
 before every push:
