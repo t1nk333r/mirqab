@@ -690,6 +690,14 @@ pub fn no_daemon(socket: &str, why: &str) -> String {
     )
 }
 
+/// A request the daemon took but did not answer in time: it is running,
+/// so this is not "no daemon", and an action may still have run.
+pub fn daemon_no_answer(secs: u64) -> String {
+    format!(
+        "mirqab: the daemon did not answer within {secs} s; it is running, and a requested action may still have run"
+    )
+}
+
 pub fn daemon_error(code: &str, message: &str) -> String {
     format!("mirqab: {code}: {message}")
 }
