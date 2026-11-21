@@ -369,6 +369,10 @@ Streams: `system`, `apps`, `process`, `ports`, `agents`, `awake`, `disk`,
   subscriber the sampler's thread sleeps on a condition variable and reads
   nothing.
 - Several subscribers share one sampler at the shortest requested interval.
+  A new or changed subscription is sampled at once, but never sooner after
+  the last sample than the smallest floor its stream's subscribers hold
+  (2 s, or the live floor while one is live), so re-subscribing in a loop
+  cannot beat the floor.
 - A sampler may shape what each subscriber receives (`Sampler::view`: the
   sample and the subscriber's params in, its data out), so one reading
   serves a page, a card and the CLI with their own order and length; and

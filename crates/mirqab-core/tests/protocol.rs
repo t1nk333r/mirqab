@@ -708,6 +708,34 @@ fn re_subscribing_cannot_beat_the_floor() {
 }
 
 #[test]
+fn re_subscribing_to_a_stream_that_is_not_live_keeps_its_two_second_floor() {
+    // Audit 2026-11-21, L14: each subscribe asked for a sample at once,
+    // held back only by a 1 s gap, so re-subscribing every second sampled
+    // a stream that is not live every second.
+    let d = start("resubfloor");
+    let mut c = Client::connect(&d);
+    c.hello();
+    let t = Instant::now();
+    for at in [0u64, 600, 1200, 1800] {
+        if let Some(wait) = Duration::from_millis(at).checked_sub(t.elapsed()) {
+            std::thread::sleep(wait);
+        }
+        c.send("subscribe", Some("fake"), json!({}));
+    }
+    std::thread::sleep(Duration::from_millis(2300).saturating_sub(t.elapsed()));
+    c.stream
+        .set_read_timeout(Some(Duration::from_millis(200)))
+        .unwrap();
+    let mut events = 0;
+    while let Some(f) = c.frame() {
+        if matches!(f, ServerFrame::Event(_)) {
+            events += 1;
+        }
+    }
+    assert!((1..=2).contains(&events), "{events} samples in 2.5 s");
+}
+
+#[test]
 fn a_client_that_never_reads_is_dropped() {
     let d = start("flood");
     let mut c = Client::connect(&d);
@@ -1085,7 +1113,7 @@ fn subscribers(c: &mut Client, stream: &str) -> Value {
 #[test]
 fn a_re_subscribe_replaces_the_view_and_leaves_no_old_one() {
     // D6 of the review of PR #16.
-    let d = start("resub");
+    let d = start("resubview");
     let mut c = Client::connect(&d);
     c.hello();
     c.call("subscribe", Some("counted"), json!({"x": 1}))
@@ -1094,12 +1122,13 @@ fn a_re_subscribe_replaces_the_view_and_leaves_no_old_one() {
     c.call("subscribe", Some("counted"), json!({"x": 2}))
         .unwrap();
     // `call` skipped what came before its reply; everything after it is
-    // the new view, at once (a changed subscription samples now) and on.
+    // the new view, as soon as the 2 s floor allows (a changed
+    // subscription samples now, audit 2026-11-21, L14) and on.
     let t = Instant::now();
     for _ in 0..2 {
         assert_eq!(c.event("counted").unwrap()["params"], json!({"x": 2}));
     }
-    assert!(t.elapsed() < Duration::from_secs(4));
+    assert!(t.elapsed() < Duration::from_secs(5));
     assert_eq!(subscribers(&mut c, "counted"), 1, "replaced, not added");
     c.call("unsubscribe", Some("counted"), Value::Null).unwrap();
     assert_eq!(subscribers(&mut c, "counted"), 0);

@@ -48,7 +48,9 @@ pub const UI_UNIT: &str = "mirqab-ui.service";
 /// How long `open` waits for a started interface to attach (plan 001 step 30).
 const UI_START: Duration = Duration::from_secs(5);
 /// The least time between two samples a subscription forces at once: a
-/// client re-subscribing in a loop must not beat the floor (review of phase B).
+/// client re-subscribing in a loop must not beat the floor (review of phase
+/// B). The gap is the smallest floor the stream's subscribers hold, 2 s
+/// unless one is live, and never less than this (audit 2026-11-21, L14).
 const MIN_GAP: Duration = Duration::from_secs(1);
 /// The longest request line.
 const MAX_LINE: usize = 1 << 20;
@@ -78,6 +80,8 @@ struct Sub {
     interval_ms: u64,
     /// What the client asked for, so a new floor can be applied later.
     asked_ms: u64,
+    /// The floor `interval_ms` was raised to: FLOOR_MS, or the live floor.
+    floor_ms: u64,
     live: bool,
     /// The subscription's params, for a stream whose sampler shapes each
     /// subscriber's view (`Sampler::view`).
@@ -638,11 +642,13 @@ fn recover_history(h: &mut History, ts: i64) {
 fn sampler_loop(inner: Arc<Inner>, name: String, slot: Arc<Slot>) {
     let mut state = lock(&inner.state);
     loop {
-        let interval = state
-            .clients
-            .values()
-            .filter_map(|c| c.subs.get(&name).map(|s| s.interval_ms))
-            .min();
+        let subs = || state.clients.values().filter_map(|c| c.subs.get(&name));
+        let interval = subs().map(|s| s.interval_ms).min();
+        let gap = subs()
+            .map(|s| Duration::from_millis(s.floor_ms))
+            .min()
+            .unwrap_or(MIN_GAP)
+            .max(MIN_GAP);
         let run = state.runs.entry(name.clone()).or_default();
         let Some(ms) = interval else {
             run.now = false;
@@ -664,8 +670,8 @@ fn sampler_loop(inner: Arc<Inner>, name: String, slot: Arc<Slot>) {
             None => now,
             Some(last) if !run.now => last + Duration::from_millis(ms),
             // At once for a new or changed subscription, but never twice
-            // within MIN_GAP.
-            Some(last) => (last + MIN_GAP).max(now),
+            // within the floor.
+            Some(last) => (last + gap).max(now),
         };
         if due > now {
             state = slot
@@ -997,6 +1003,7 @@ impl Inner {
                     Sub {
                         interval_ms: 0,
                         asked_ms: 0,
+                        floor_ms: 0,
                         live: false,
                         params: Value::Null,
                     },
@@ -1062,6 +1069,7 @@ impl Inner {
                     Sub {
                         interval_ms,
                         asked_ms: asked,
+                        floor_ms: floor,
                         live: live && slot.live,
                         params,
                     },
@@ -1277,6 +1285,7 @@ impl Inner {
             let mut state = lock(&self.state);
             for c in state.clients.values_mut() {
                 for (name, sub) in c.subs.iter_mut().filter(|(_, s)| s.live) {
+                    sub.floor_ms = floor;
                     sub.interval_ms = sub.asked_ms.max(floor);
                     woken.push(name.clone());
                 }
