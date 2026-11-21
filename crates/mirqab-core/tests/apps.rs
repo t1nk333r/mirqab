@@ -1460,6 +1460,35 @@ fn flatpak_info_is_not_opened_through_a_fuse_root() {
     }
 }
 
+#[test]
+fn the_flatpak_info_mount_check_reads_mountinfo_when_asked() {
+    // Review of audit 2026-11-21, L7: Linux hands a freed mount id
+    // straight back out, so a mountinfo read before the root is pinned can
+    // describe another mount with the same id: a process unmounts its
+    // tmpfs N, mounts FUSE (which gets N) and chroots into it, and the
+    // stale "N tmpfs" line would clear the FUSE root. While a descriptor
+    // holds a mount no other live mount can carry its id, so the check
+    // reads mountinfo each time it is asked, after the pin.
+    let s = bare_root("fuse-late");
+    let p = own_proc(&s.0, 9600, "notes");
+    let root = Root::new(&s.0);
+    std::fs::write(p.join("mountinfo"), "21 1 0:44 / / rw - tmpfs tmpfs rw\n").unwrap();
+    let clear = mirqab_core::samplers::apps::procfs::tmpfs_now(&root, "proc/9600");
+    std::fs::write(
+        p.join("mountinfo"),
+        "21 1 0:40 / / rw - fuse.sshfs example:/ rw\n",
+    )
+    .unwrap();
+    assert!(
+        !clear(21),
+        "a listing from before the pin cleared a FUSE mount"
+    );
+    std::fs::write(p.join("mountinfo"), "21 1 0:44 / / rw - tmpfs tmpfs rw\n").unwrap();
+    assert!(clear(21));
+    std::fs::write(p.join("mountinfo"), "").unwrap();
+    assert!(!clear(21));
+}
+
 fn cargo_cpu(v: Value) -> f64 {
     by_id(&data(v), CARGO).cpu.expect("a rate")
 }

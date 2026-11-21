@@ -2533,21 +2533,30 @@ attributes), and clears it before `.flatpak-info` is looked up. The file
 is then opened `O_PATH|O_NOFOLLOW` through `/proc/self/fd/<rootfd>`, its
 mount id cleared too (a file can be a mount of its own), checked to be a
 regular file, and reopened for reading through its own descriptor with
-`O_NONBLOCK|O_NOCTTY`. Because every step holds a descriptor, a
-`pivot_root` or a mount between a check and the read changes nothing that
-was checked. `procfs::read_flatpak_info` clears a mount id only when the
-process's `mountinfo` lists it (field 1) as a `tmpfs`
-(`procfs::tmpfs_mount`). On the live machine a mountinfo that cannot be
-read clears nothing; a fixture without one (the fixtures have none) is
-read as before through `read_regular_prefix`. This costs one more read
+`O_NONBLOCK|O_NOCTTY`. `procfs::read_flatpak_info` clears a mount id
+only when the process's `mountinfo` lists it (field 1) as a `tmpfs`, and
+it reads that mountinfo anew each time it is asked (`procfs::tmpfs_now`),
+which is after the descriptor in question is pinned. That order matters:
+Linux hands a freed mount id straight back out, so a listing taken before
+the pin could describe another mount by the same id, while one taken
+after cannot, since the descriptor keeps its mount and the id alive. With
+that, a `pivot_root`, a mount or an unmount at any point leaves the read
+on the objects that were cleared; `Root::read_regular_prefix_in` states
+the contract (`clear` decides from state read at the call). On the live
+machine a mountinfo that cannot be read clears nothing; a fixture without
+one (the fixtures have none) is read as before through
+`read_regular_prefix`. This costs two `mountinfo` and two `fdinfo` reads
 per process that reaches the `.flatpak-info` check, once in the process's
-life (`Info` is cached), plus two `fdinfo` reads.
+life (`Info` is cached).
 
-Why tmpfs only: bubblewrap builds every Flatpak root on a tmpfs. Checked
-on the development machine on 2026-11-21: for a running Flatpak app, the
-`O_PATH` descriptors of its root and of its `.flatpak-info` carry the same
-mount id, and its mountinfo lists that id at `/` with root `/newroot` and
-type `tmpfs`. Rejected options:
+Why tmpfs only: bubblewrap builds every Flatpak root on a tmpfs, and
+`.flatpak-info` is on a tmpfs too, but not always the same mount. Checked
+on the development machine on 2026-11-21 with the `O_PATH` descriptors of
+a running Flatpak app's processes: in the app's own processes the file is
+a bind mount of its own, listed at `/.flatpak-info` as `tmpfs` with a
+mount id that differs from the root's; in the outer bubblewrap process it
+is on the root's mount, listed at `/` with root `/newroot` and type
+`tmpfs`. Either way both ids are cleared. Rejected options:
 
 - Looking for a FUSE line at `/` or `/.flatpak-info` in mountinfo (the
   first fix). The kernel omits mounts the root cannot reach, so a process
@@ -2562,6 +2571,12 @@ type `tmpfs`. Rejected options:
   `mnt_id` in that setup is absent from the process's mountinfo, so the
   id check refuses it. Reading mountinfo before an unpinned open also left
   a race with `pivot_root`.
+- Pinned descriptors checked against one mountinfo read taken before the
+  pin (the third fix, rejected in delta review). Between that read and the
+  `O_PATH` open, the process can chroot out through a saved descriptor,
+  unmount its tmpfs N, mount FUSE (which gets N again, the lowest free
+  id) and chroot into it; the stale "N tmpfs" line then clears the FUSE
+  root. The reviewer reproduced it with ramfs standing in for FUSE.
 - Clearing any type that does not start with `fuse`, as the review
   suggested. An overlay with a FUSE lower layer is not `fuse*` but looks
   its names up on the FUSE server; only Flatpak roots matter here, and
@@ -2572,6 +2587,8 @@ type `tmpfs`. Rejected options:
 
 Tests: `root.rs`, `a_pinned_read_asks_about_the_directory_mount_before_the_name`
 (a refused root mount is refused before the name is looked up),
+`a_pinned_read_asks_about_what_it_already_holds` (`clear` runs after the
+pin: a directory swapped on its first call does not change what is read),
 `a_pinned_read_reads_a_regular_file_on_a_cleared_mount`,
 `a_pinned_read_refuses_what_is_not_a_regular_file` (a FIFO, a symlink, a
 directory, and a name that is not one component) and
@@ -2582,7 +2599,10 @@ or ext4 for the root's mount, a tmpfs at `/` that is not the root's mount
 (the review's bypass), the root's mount not listed, a line without a type
 and an empty mountinfo are skipped; a tmpfs root's mount, wherever it is
 mounted and with FUSE elsewhere, and no mountinfo at all are read. The
-bypass row failed against the second fix before this one.
+bypass row failed against the second fix before this one. And
+`the_flatpak_info_mount_check_reads_mountinfo_when_asked`: a check made
+while mountinfo said tmpfs refuses once it says FUSE; it failed against a
+version of `tmpfs_now` that kept a copy.
 
 **15. The session bus by command name (owner question 1).** See the
 question; if the owner says yes, `guard::SESSION_BUS_COMMS = ["dbus-daemon",

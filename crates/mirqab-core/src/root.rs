@@ -190,10 +190,15 @@ impl Root {
     ///    its own pinned descriptor, with O_NONBLOCK and O_NOCTTY as in
     ///    `read_regular_prefix`.
     ///
-    /// Every step holds a descriptor, so a `pivot_root` or a mount between
-    /// a check and the read changes nothing that was checked. On a fixture
-    /// root the descriptors are real too, and `dir` must stay inside the
-    /// tree.
+    /// `clear` is called only after the descriptor it is asked about is
+    /// pinned, and it must decide from state it reads at that call, not
+    /// from a copy taken earlier: Linux reuses a freed mount id at once, so
+    /// an earlier listing can name another mount by the same id, while a
+    /// listing read after the pin cannot (the descriptor keeps its mount,
+    /// and the id, alive). Given that, a `pivot_root`, a mount or an
+    /// unmount at any point leaves the read on the objects that were
+    /// cleared. On a fixture root the descriptors are real too, and `dir`
+    /// must stay inside the tree.
     pub fn read_regular_prefix_in(
         &self,
         dir: &str,
@@ -336,6 +341,31 @@ mod tests {
             .unwrap_err();
         assert_eq!(e.kind(), std::io::ErrorKind::PermissionDenied, "{e}");
         assert_eq!(*asked.borrow(), [mnt]);
+    }
+
+    #[test]
+    fn a_pinned_read_asks_about_what_it_already_holds() {
+        // Review of audit 2026-11-21, L7: `clear` runs after the descriptor
+        // is pinned, and the read goes through that descriptor. Here the
+        // first call swaps the directory for another; the read still gets
+        // the file of the directory that was asked about.
+        let s = scratch("pin-swap");
+        let dir = s.0.join("proc/1/root");
+        std::fs::write(dir.join("info"), "asked").unwrap();
+        let other = s.0.join("proc/1/other");
+        std::fs::create_dir(&other).unwrap();
+        std::fs::write(other.join("info"), "swapped").unwrap();
+        let r = Root::new(&s.0);
+        let calls = std::cell::Cell::new(0);
+        let got = r.read_regular_prefix_in("proc/1/root", "info", 16, |_| {
+            if calls.replace(calls.get() + 1) == 0 {
+                std::fs::rename(&dir, s.0.join("proc/1/old")).unwrap();
+                std::fs::rename(&other, &dir).unwrap();
+            }
+            true
+        });
+        assert_eq!(got.unwrap(), b"asked");
+        assert_eq!(calls.get(), 2, "the directory and the file");
     }
 
     #[test]
