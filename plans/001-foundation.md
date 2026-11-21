@@ -149,6 +149,8 @@ the stream accepts `live` for a pinned self-cost graph):
 `{"event":"hide"}`, `{"event":"toggle","tab":null}`,
 `{"event":"config-changed"}`. A client that subscribes to `ui` with
 `params.role = "ui"` and its pid is the interface; the daemon remembers one.
+A `pid` that is not 1 to 2147483647 is not taken, and the client is not
+the interface (audit 2026-11-21, L37).
 
 `system` (core only; plan 002 defines the full shape):
 `{"cpu":{"percent":…},"mem":{"totalBytes":…,"availableBytes":…}}`.

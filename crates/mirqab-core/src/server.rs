@@ -975,7 +975,12 @@ impl Inner {
         };
         if name == stream::UI {
             let as_ui = req.param("role").and_then(Value::as_str) == Some("ui");
-            let pid = req.param("pid").and_then(Value::as_u64).map(|p| p as u32);
+            // The pid the interface names for itself, not the peer's
+            // SO_PEERCRED pid: that is 0 for a peer in another pid
+            // namespace, and `status.ui.pid` is the interface's word. One
+            // that is not a positive pid_t is not taken, never cut down to
+            // fit (audit 2026-11-21, L37).
+            let pid = req.param("pid").and_then(Value::as_u64).and_then(ui_pid);
             let reply = frame::encode(&ServerFrame::Reply(Reply::ok(
                 req.id,
                 json!({"stream": name}),
@@ -1579,6 +1584,11 @@ fn caller_for(root: &Root, peer: Option<u32>, test: Option<u32>) -> Option<u32> 
 
 /// A handler already queued its reply.
 struct Replied;
+
+/// A pid an interface gave, when it is one: 1 to `i32::MAX` (pid_t).
+fn ui_pid(p: u64) -> Option<u32> {
+    i32::try_from(p).ok().filter(|p| *p > 0).map(|p| p as u32)
+}
 
 /// The id of a line that is not a valid request: its `id` when the line is
 /// a JSON object whose `id` is a whole number, else 0.

@@ -592,6 +592,31 @@ fn the_interface_hears_actions_and_config_changes() {
 }
 
 #[test]
+fn an_interface_pid_out_of_range_is_not_taken() {
+    // Audit 2026-11-21, L37: 4294967297 was cut to 1, and 0 was taken.
+    let d = start("uipid");
+    let mut ui = Client::connect(&d);
+    let mut cli = Client::connect(&d);
+    ui.hello();
+    cli.hello();
+    for pid in [json!(4_294_967_297u64), json!(0), json!(2_147_483_648u64)] {
+        ui.call("subscribe", Some("ui"), json!({"role": "ui", "pid": pid}))
+            .unwrap();
+        assert_eq!(
+            cli.call("status", None, Value::Null).unwrap()["ui"],
+            Value::Null,
+            "pid {pid}"
+        );
+    }
+    ui.call("subscribe", Some("ui"), json!({"role": "ui", "pid": 4321}))
+        .unwrap();
+    assert_eq!(
+        cli.call("status", None, Value::Null).unwrap()["ui"]["pid"],
+        4321
+    );
+}
+
+#[test]
 fn an_earlier_interface_is_restored_when_the_latest_leaves() {
     let d = start("uirestore");
     let mut first = Client::connect(&d);
