@@ -84,6 +84,7 @@ plant "an unmarked frame callback with a sample marker" crates/mirqab-ui/src/wid
 plant "a sampler under a second" crates/mirqab-ui/src/widgets/clock.rs "$(printf '%s\n' '// mirqab:sample' 'glib::timeout_add_local(Duration::from_millis(500), f);')" "a mirqab:sample timer under 1000 ms"
 plant "a trailing marker does not mark the next line" crates/mirqab-ui/src/timers.rs "$(printf '%s\n' 'fn a() { glib::timeout_add_local_once(d, f); } // mirqab:ui-timeout' 'fn b() { glib::timeout_add_local(d2, g); }')" "timer without"
 plant "an unmarked timeout_future" crates/mirqab-ui/src/widgets/clock.rs 'async fn tick() { glib::timeout_future(Duration::from_millis(50)).await; }' "timer without"
+plant "an unmarked future_with_timeout" crates/mirqab-ui/src/client.rs 'async fn hello() { glib::future_with_timeout(d, read).await; }' "timer without"
 plant "a renamed toolkit dependency" crates/mirqab-view/Cargo.toml 'ui = { package = "gtk4", version = "0.11" }' "toolkit dependency"
 
 # A marker on the line above, with blank lines between, still counts; a

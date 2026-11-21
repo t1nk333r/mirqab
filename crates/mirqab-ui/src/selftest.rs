@@ -49,12 +49,8 @@ pub fn run(ctx: &Rc<Ctx>, tab: &str, steps: Option<&str>) {
     let weak = Rc::downgrade(ctx);
     let d = Rc::clone(&done);
     let started_by_event = Rc::clone(&started);
-    // The page `show` falls back to for an unknown tab.
-    let tab_name = if tab == "settings" || mirqab_view::shell::find(tab).is_some() {
-        tab.to_string()
-    } else {
-        mirqab_view::shell::DEFAULT_TAB.to_string()
-    };
+    // A tab `show` opens: `Opts::refusal` turned any other away.
+    let tab_name = tab.to_string();
     let sub = ctx.client.subscribe_params(
         stream::SELF,
         2000,

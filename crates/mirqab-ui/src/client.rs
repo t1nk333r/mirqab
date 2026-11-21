@@ -23,6 +23,9 @@ use std::path::PathBuf;
 use std::rc::{Rc, Weak};
 use std::time::Duration;
 
+/// How long a new connection waits for the daemon's hello.
+const HELLO_WAIT: Duration = Duration::from_secs(5);
+
 type EventFn = Rc<dyn Fn(&Value)>;
 type ReplyFn = Box<dyn FnOnce(Result<Value, ErrorBody>)>;
 type StateFn = Rc<dyn Fn(&Client)>;
@@ -437,7 +440,22 @@ impl Client {
                 st.conn = Some(conn);
             }
             loop {
-                match input.read_line_utf8_future(glib::Priority::DEFAULT).await {
+                let read = input.read_line_utf8_future(glib::Priority::DEFAULT);
+                let line = if c.0.state.borrow().connected {
+                    read.await
+                } else {
+                    // A stopped daemon whose socket is still bound lets the
+                    // connection complete from the backlog and then says
+                    // nothing: without a limit no notice shows, no retry
+                    // runs and a parked show never happens (audit
+                    // 2026-11-21, L49). A timeout drops the read.
+                    // mirqab:ui-timeout
+                    match glib::future_with_timeout(HELLO_WAIT, read).await {
+                        Ok(r) => r,
+                        Err(_) => break,
+                    }
+                };
+                match line {
                     Ok(Some(line)) => c.handle_line(&line),
                     _ => break,
                 }

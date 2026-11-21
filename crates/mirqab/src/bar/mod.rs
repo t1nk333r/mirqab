@@ -121,8 +121,21 @@ fn combo_parts(socket: &std::path::Path) -> Vec<String> {
         .unwrap_or_else(|| items::COMBO_DEFAULT.iter().map(|s| s.to_string()).collect())
 }
 
-/// The output line and whether it carries no value yet.
-fn reading_line(o: &Opts, combo: &[String], data: &Value) -> (String, bool) {
+/// What decides whether `--watch` prints a new line: the text, the class
+/// and the percentage, never the tooltip alone. The tooltips of cpu, mem
+/// and load hold figures that move every sample, so comparing whole lines
+/// printed every interval with an unchanged text (audit 2026-11-21); a
+/// tooltip may now lag until the text next changes (plan 004).
+#[derive(Debug, Clone, PartialEq, Default)]
+struct Shown {
+    text: String,
+    class: &'static str,
+    percentage: Option<u32>,
+}
+
+/// The output line, what decides a change, and whether it carries no
+/// value yet.
+fn reading_line(o: &Opts, combo: &[String], data: &Value) -> (String, Shown, bool) {
     let d: SystemData = serde_json::from_value(data.clone()).unwrap_or_default();
     // Known items always read; `parse` refused the others.
     let r = items::read(&o.item, &d, combo).unwrap_or(items::Reading {
@@ -131,7 +144,14 @@ fn reading_line(o: &Opts, combo: &[String], data: &Value) -> (String, bool) {
         class: "unknown",
         percentage: None,
     });
-    (format::line(o.format, &o.item, &r), r.class == "unknown")
+    let line = format::line(o.format, &o.item, &r);
+    let unknown = r.class == "unknown";
+    let shown = Shown {
+        text: r.text,
+        class: r.class,
+        percentage: r.percentage,
+    };
+    (line, shown, unknown)
 }
 
 pub fn run(args: Args) -> ExitCode {
@@ -173,11 +193,11 @@ fn watch(o: &Opts, combo: &[String], socket: &std::path::Path) -> ExitCode {
         .with_stream(stream::SYSTEM)
         .with_params(json!({"interval": o.secs.saturating_mul(1000)}));
     if (&conn).write_all(&frame::encode(&req)).is_err() {
-        no_daemon(socket, "the connection closed");
+        no_daemon(socket, strings::CONNECTION_CLOSED);
         return ExitCode::from(EXIT_NO_DAEMON);
     }
     let mut reader = BufReader::new(&conn);
-    let mut last = String::new();
+    let mut last: Option<Shown> = None;
     let mut throttle = Throttle {
         last_emit: None,
         last_unknown: false,
@@ -187,7 +207,7 @@ fn watch(o: &Opts, combo: &[String], socket: &std::path::Path) -> ExitCode {
         line.clear();
         match reader.read_line(&mut line) {
             Ok(0) | Err(_) => {
-                no_daemon(socket, "the connection closed");
+                no_daemon(socket, strings::CONNECTION_CLOSED);
                 return ExitCode::from(EXIT_NO_DAEMON);
             }
             Ok(_) => {}
@@ -202,13 +222,13 @@ fn watch(o: &Opts, combo: &[String], socket: &std::path::Path) -> ExitCode {
                 }
             }
             Ok(ServerFrame::Event(ev)) if ev.stream == stream::SYSTEM => {
-                let (out, unknown) = reading_line(o, combo, &ev.data);
+                let (out, shown, unknown) = reading_line(o, combo, &ev.data);
                 let now = Instant::now();
-                if out != last && throttle.allow(now, o.secs) {
+                if last.as_ref() != Some(&shown) && throttle.allow(now, o.secs) {
                     // A closed bar ends the process inside out::line.
                     crate::out::line(&out);
                     throttle.emitted(now, unknown);
-                    last = out;
+                    last = Some(shown);
                 } else if mirqab_core::sys::stdout_closed() {
                     // Checked on every event that prints nothing, held back
                     // or unchanged, so it cannot keep a closed bar's process
@@ -249,6 +269,18 @@ mod tests {
             t.allow(t0 + Duration::from_secs(1), 5),
             "after a reading with no value, the first real one goes at once"
         );
+    }
+
+    #[test]
+    fn a_tooltip_alone_changing_is_no_change() {
+        let o = parse(&["cpu".into()]).ok().flatten().unwrap();
+        let frame = |percent: f64, user: f64| json!({"cpu": {"percent": percent, "user": user, "system": 1.0, "iowait": 0.0}});
+        let (line_a, a, _) = reading_line(&o, &[], &frame(12.2, 8.0));
+        let (line_b, b, _) = reading_line(&o, &[], &frame(12.4, 9.0));
+        assert_ne!(line_a, line_b, "the tooltips differ");
+        assert_eq!(a, b, "the text, class and percentage do not");
+        let (_, c, _) = reading_line(&o, &[], &frame(40.0, 9.0));
+        assert_ne!(a, c, "a new text is a change");
     }
 
     #[test]

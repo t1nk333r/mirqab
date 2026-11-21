@@ -143,7 +143,7 @@ grep_rules() {
         # interval may not go under 1000 ms (review of PR #1).
         local timer_awk='
             /^[[:space:]]*(pub[[:space:]]+)?use[[:space:]]/ { prev = $0; next }
-            /timeout_add|timeout_future|interval_stream|add_tick_callback/ {
+            /timeout_add|timeout_future|future_with_timeout|interval_stream|add_tick_callback/ {
                 if ($0 ~ /\/\/ mirqab:ui-timeout/ || prev ~ /\/\/ mirqab:ui-timeout/) m = "ui"
                 else if ($0 ~ /\/\/ mirqab:sample/ || prev ~ /\/\/ mirqab:sample/) m = "sample"
                 else m = ""

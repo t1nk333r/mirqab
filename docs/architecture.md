@@ -296,14 +296,19 @@ so once in the footer.
 
 - Path: `$XDG_RUNTIME_DIR/mirqab/daemon.sock`. Directory mode 0700, socket
   mode 0600. The daemon refuses to start if `XDG_RUNTIME_DIR` is unset or
-  not owned by the user.
+  not owned by the user, and if the socket's directory exists but is a
+  symlink, someone else's, or open to group or others; it never changes
+  the mode of a directory it did not make.
 - `SO_PEERCRED` is checked on accept: a peer with another uid is closed.
 - systemd units: `mirqab.socket` (`ListenStream=%t/mirqab/daemon.sock`,
   `SocketMode=0600`, `DirectoryMode=0700`) and `mirqab.service`
-  (`Type=notify`). Run by hand, the daemon prints `ready <socket path>` on
-  stdout once it listens. A client connects only after that line or after
-  the unit is active, and retries with a backoff (250 ms doubling to 4 s)
-  if the daemon restarts.
+  (`Type=notify`). When `LISTEN_PID` and `LISTEN_FDS` name the daemon, it
+  adopts fd 3 only if that is a listening Unix stream socket, and
+  otherwise refuses to start rather than bind a socket of its own. Run by
+  hand, the daemon prints `ready <socket path>` on stdout once it listens.
+  A client connects only after that line or after the unit is active, and
+  retries with a backoff (2 s doubling to 30 s, so a missing daemon costs
+  no polling under 2 s; §9.2) if the daemon restarts.
 - The interface reads the socket on GLib's main loop (`gio`'s Unix socket
   client and a line reader), not on a thread of its own.
 
@@ -354,6 +359,9 @@ Rules:
   `unknown-stream`, `unavailable`, `refused`, `needs-confirm`,
   `needs-helper`, `failed`. An error may carry `data` beside its
   `message` (a `needs-confirm` reply's plan); it is omitted when empty.
+- A line that is not a valid request is answered `bad-request` with the
+  line's `id` when it is a JSON object whose `id` is a whole number, else
+  with id 0. A line longer than 1 MiB closes that connection only.
 
 ### 5.3 Streams and samplers
 
@@ -366,6 +374,10 @@ Streams: `system`, `apps`, `process`, `ports`, `agents`, `awake`, `disk`,
   subscriber the sampler's thread sleeps on a condition variable and reads
   nothing.
 - Several subscribers share one sampler at the shortest requested interval.
+  A new or changed subscription is sampled at once, but never sooner after
+  the last sample than the smallest floor its stream's subscribers hold
+  (2 s, or the live floor while one is live), so re-subscribing in a loop
+  cannot beat the floor.
 - A sampler may shape what each subscriber receives (`Sampler::view`: the
   sample and the subscriber's params in, its data out), so one reading
   serves a page, a card and the CLI with their own order and length; and
@@ -376,16 +388,19 @@ Streams: `system`, `apps`, `process`, `ports`, `agents`, `awake`, `disk`,
   subscribers before each sample (`Sampler::wants`), so it reads only what
   they name. When a stream is left with no subscriber, the sampler is
   told once, within an interval (`Sampler::idle`), and forgets and stops
-  what it kept for the earlier subscribers. No sampler sleeps or asks
-  another program while holding its lock, except the `apps` sampler:
-  its focus source waits on the compositor under the lock, up to 1.5 s
-  once when the page opens (two connects and a request) and up to 0.5 s
-  when it closes (a request's deadline), and its `get` sleeps 500 ms
-  under the lock only when no primed reading fits. A `get` whose rates
-  need two readings takes the
-  first in `Sampler::prime`, which returns the wait and queues the
-  reading (one per pending `get`, served in order, used at 250 ms to
-  10 s old), and the server sleeps it without the lock before
+  what it kept for the earlier subscribers. A `get` of a stream nobody
+  subscribes to tells it too, right after the get's snapshot. No sampler
+  sleeps or asks another program while holding its lock, except the
+  `apps` sampler: its focus source waits on the compositor under the
+  lock, up to 1.5 s once when the page opens (two connects and a
+  request) and up to 1 s when it closes (a request under way: its
+  connect and its deadline), and its `get` sleeps 500 ms under the lock
+  only when no primed reading fits. A `get` whose rates need two
+  readings takes the first in `Sampler::prime`, which returns the wait
+  and queues the reading (one per pending `get`; each `snapshot` takes
+  the oldest that fits it and is 250 ms to 10 s old, leaving younger
+  ones to the gets still in their gap), and the server sleeps it
+  without the lock before
   `snapshot`; a query may answer
   `Answer::Later(closure)`, which the server runs after it released the
   lock (the inspector's `pacman`). Once a minute `Sampler::minute_events`
@@ -515,12 +530,16 @@ to a daemon:
 - Every action accepts `dryRun: true` and returns `wouldDo` without
   changing anything. Every mutating CLI command takes `--dry-run`.
 - All mutation goes through `crates/mirqab-core/src/act.rs` (signals,
-  file removal, D-Bus calls that change state, helper requests). Lint
+  file removal, D-Bus calls that change state, helper requests, and the
+  one command the CLI runs for the user, `mcp-config --write`'s client
+  command, through `act::run_command`). Lint
   greps for `kill(`, `remove_file`, `remove_dir`, `Command::new` outside
   `act.rs` and `exec.rs`.
 - The strings `sudo` and `pkexec` appear in exactly one file,
   `crates/mirqab/src/elevate.rs`, which only ever runs the fixed commands
-  listed in §8. Check: `grep -rn 'sudo\|pkexec' crates tools dist | grep -v elevate.rs`.
+  listed in §8. Check: `grep -rnwE 'sudo|pkexec' crates dist | grep -v elevate.rs`
+  prints nothing (the rule `tools/lint.sh` runs; `tools/` is not
+  searched, because the lint script names both words to grep for them).
 - An action on one process may name it by `{"pid": N}` or by
   `{"pid": N, "start": S}`, the start time a row of the `apps` frame
   lists; when the pid's process started at another time the action is
@@ -600,11 +619,22 @@ to a daemon:
 | Cache (weather, geocoding) | `~/.cache/mirqab/` |
 | Shipped defaults | `/usr/share/mirqab/` |
 
-XDG variables override each directory. The daemon is the only writer of
-`config.json`; the interface and CLI change settings through `config.set`,
-and every subscriber to `ui` gets a `config-changed` event. A config the
+XDG variables override each directory when they are absolute paths (a
+relative one is ignored, as the XDG spec says); without one the daemon
+uses `$HOME`, and refuses to start when that is not absolute either. The
+daemon is the only writer of `config.json`; the interface and CLI change
+settings through `config.set`,
+and every subscriber to `ui` gets a `config-changed` event. A hand edit
+is noticed at the next read (a request that reads the config, a
+`config.set` of any key, dry run included, or the minute writer's
+wakeup) and treated the same way: open live subscriptions take a new
+`live.intervalMs` and `ui` gets `config-changed`. A config the
 daemon cannot parse is left untouched, reported in `status`, and defaults
 are used: the app never rewrites a file the user broke by hand.
+`theme.accent` and `units.clock` are reserved keys: accepted and checked,
+so a config that sets them stays valid, but read by nothing yet. No clock
+is shown before plan 016, which decides the clock format's key; its
+draft names `time.hour12` (`plans/016-time-tab.md`, "Clock format").
 
 With `mirqab daemon --root DIR` (fixture trees, used by the tests) the
 daemon keeps `history.db` and `config.json` beside its socket instead, so
@@ -711,7 +741,10 @@ history in the interface (gone when the window closes).
 One wakeup a minute, aligned to the minute, one transaction. This is the
 only work the daemon does with no subscribers. Woken just after a minute
 boundary, it labels the values with the minute that just ended, so the
-minute running now is never half-written in a query.
+minute running now is never half-written in a query. Woken more than 5 s
+past a boundary (after a suspend or a clock step), it writes nothing and
+sleeps to the next one, so no row is labelled with a minute it covers
+only in part.
 
 - **Counters** (CPU jiffies, network and disk bytes, paging counts, energy)
   are read once a minute and differenced, so the stored value is the true
@@ -728,7 +761,8 @@ minute running now is never half-written in a query.
   and differences against the previous minute's walk, so the first minute
   after start writes nothing; with one it reads its last sample.
 - A gap (suspend, daemon stopped) stores nothing; graphs draw a break.
-- Pruning runs once an hour: `DELETE … WHERE ts < now − 30 d` for `sample`
+- Pruning runs once an hour, and at once when the clock went back past
+  the last prune: `DELETE … WHERE ts < now − 30 d` for `sample`
   and `event`, 3 d for `top-apps` events, 90 d for `daily`.
 - Compaction runs once a day (`VACUUM`, then a truncating checkpoint):
   rows arrive series by series, so each series' run grows in the middle of
@@ -749,7 +783,9 @@ minute running now is never half-written in a query.
 
 `history.query` returns `avg` and `max` per bucket, so a short spike stays
 visible at 30 d. The 2 min range arrives on the live stream itself (each
-event carries the newest point; the interface keeps the ring). Choosing
+event carries the newest point; the interface keeps the ring, stamped
+with the wall clock, and starts it again when that clock steps back by
+more than a second). Choosing
 any other range on a graph ends its `live` subscription (§5.3): a graph of
 stored minutes is redrawn once a minute, not once a second.
 
@@ -764,7 +800,9 @@ own tokens, icons and words:
   tile filled with the accent. Order: Home, Apps, System, Fans, Disk,
   Network, Devices, Battery, Volume, Ports, Agents, Awake, Time, Weather;
   then, pushed to the bottom, Trends and Support. A tile can carry a count
-  badge (Ports: listeners; Agents: sessions that need the user). Tabs the
+  badge (Ports: listeners; Agents: sessions that need the user), which is
+  also the tile's accessible description in words ("3 ports listening"),
+  since its label is the tab's name. Tabs the
   machine cannot serve are hidden (Battery, Fans without sensors).
 - **Page**, right: a scrolling column of cards with rounded corners. A card
   has a title, an optional range picker (2m, 1h, 24h, 7d, 30d) and a
@@ -850,7 +888,8 @@ Sizes are in em of the base font so the fractional-scale case works.
   binary and loaded with a `GtkCssProvider`. Rules in it refer to
   `var(--…)` only. The app's own tokens (`--mirqab-series-1` to `-6`,
   `--mirqab-grid`, `--mirqab-meter-track`, `--mirqab-map-land`,
-  `--mirqab-map-night`) are declared once, at the top of that file.
+  `--mirqab-map-night`) are declared once, in the token table below; the
+  stylesheet's `mirqab:tokens` block holds no colour.
 - **The token table.** `crates/mirqab-view/src/theme.rs` lists every
   token with its default. It is the only Rust file with a colour literal.
   From it the interface generates a second, small stylesheet that sets the
@@ -939,7 +978,8 @@ Three layers, cheapest first:
 3. **Each page once, against a real daemon.** `mirqab-ui --selftest <tab>`
    builds that page in window mode against the socket of a daemon serving
    a fixture root, waits for the first event, prints the widget tree as
-   JSON (type, style classes, text, accessible label) and exits.
+   JSON (type, style classes, text, accessible label) and exits. A tab
+   id the window cannot open is refused at once (exit 64).
    `tests/test-ui-<tab>.sh` asserts on that JSON with `jq`.
    With `--do STEPS` (accepted only with `MIRQAB_TEST=1`, also when the
    arguments reach a running interface over the session bus, which never
@@ -1272,7 +1312,10 @@ tools/secrets.sh          # gitleaks over history, plus the privacy patterns of 
   unmarked timers, string literals in widget calls); and the coverage
   check that every source file is matched by some test's
   `# mirqab:covers`. The one QML file set, `contrib/haseen/`, is checked
-  with `qmllint` only when that tool is installed; it is not a gate.
+  with `qmllint` by `tests/test-contrib.sh`: an error fails it, the
+  warnings for haseen's modules (not importable here) do not. CI's
+  `test` job installs `qt6-declarative` for it; elsewhere the check is
+  skipped with a note when the tool is missing.
 - Tests never read the live machine. Rust tests take a `Root` fixture;
   shell tests run with a stub `PATH`, a temporary `HOME` and
   `XDG_RUNTIME_DIR`. The interface is tested as §7.5 describes: view
@@ -1300,12 +1343,13 @@ jobs whose names are exactly the required checks:
 | Job | Runs |
 |-----|------|
 | `lint` | `tools/lint.sh` |
-| `test` | On a pull request `tests/run.sh --affected origin/main`; on a push to `main` `tests/run.sh` (everything). Then `tools/bench-idle.sh` when `crates/` changed |
+| `test` | On a pull request `tests/run.sh --affected --committed <base>`, `<base>` being the pull request's base commit; on a push to `main` `tests/run.sh` (everything). Then `tools/bench-idle.sh`, on a pull request only when it changes `crates/`, `Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml`, `tools/bench-idle.sh`, `tools/mkfixture.sh`, `tests/fixtures/root-desktop/` or `tests/fixtures/procs.tsv` |
 | `docs` | `tools/check-docs.sh` |
 | `secrets` | `tools/secrets.sh` (full history: the checkout uses `fetch-depth: 0`) |
 
 All four run on `pull_request` and on `push` to `main`, in an
-`archlinux:latest` container as an unprivileged user, with every action
+`archlinux:latest` container as an unprivileged user (`ci`, created in
+the job and given the checkout), with every action
 pinned by commit SHA and `permissions: contents: read`. The `test` job
 installs `gtk4`, `libadwaita` and `gtk4-layer-shell` and starts Broadway
 through `tests/lib.sh`. Plan 020 adds a second file,

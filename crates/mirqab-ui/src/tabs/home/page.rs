@@ -65,12 +65,7 @@ impl Page {
     /// daemon has said what it serves, every known pinned card.
     fn wanted(ctx: &Ctx) -> Vec<&'static cards::Card> {
         let pinned = ctx.config.borrow().pinned.clone();
-        let caps = ctx.client.capabilities();
-        if caps.is_empty() {
-            cards::pinned(&pinned)
-        } else {
-            home::shown(&pinned, &caps)
-        }
+        home::visible(&pinned, &ctx.client.capabilities())
     }
 
     fn rebuild(self: &Rc<Self>) {
@@ -215,13 +210,12 @@ pub fn build(ctx: &Rc<Ctx>) -> gtk::Widget {
     });
     page.rebuild();
 
+    // Owned by the root, which holds the page through its map handlers.
     let weak = Rc::downgrade(&page);
-    ctx.on_config(move || match weak.upgrade() {
-        Some(p) => {
+    ctx.on_config(&root, move |_| {
+        if let Some(p) = weak.upgrade() {
             p.rebuild();
-            true
         }
-        None => false,
     });
     let p = Rc::clone(&page);
     root.connect_map(move |_| {

@@ -4,6 +4,7 @@
 
 pub mod app;
 pub mod client;
+pub mod listeners;
 pub mod pages;
 pub mod selftest;
 pub mod style;

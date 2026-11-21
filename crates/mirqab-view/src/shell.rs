@@ -84,6 +84,13 @@ pub fn find(id: &str) -> Option<&'static Tab> {
     TABS.iter().find(|t| t.id == id)
 }
 
+/// Whether the window can open on `id`: a tab, or Settings, which has no
+/// tile. The one check for `--tab`, `--selftest`, `open` and the
+/// remembered tab.
+pub fn opens(id: &str) -> bool {
+    id == "settings" || find(id).is_some()
+}
+
 /// One sidebar tile.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Tile {

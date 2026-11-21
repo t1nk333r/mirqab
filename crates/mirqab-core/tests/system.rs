@@ -2,8 +2,11 @@
 //! `.t1` twin, the thermal word at each threshold, throttling, hybrid
 //! cores, a suspended GPU that is never read, battery power, the restart
 //! advice, and a minimal machine where every missing file is `None`. From
-//! the audit: the minute reads no disk sensor, and an awake dGPU is read
-//! at most every 10 s.
+//! the audit: the minute reads no disk sensor, an awake dGPU is read at
+//! most every 10 s, and so are the disk sensors for a live reader. From
+//! the audit of 2026-11-21: page counts are per minute whatever the gap
+//! (none under 10 s), and a stub `nvidia-smi`'s temperature reaches the
+//! thermal word and `temp.gpu`.
 
 use mirqab_core::Root;
 use mirqab_core::proto::stream::{SystemData, Temp};
@@ -64,6 +67,53 @@ fn a_minute_of_counters_gives_the_rates_and_series() {
         assert!(
             mirqab_core::history::SERIES.iter().any(|s| s.0 == *k),
             "{k} is not a known series"
+        );
+    }
+}
+
+#[test]
+fn page_counts_are_per_minute_whatever_the_gap() {
+    // Audit 2026-11-21, L24: the first minute after start covers what is
+    // left of it, and a late tick up to 90 s. The same counters 30 s
+    // apart are twice the per-minute count.
+    let t0 = Instant::now();
+    let mut s = System::new();
+    s.probe(&fixture("root-desktop")).unwrap();
+    s.minute_at(&fixture("root-desktop"), WALL, t0);
+    let m = s.minute_at(
+        &fixture("root-desktop.t1"),
+        WALL + 30,
+        t0 + Duration::from_secs(30),
+    );
+    let get = |k: &str| m.iter().find(|(key, _)| *key == k).map(|(_, v)| *v);
+    assert_eq!(get("page.in"), Some(1200));
+    assert_eq!(get("page.out"), Some(2400));
+    assert_eq!(get("swap.in"), Some(12));
+    assert_eq!(get("swap.out"), Some(24));
+}
+
+#[test]
+fn page_counts_over_a_gap_under_ten_seconds_are_skipped() {
+    // Review of the L24 fix: a probe at :59 leaves the first minute about
+    // 1 s, and an NTP step can shorten an Instant gap; scaling either to
+    // 60 s would multiply a burst up to 60 times. Under 10 s the page and
+    // swap series are skipped; at 10 s they are scaled six times.
+    let get = |m: &[(&str, i64)], k: &str| m.iter().find(|(key, _)| *key == k).map(|(_, v)| *v);
+    for (secs, page_in) in [(1, None), (9, None), (10, Some(3600))] {
+        let t0 = Instant::now();
+        let mut s = System::new();
+        s.probe(&fixture("root-desktop")).unwrap();
+        s.minute_at(&fixture("root-desktop"), WALL, t0);
+        let m = s.minute_at(
+            &fixture("root-desktop.t1"),
+            WALL + 60,
+            t0 + Duration::from_secs(secs),
+        );
+        assert_eq!(get(&m, "page.in"), page_in, "{secs} s");
+        assert_eq!(get(&m, "swap.out").is_some(), page_in.is_some(), "{secs} s");
+        assert!(
+            get(&m, "cpu.total").is_some(),
+            "the other series stay: {secs} s"
         );
     }
 }
@@ -180,6 +230,39 @@ fn nvidia_smi_never_wakes_a_suspended_card() {
     )
     .unwrap();
     assert!(nvidia_wanted(&root));
+}
+
+#[test]
+fn an_nvidia_smi_temperature_reaches_the_thermal_word_and_temp_gpu() {
+    // Audit 2026-11-21, L25: NVIDIA's driver has no hwmon chip, so its
+    // temperature comes only from nvidia-smi; a stub answers 85 °C for
+    // one awake NVIDIA card.
+    use std::os::unix::fs::PermissionsExt;
+    let d = scratch("nv85", "root-minimal");
+    let dev = d.0.join("sys/class/drm/card0/device");
+    std::fs::create_dir_all(dev.join("power")).unwrap();
+    std::fs::write(dev.join("vendor"), "0x10de\n").unwrap();
+    std::fs::write(dev.join("power/runtime_status"), "active\n").unwrap();
+    let stub = d.0.join("nvidia-smi");
+    std::fs::write(&stub, "#!/bin/sh\nprintf '5, 100, 8192, 85, 40.00\\n'\n").unwrap();
+    std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let root = Root::new(&d.0);
+    let mut s = System::with_nvidia_smi(stub.to_string_lossy());
+    s.probe(&root).unwrap();
+    let t0 = Instant::now();
+    let first = data(s.sample(&root, t0));
+    assert_eq!(first.gpus[0].celsius, Some(85.0));
+    let thermal = first.thermal.expect("a thermal word");
+    assert_eq!(thermal.state, "hot", "85 of 95 °C");
+    assert_eq!(thermal.hottest.as_deref(), Some("nvidia.0"));
+    assert!(
+        first.temps.iter().all(|t| !t.id.starts_with("nvidia")),
+        "the streamed list stays hwmon's"
+    );
+    s.minute_at(&root, WALL, t0);
+    let m = s.minute_at(&root, WALL + 60, t0 + Duration::from_secs(60));
+    let get = |k: &str| m.iter().find(|(key, _)| *key == k).map(|(_, v)| *v);
+    assert_eq!(get("temp.gpu"), Some(850));
 }
 
 #[test]
@@ -522,4 +605,85 @@ fn an_awake_dgpu_is_read_at_most_every_ten_seconds() {
     assert!(fourth.gpus[0].suspended);
     assert_eq!(fourth.gpus[0].busy_percent, None);
     assert_eq!(edge(&fourth), None);
+}
+
+#[test]
+fn disk_sensors_are_read_at_most_every_ten_seconds() {
+    // A drivetemp read is an ATA command, and on some drives it restarts
+    // the spin-down timer (kernel Documentation/hwmon/drivetemp.rst,
+    // Known issues): a bar item or the System page at 2 s would read the
+    // disks on every tick. They are read at most once per 10 s, the last
+    // rows repeated between; a value is never shown more than 10 s old.
+    let d = scratch("disk-pace", "root-desktop");
+    let root = Root::new(&d.0);
+    let hwmon = d.0.join("sys/class/hwmon");
+    let set = |dir: &str, milli: u32| {
+        std::fs::write(hwmon.join(dir).join("temp1_input"), format!("{milli}\n")).unwrap();
+    };
+    let disks = |d: &SystemData| -> Vec<(String, f64)> {
+        d.temps
+            .iter()
+            .filter(|t| t.kind == "disk")
+            .map(|t| (t.id.clone(), t.celsius))
+            .collect()
+    };
+    let shown = |pairs: &[(&str, f64)]| -> Vec<(String, f64)> {
+        pairs.iter().map(|(i, c)| (i.to_string(), *c)).collect()
+    };
+    let mut s = System::new();
+    s.probe(&root).unwrap();
+    let t0 = Instant::now();
+    // The minute reads no disk and starts no pace.
+    s.minute_at(&root, WALL, t0);
+    set("hwmon1", 42_000);
+    set("hwmon5", 40_000);
+    // The first tick that wants the disks reads them at once.
+    let first = data(s.sample(&root, t0 + Duration::from_secs(1)));
+    assert_eq!(
+        disks(&first),
+        shown(&[("nvme/temp1", 42.0), ("nvme.1/temp1", 40.0)])
+    );
+    // Between reads the rows are repeated, the CPU sensor still read.
+    set("hwmon1", 50_000);
+    set("hwmon5", 48_000);
+    set("hwmon0", 77_000);
+    // A disk that appears between reads waits for the next one.
+    std::fs::create_dir_all(hwmon.join("hwmon7")).unwrap();
+    std::fs::write(hwmon.join("hwmon7/name"), "drivetemp\n").unwrap();
+    set("hwmon7", 33_000);
+    for secs in [3, 5, 7, 9] {
+        let held = data(s.sample(&root, t0 + Duration::from_secs(secs)));
+        assert_eq!(
+            disks(&held),
+            shown(&[("nvme/temp1", 42.0), ("nvme.1/temp1", 40.0)]),
+            "repeated at {secs} s"
+        );
+        let cpu = held.temps.iter().find(|t| t.id == "k10temp/temp1");
+        assert_eq!(cpu.map(|t| t.celsius), Some(77.0));
+    }
+    // Neither the minute nor a `get` reads them or moves the pace.
+    s.minute_at(&root, WALL + 60, t0 + Duration::from_secs(10));
+    let get = data(s.snapshot(&root, t0 + Duration::from_secs(10)));
+    assert_eq!(
+        disks(&get),
+        shown(&[("nvme/temp1", 42.0), ("nvme.1/temp1", 40.0)])
+    );
+    // 10 s after the last read: read again, the new disk with them.
+    let again = data(s.sample(&root, t0 + Duration::from_secs(11)));
+    assert_eq!(
+        disks(&again),
+        shown(&[
+            ("nvme/temp1", 50.0),
+            ("nvme.1/temp1", 48.0),
+            ("drivetemp/temp1", 33.0)
+        ])
+    );
+    // The readers leave and come back within 10 s of the last read: the
+    // held rows, still under 10 s old.
+    set("hwmon1", 55_000);
+    let back = data(s.sample(&root, t0 + Duration::from_secs(16)));
+    assert_eq!(disks(&back)[0], ("nvme/temp1".to_string(), 50.0));
+    // Later than that: read at once.
+    let later = data(s.sample(&root, t0 + Duration::from_secs(60)));
+    assert_eq!(disks(&later)[0], ("nvme/temp1".to_string(), 55.0));
 }

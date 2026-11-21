@@ -26,13 +26,13 @@ use crate::samplers::apps::actions::{self, Action, Actions};
 use crate::samplers::ports::Ports;
 use crate::samplers::process::Process;
 use crate::samplers::system::System;
-use crate::selfcost::{self, Meter};
+use crate::selfcost::{self, Meter, Reading};
 use crate::sys;
 use serde_json::{Value, json};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::io::{ErrorKind, Read, Write};
 use std::net::Shutdown;
-use std::os::unix::fs::{DirBuilderExt, FileTypeExt, OpenOptionsExt, PermissionsExt};
+use std::os::unix::fs::{DirBuilderExt, FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{SyncSender, TrySendError, sync_channel};
@@ -48,7 +48,9 @@ pub const UI_UNIT: &str = "mirqab-ui.service";
 /// How long `open` waits for a started interface to attach (plan 001 step 30).
 const UI_START: Duration = Duration::from_secs(5);
 /// The least time between two samples a subscription forces at once: a
-/// client re-subscribing in a loop must not beat the floor (review of phase B).
+/// client re-subscribing in a loop must not beat the floor (review of phase
+/// B). The gap is the smallest floor the stream's subscribers hold, 2 s
+/// unless one is live, and never less than this (audit 2026-11-21, L14).
 const MIN_GAP: Duration = Duration::from_secs(1);
 /// The longest request line.
 const MAX_LINE: usize = 1 << 20;
@@ -78,6 +80,8 @@ struct Sub {
     interval_ms: u64,
     /// What the client asked for, so a new floor can be applied later.
     asked_ms: u64,
+    /// The floor `interval_ms` was raised to: FLOOR_MS, or the live floor.
+    floor_ms: u64,
     live: bool,
     /// The subscription's params, for a stream whose sampler shapes each
     /// subscriber's view (`Sampler::view`).
@@ -217,35 +221,70 @@ pub fn log(msg: &str) {
     eprintln!("mirqab: {msg}");
 }
 
+/// The wait between a `get self`'s two readings.
+const SELF_GAP: Duration = Duration::from_millis(500);
+/// The ages a reading may have to serve a `get self` as its baseline, as
+/// for the `apps` stream (plan 006): younger is too short a span to read a
+/// rate over, older says little about now.
+const SELF_MIN_AGE: Duration = Duration::from_millis(250);
+const SELF_MAX_AGE: Duration = Duration::from_secs(10);
+/// Readings queued for pending `get self`s.
+const SELF_PRIMED: usize = 4;
+
 /// The `self` stream (plan 001): the daemon's and the interface's cost.
 struct SelfSampler {
     shared: Arc<Mutex<SelfShared>>,
     started: Instant,
+    /// The subscribers' baselines, moved only by `sample`.
     daemon: Option<Meter>,
     ui: Option<(u32, Meter)>,
+    /// What `prime` took for each pending `get`, oldest first: the daemon's
+    /// meter and the interface's, with its pid (audit 2026-11-21, L30: a
+    /// `get` read the subscribers' meters, moving their baselines, and with
+    /// none its CPU was 0).
+    primed: VecDeque<(Meter, Option<(u32, Meter)>)>,
     /// Read once: the CPU does not change while the daemon runs.
     cpu_model: Option<Option<String>>,
 }
 
-impl Sampler for SelfSampler {
-    fn stream(&self) -> &'static str {
-        stream::SELF
+/// Whether `meter`'s baseline can serve a `get` at `now`.
+fn serves(meter: &Meter, now: Instant) -> bool {
+    meter
+        .age(now)
+        .is_some_and(|a| (SELF_MIN_AGE..=SELF_MAX_AGE).contains(&a))
+}
+
+impl SelfSampler {
+    fn new(shared: Arc<Mutex<SelfShared>>, started: Instant) -> Self {
+        SelfSampler {
+            shared,
+            started,
+            daemon: None,
+            ui: None,
+            primed: VecDeque::new(),
+            cpu_model: None,
+        }
     }
-    fn live(&self) -> bool {
-        true
+
+    fn shared(&self) -> (BTreeMap<String, u32>, Option<u32>) {
+        let s = lock(&self.shared);
+        (s.subscribers.clone(), s.ui_pid)
     }
-    fn probe(&mut self, _root: &Root) -> Result<(), String> {
-        Ok(())
+
+    /// The subscribers' interface meter, when it is for `pid`.
+    fn ui_meter(&self, pid: u32) -> Option<&Meter> {
+        self.ui.as_ref().filter(|(p, _)| *p == pid).map(|(_, m)| m)
     }
-    fn sample(&mut self, root: &Root, now: Instant) -> Value {
-        let (subscribers, ui_pid) = {
-            let s = lock(&self.shared);
-            (s.subscribers.clone(), s.ui_pid)
-        };
-        let daemon = self
-            .daemon
-            .get_or_insert_with(|| Meter::new(root, "proc/self"))
-            .read(root, now)
+
+    fn data(
+        &mut self,
+        root: &Root,
+        now: Instant,
+        subscribers: BTreeMap<String, u32>,
+        daemon: Option<Reading>,
+        ui: Option<(u32, Reading)>,
+    ) -> Value {
+        let daemon = daemon
             .map(|r| ProcessCost {
                 cpu: r.cpu,
                 rss_bytes: r.rss_bytes,
@@ -256,16 +295,10 @@ impl Sampler for SelfSampler {
                 rss_bytes: 0,
                 threads: 0,
             });
-        let ui = ui_pid.and_then(|pid| {
-            if self.ui.as_ref().is_none_or(|(p, _)| *p != pid) {
-                self.ui = Some((pid, Meter::new(root, format!("proc/{pid}"))));
-            }
-            let (_, meter) = self.ui.as_mut()?;
-            meter.read(root, now).map(|r| UiCost {
-                cpu: r.cpu,
-                rss_bytes: r.rss_bytes,
-                pid,
-            })
+        let ui = ui.map(|(pid, r)| UiCost {
+            cpu: r.cpu,
+            rss_bytes: r.rss_bytes,
+            pid,
         });
         let cpu_model = self
             .cpu_model
@@ -292,6 +325,110 @@ impl Sampler for SelfSampler {
     }
 }
 
+impl Sampler for SelfSampler {
+    fn stream(&self) -> &'static str {
+        stream::SELF
+    }
+    fn live(&self) -> bool {
+        true
+    }
+    fn probe(&mut self, _root: &Root) -> Result<(), String> {
+        Ok(())
+    }
+    fn sample(&mut self, root: &Root, now: Instant) -> Value {
+        let (subscribers, ui_pid) = self.shared();
+        let daemon = self
+            .daemon
+            .get_or_insert_with(|| Meter::new(root, "proc/self"))
+            .read(root, now);
+        let ui = ui_pid.and_then(|pid| {
+            if self.ui.as_ref().is_none_or(|(p, _)| *p != pid) {
+                self.ui = Some((pid, Meter::new(root, format!("proc/{pid}"))));
+            }
+            let (_, meter) = self.ui.as_mut()?;
+            meter.read(root, now).map(|r| (pid, r))
+        });
+        self.data(root, now, subscribers, daemon, ui)
+    }
+
+    /// The `get`'s baselines: the subscribers' when they serve now (copied,
+    /// so a tick before `snapshot` cannot take them away), else a first
+    /// reading of each, and the wait before the second.
+    fn prime(&mut self, root: &Root, now: Instant) -> Option<Duration> {
+        let (_, ui_pid) = self.shared();
+        let sub_ui = ui_pid.map(|pid| (pid, self.ui_meter(pid)));
+        let usable = self.daemon.as_ref().is_some_and(|m| serves(m, now))
+            && sub_ui.is_none_or(|(_, m)| m.is_some_and(|m| serves(m, now)));
+        let (entry, wait) = if usable {
+            let daemon = self
+                .daemon
+                .clone()
+                .unwrap_or_else(|| Meter::new(root, "proc/self"));
+            let ui = sub_ui.and_then(|(pid, m)| m.cloned().map(|m| (pid, m)));
+            ((daemon, ui), None)
+        } else {
+            let mut daemon = Meter::new(root, "proc/self");
+            daemon.read(root, now);
+            let ui = ui_pid.map(|pid| {
+                let mut m = Meter::new(root, format!("proc/{pid}"));
+                m.read(root, now);
+                (pid, m)
+            });
+            ((daemon, ui), Some(SELF_GAP))
+        };
+        self.primed.push_back(entry);
+        while self.primed.len() > SELF_PRIMED {
+            self.primed.pop_front();
+        }
+        wait
+    }
+
+    /// Against the oldest queued baseline that serves, else the
+    /// subscribers' when theirs does, read without moving either; else a
+    /// first reading, whose CPU is 0.
+    fn snapshot(&mut self, root: &Root, now: Instant) -> Value {
+        let (subscribers, ui_pid) = self.shared();
+        // Older ones are left over from gets answered otherwise; a younger
+        // one belongs to a later get.
+        while self
+            .primed
+            .front()
+            .is_some_and(|(m, _)| m.age(now).is_some_and(|a| a > SELF_MAX_AGE))
+        {
+            self.primed.pop_front();
+        }
+        let primed = match self.primed.front() {
+            Some((m, _)) if serves(m, now) => self.primed.pop_front(),
+            _ => None,
+        };
+        let pick = |own: Option<&Meter>, sub: Option<&Meter>| {
+            own.filter(|m| serves(m, now))
+                .or(sub.filter(|m| serves(m, now)))
+                .cloned()
+        };
+        let daemon = pick(primed.as_ref().map(|(m, _)| m), self.daemon.as_ref())
+            .unwrap_or_else(|| Meter::new(root, "proc/self"))
+            .peek(root, now);
+        let ui = ui_pid.and_then(|pid| {
+            let own = primed
+                .as_ref()
+                .and_then(|(_, u)| u.as_ref())
+                .filter(|(p, _)| *p == pid)
+                .map(|(_, m)| m);
+            pick(own, self.ui_meter(pid))
+                .unwrap_or_else(|| Meter::new(root, format!("proc/{pid}")))
+                .peek(root, now)
+                .map(|r| (pid, r))
+        });
+        self.data(root, now, subscribers, daemon, ui)
+    }
+}
+
+/// The socket's directory, made 0700 (architecture §5.1). One that exists
+/// is used only when it is a directory of this user's, not a symlink, that
+/// no one else may enter: anyone who can write in it can replace the
+/// socket. It is refused, never chmodded: `--socket` may name a directory
+/// of the user's (audit 2026-11-21, L36).
 fn mkdir_private(dir: &Path) -> Result<(), String> {
     // Only the leaf mirqab owns is private; parents it has to make (a
     // fresh `~/.local/state`) get the default mode (review of PR #6).
@@ -300,7 +437,16 @@ fn mkdir_private(dir: &Path) -> Result<(), String> {
     }
     match std::fs::DirBuilder::new().mode(0o700).create(dir) {
         Ok(()) => Ok(()),
-        Err(e) if e.kind() == ErrorKind::AlreadyExists => Ok(()),
+        Err(e) if e.kind() == ErrorKind::AlreadyExists => {
+            let private = std::fs::symlink_metadata(dir).is_ok_and(|m| {
+                m.is_dir() && m.uid() == sys::uid() && m.permissions().mode() & 0o077 == 0
+            });
+            if private {
+                Ok(())
+            } else {
+                Err(strings::socket_dir_not_private(&dir.display().to_string()))
+            }
+        }
         Err(e) => Err(format!("mkdir {}: {e}", dir.display())),
     }
 }
@@ -311,6 +457,13 @@ pub fn default_socket() -> Option<PathBuf> {
     if let Some(s) = std::env::var_os("MIRQAB_SOCKET").filter(|s| !s.is_empty()) {
         return Some(PathBuf::from(s));
     }
+    unit_socket()
+}
+
+/// The socket `mirqab-ui.service` dials: the runtime-dir default, without
+/// `$MIRQAB_SOCKET`, which the user manager's environment does not carry
+/// unless someone imported it.
+fn unit_socket() -> Option<PathBuf> {
     let run = std::env::var_os("XDG_RUNTIME_DIR").filter(|s| !s.is_empty())?;
     Some(PathBuf::from(run).join("mirqab/daemon.sock"))
 }
@@ -375,20 +528,15 @@ pub fn listen(opts: Options) -> Result<Server, ListenError> {
             })?)
         }
     };
-    let (listener, activated) = match sys::listen_fd() {
+    let (listener, activated) = match sys::listen_fd().map_err(ListenError::Failed)? {
         Some(l) => (l, true),
         None => (bind(&opts.socket)?, false),
     };
 
     let started = Instant::now();
     let shared = Arc::new(Mutex::new(SelfShared::default()));
-    let mut samplers: Vec<Box<dyn Sampler>> = vec![Box::new(SelfSampler {
-        shared: Arc::clone(&shared),
-        started,
-        daemon: None,
-        ui: None,
-        cpu_model: None,
-    })];
+    let mut samplers: Vec<Box<dyn Sampler>> =
+        vec![Box::new(SelfSampler::new(Arc::clone(&shared), started))];
     samplers.push(Box::new(System::new()));
     samplers.push(Box::new(Apps::new()));
     // Its own slot and so its own lock: a 1 s reading never waits behind
@@ -542,20 +690,23 @@ fn unix_now() -> i64 {
 fn history_loop(inner: Arc<Inner>) {
     let mut last_prune = 0;
     let period = inner.minute.as_millis().max(1);
-    loop {
-        let now = SystemTime::now()
+    let wall_ms = || {
+        SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .unwrap_or_default();
-        let into_minute = Duration::from_millis((now.as_millis() % period) as u64);
+            .unwrap_or_default()
+            .as_millis()
+    };
+    loop {
+        let into_minute = Duration::from_millis((wall_ms() % period) as u64);
         std::thread::sleep(inner.minute.saturating_sub(into_minute));
-        let ts = unix_now();
+        // Woken far from the boundary (a suspend, a clock step): sleep to
+        // it, and ask no sampler for its minute yet.
+        let Some(ts) = wake_ts(wall_ms(), period) else {
+            continue;
+        };
         // The config as it is now: `trends.topApps` decides whether the
         // `apps` sampler walks for its row at all (plan 006, part 4).
-        let config = {
-            let mut c = lock(&inner.config);
-            c.refresh();
-            c.effective().clone()
-        };
+        let config = inner.with_config(|c| c.effective().clone());
         let mut values = Vec::new();
         let mut events = Vec::new();
         for slot in inner.slots.values() {
@@ -587,7 +738,7 @@ fn history_loop(inner: Arc<Inner>) {
                     failed(format!("history: the {kind} event was not written"), e);
                 }
             }
-            if ts - last_prune >= 3600 {
+            if prune_due(last_prune, ts) {
                 if let Err(e) = h.prune(ts) {
                     failed("history prune failed".into(), e);
                 }
@@ -610,6 +761,28 @@ fn history_loop(inner: Arc<Inner>) {
             recover_history(&mut h, ts);
         }
     }
+}
+
+/// How far past a boundary a wake may land and still be that minute's: 5 s,
+/// or half the period when it is shorter (a test's).
+const WAKE_SLACK_MS: u128 = 5000;
+
+/// The unix second the minute writer woke at, when it woke at most
+/// WAKE_SLACK_MS past a boundary of `period_ms`; None for a wake after a
+/// suspend or a clock step, or one a little early. Its values are labelled
+/// 30 s back, with the minute that just ended: a wake mid-minute would
+/// label the minute running (written over at the next wake) or write over
+/// the last one with part of a minute (audit 2026-11-21, L50).
+fn wake_ts(now_ms: u128, period_ms: u128) -> Option<i64> {
+    let slack = WAKE_SLACK_MS.min(period_ms / 2);
+    (now_ms % period_ms.max(1) <= slack).then_some((now_ms / 1000) as i64)
+}
+
+/// Whether the hourly prune is due: an hour since the last, or the clock
+/// went back past it, which would otherwise postpone it by the step (audit
+/// 2026-11-21, L12).
+fn prune_due(last: i64, ts: i64) -> bool {
+    ts < last || ts - last >= 3600
 }
 
 /// Replaces a history file SQLite found corrupt while open, from the minute
@@ -638,11 +811,13 @@ fn recover_history(h: &mut History, ts: i64) {
 fn sampler_loop(inner: Arc<Inner>, name: String, slot: Arc<Slot>) {
     let mut state = lock(&inner.state);
     loop {
-        let interval = state
-            .clients
-            .values()
-            .filter_map(|c| c.subs.get(&name).map(|s| s.interval_ms))
-            .min();
+        let subs = || state.clients.values().filter_map(|c| c.subs.get(&name));
+        let interval = subs().map(|s| s.interval_ms).min();
+        let gap = subs()
+            .map(|s| Duration::from_millis(s.floor_ms))
+            .min()
+            .unwrap_or(MIN_GAP)
+            .max(MIN_GAP);
         let run = state.runs.entry(name.clone()).or_default();
         let Some(ms) = interval else {
             run.now = false;
@@ -664,8 +839,8 @@ fn sampler_loop(inner: Arc<Inner>, name: String, slot: Arc<Slot>) {
             None => now,
             Some(last) if !run.now => last + Duration::from_millis(ms),
             // At once for a new or changed subscription, but never twice
-            // within MIN_GAP.
-            Some(last) => (last + MIN_GAP).max(now),
+            // within the floor.
+            Some(last) => (last + gap).max(now),
         };
         if due > now {
             state = slot
@@ -853,9 +1028,16 @@ impl Inner {
         read_lines(&conn, |line| {
             match serde_json::from_slice::<Request>(line) {
                 Ok(req) => self.dispatch(id, req),
+                // A line that is an object with a whole-number id is
+                // answered with that id, so its caller does not wait for a
+                // timeout (audit 2026-11-21, L16); anything else gets 0.
                 Err(e) => self.reply(
                     id,
-                    Reply::err(0, Code::BadRequest, strings::bad_json(&e.to_string())),
+                    Reply::err(
+                        bad_request_id(line),
+                        Code::BadRequest,
+                        strings::bad_json(&e.to_string()),
+                    ),
                 ),
             }
         });
@@ -968,7 +1150,12 @@ impl Inner {
         };
         if name == stream::UI {
             let as_ui = req.param("role").and_then(Value::as_str) == Some("ui");
-            let pid = req.param("pid").and_then(Value::as_u64).map(|p| p as u32);
+            // The pid the interface names for itself, not the peer's
+            // SO_PEERCRED pid: that is 0 for a peer in another pid
+            // namespace, and `status.ui.pid` is the interface's word. One
+            // that is not a positive pid_t is not taken, never cut down to
+            // fit (audit 2026-11-21, L37).
+            let pid = req.param("pid").and_then(Value::as_u64).and_then(ui_pid);
             let reply = frame::encode(&ServerFrame::Reply(Reply::ok(
                 req.id,
                 json!({"stream": name}),
@@ -985,6 +1172,7 @@ impl Inner {
                     Sub {
                         interval_ms: 0,
                         asked_ms: 0,
+                        floor_ms: 0,
                         live: false,
                         params: Value::Null,
                     },
@@ -1016,9 +1204,7 @@ impl Inner {
             .and_then(Value::as_u64)
             .unwrap_or(slot.default_ms);
         let floor = if live && slot.live {
-            let mut c = lock(&self.config);
-            c.refresh();
-            c.live_interval_ms()
+            self.with_config(Config::live_interval_ms)
         } else {
             FLOOR_MS
         };
@@ -1050,6 +1236,7 @@ impl Inner {
                     Sub {
                         interval_ms,
                         asked_ms: asked,
+                        floor_ms: floor,
                         live: live && slot.live,
                         params,
                     },
@@ -1136,7 +1323,22 @@ impl Inner {
             let mut sampler = lock(&slot.sampler);
             // A tick in the gap handed the sampler its subscribers' params.
             sampler.wants(std::slice::from_ref(&params));
-            sampler.snapshot(&self.root, Instant::now())
+            let data = sampler.snapshot(&self.root, Instant::now());
+            // With nobody subscribed, what the get made the sampler keep
+            // (a procfs cache with command lines, an owner map) is dropped
+            // now, not when a later subscriber leaves (audit 2026-11-21,
+            // L20). After the snapshot, so the get's own reading is used
+            // first. The state lock is taken under the sampler's: no path
+            // takes them the other way round, and a subscriber that joins
+            // after this check samples only once the lock is released.
+            let watched = lock(&self.state)
+                .clients
+                .values()
+                .any(|c| c.subs.contains_key(name));
+            if !watched {
+                sampler.idle();
+            }
+            data
         };
         match slot.view {
             Some(view) => Reply::ok(req.id, view(&data, &params)),
@@ -1182,8 +1384,8 @@ impl Inner {
         }
         let mut meter = Meter::new(&self.root, "proc/self");
         let cost = meter.read(&self.root, Instant::now());
-        let mut config = lock(&self.config);
-        config.refresh();
+        let (broken, problems) =
+            self.with_config(|c| (c.broken().map(str::to_string), c.problems().to_vec()));
         let mut out = json!({
             "version": crate::proto::VERSION,
             "protocol": PROTOCOL,
@@ -1199,8 +1401,8 @@ impl Inner {
                 "threads": cost.map(|c| c.threads).unwrap_or(0),
             },
             "config": {
-                "broken": config.broken(),
-                "problems": config.problems(),
+                "broken": broken,
+                "problems": problems,
             },
             "history": self.history_status(),
         });
@@ -1211,9 +1413,7 @@ impl Inner {
     }
 
     fn config_get(&self, req: &Request) -> Reply {
-        let mut config = lock(&self.config);
-        config.refresh();
-        match req.param("keys").and_then(Value::as_array) {
+        self.with_config(|config| match req.param("keys").and_then(Value::as_array) {
             None => Reply::ok(req.id, config.effective().clone()),
             Some(keys) => {
                 let mut out = serde_json::Map::new();
@@ -1222,7 +1422,25 @@ impl Inner {
                 }
                 Reply::ok(req.id, Value::Object(out))
             }
+        })
+    }
+
+    /// `f` over the config as it is on disk now. A hand edit found by the
+    /// re-read is then applied and announced as a `config.set` is: open
+    /// live subscriptions take the new floor and the interface hears
+    /// `config-changed` (audit 2026-11-21, L10). Both run after the config
+    /// lock is released; the caller must hold no lock of the state.
+    fn with_config<R>(&self, f: impl FnOnce(&Config) -> R) -> R {
+        let (out, changed) = {
+            let mut c = lock(&self.config);
+            let changed = c.refresh();
+            (f(&c), changed)
+        };
+        if changed {
+            self.refloor_live();
+            self.ui_event(&UiEvent::ConfigChanged);
         }
+        out
     }
 
     fn config_set(&self, req: &Request) -> Reply {
@@ -1234,16 +1452,27 @@ impl Inner {
             Ok(d) => d,
             Err(r) => return r,
         };
-        let result = lock(&self.config).set(key, value, dry_run);
+        // `set` re-reads the file, dry run or not, so it may take in a hand
+        // edit. That edit is applied and announced as one found by a read
+        // (`with_config`): compare the effective config around the set
+        // (review of audit 2026-11-21, L10).
+        let (result, changed, refloor) = {
+            let mut c = lock(&self.config);
+            let before = c.effective().clone();
+            let floor = c.live_interval_ms();
+            let result = c.set(key, value, dry_run);
+            let changed = *c.effective() != before;
+            (result, changed, c.live_interval_ms() != floor)
+        };
+        if refloor {
+            self.refloor_live();
+        }
+        if changed || (result.is_ok() && !dry_run) {
+            self.ui_event(&UiEvent::ConfigChanged);
+        }
         match result {
             Ok(entry) if dry_run => Reply::ok(req.id, json!({"wouldDo": [entry]})),
-            Ok(entry) => {
-                if key == "live.intervalMs" {
-                    self.refloor_live();
-                }
-                self.ui_event(&UiEvent::ConfigChanged);
-                Reply::ok(req.id, json!({"done": [entry]}))
-            }
+            Ok(entry) => Reply::ok(req.id, json!({"done": [entry]})),
             Err(SetError::Invalid(why)) => Reply::err(req.id, Code::BadRequest, why),
             Err(SetError::Broken(why)) => {
                 Reply::err(req.id, Code::Refused, strings::config_broken(&why))
@@ -1253,18 +1482,16 @@ impl Inner {
     }
 
     /// Applies a changed `live.intervalMs` to the live subscriptions already
-    /// open, which got the old floor (review of phase B).
+    /// open, which got the old floor (review of phase B). The config was
+    /// just set or re-read: it is not read again here.
     fn refloor_live(&self) {
-        let floor = {
-            let mut c = lock(&self.config);
-            c.refresh();
-            c.live_interval_ms()
-        };
+        let floor = lock(&self.config).live_interval_ms();
         let mut woken = Vec::new();
         {
             let mut state = lock(&self.state);
             for c in state.clients.values_mut() {
                 for (name, sub) in c.subs.iter_mut().filter(|(_, s)| s.live) {
+                    sub.floor_ms = floor;
                     sub.interval_ms = sub.asked_ms.max(floor);
                     woken.push(name.clone());
                 }
@@ -1473,6 +1700,17 @@ impl Inner {
             }
             return Ok(());
         }
+        // The shared unit runs `mirqab-ui` with no `--socket` in the user
+        // manager's environment, so it dials the runtime-dir socket: for a
+        // daemon on another one it would wait out the start and fail, or
+        // attach to another daemon (audit 2026-11-21). Name the command
+        // that reaches this one instead.
+        if unit_socket().as_deref() != Some(self.socket.as_path()) {
+            return Err((
+                Code::Failed,
+                strings::interface_other_socket(&self.socket.display().to_string()),
+            ));
+        }
         let timeout = ui_start_timeout();
         let (id, deadline, starter) = match &mut state.starting_ui {
             Some(s) => {
@@ -1573,6 +1811,20 @@ fn caller_for(root: &Root, peer: Option<u32>, test: Option<u32>) -> Option<u32> 
 /// A handler already queued its reply.
 struct Replied;
 
+/// A pid an interface gave, when it is one: 1 to `i32::MAX` (pid_t).
+fn ui_pid(p: u64) -> Option<u32> {
+    i32::try_from(p).ok().filter(|p| *p > 0).map(|p| p as u32)
+}
+
+/// The id of a line that is not a valid request: its `id` when the line is
+/// a JSON object whose `id` is a whole number, else 0.
+fn bad_request_id(line: &[u8]) -> u64 {
+    serde_json::from_slice::<Value>(line)
+        .ok()
+        .and_then(|v| v.get("id").and_then(Value::as_u64))
+        .unwrap_or(0)
+}
+
 /// The params a view reads: the request's, without the ones the server
 /// itself takes, so two subscribers that differ only in interval share one
 /// shaped line.
@@ -1658,5 +1910,85 @@ mod tests {
             Some(3060)
         );
         assert_eq!(caller_for(&Root::new("/tmp/x"), Some(7), None), Some(7));
+    }
+
+    #[test]
+    fn pruning_is_due_hourly_and_after_the_clock_went_back() {
+        // Audit 2026-11-21, L12: a step back postponed it by the step.
+        assert!(prune_due(0, 1_000_000));
+        assert!(!prune_due(1_000_000, 1_000_000 + 3599));
+        assert!(prune_due(1_000_000, 1_000_000 + 3600));
+        assert!(prune_due(1_000_000, 1_000_000 - 1));
+    }
+
+    #[test]
+    fn a_wake_far_past_the_boundary_is_not_a_minute() {
+        // Audit 2026-11-21, L50: after a suspend or a clock step the sleep
+        // ends mid-minute, and a row labelled then is written over (or
+        // writes over the last one) with part of a minute.
+        let minute = 60_000;
+        let at = |s: u128| s * 1000;
+        assert_eq!(wake_ts(at(1_200) + 3, minute), Some(1_200));
+        assert_eq!(wake_ts(at(1_205), minute), Some(1_205));
+        assert_eq!(wake_ts(at(1_206), minute), None);
+        assert_eq!(wake_ts(at(1_230), minute), None);
+        assert_eq!(wake_ts(at(1_259) + 990, minute), None, "early: sleep on");
+        // A test's one-second period allows half of it.
+        assert_eq!(wake_ts(at(1_200) + 400, 1000), Some(1_200));
+        assert_eq!(wake_ts(at(1_200) + 600, 1000), None);
+    }
+
+    /// A scratch root whose `proc/self` has used `ticks` of CPU.
+    fn self_root(name: &str) -> (PathBuf, Root) {
+        let d = std::env::temp_dir().join(format!("mirqab-self-{name}-{}", std::process::id()));
+        let _ = crate::act::remove_path(&d, false);
+        std::fs::create_dir_all(d.join("proc/self")).unwrap();
+        std::fs::write(d.join("proc/self/status"), "VmRSS:\t100 kB\nThreads:\t2\n").unwrap();
+        set_ticks(&d, 100);
+        let root = Root::new(&d);
+        (d, root)
+    }
+
+    fn set_ticks(d: &Path, ticks: u64) {
+        std::fs::write(
+            d.join("proc/self/stat"),
+            format!("1 (m) S 1 1 1 0 -1 0 0 0 0 0 {ticks} 0 0 0 20 0 2 0 1 0 0 0\n"),
+        )
+        .unwrap();
+    }
+
+    fn cpu(v: &Value) -> f64 {
+        v["daemon"]["cpu"].as_f64().unwrap()
+    }
+
+    #[test]
+    fn a_first_get_of_self_reads_cpu_over_its_own_gap() {
+        // Audit 2026-11-21, L30: with no subscriber the get's CPU was 0.
+        let (d, root) = self_root("first");
+        let mut s = SelfSampler::new(Arc::default(), Instant::now());
+        let t0 = Instant::now();
+        assert_eq!(s.prime(&root, t0), Some(SELF_GAP));
+        // 50 ticks at 100 Hz over half a second: 100 %.
+        set_ticks(&d, 150);
+        assert_eq!(cpu(&s.snapshot(&root, t0 + SELF_GAP)), 100.0);
+        assert!(s.daemon.is_none(), "no subscriber baseline was made");
+        let _ = crate::act::remove_path(&d, false);
+    }
+
+    #[test]
+    fn a_get_of_self_reads_the_subscribers_baseline_and_leaves_it() {
+        let (d, root) = self_root("sub");
+        let mut s = SelfSampler::new(Arc::default(), Instant::now());
+        let t0 = Instant::now();
+        assert_eq!(cpu(&s.sample(&root, t0)), 0.0);
+        set_ticks(&d, 200);
+        let t1 = t0 + Duration::from_secs(1);
+        // The subscriber's baseline serves: no wait, and the get reads
+        // against it, 100 ticks in 1 s.
+        assert_eq!(s.prime(&root, t1), None);
+        assert_eq!(cpu(&s.snapshot(&root, t1)), 100.0);
+        // The next tick still reads from t0: 100 ticks in 2 s.
+        assert_eq!(cpu(&s.sample(&root, t0 + Duration::from_secs(2))), 50.0);
+        let _ = crate::act::remove_path(&d, false);
     }
 }
