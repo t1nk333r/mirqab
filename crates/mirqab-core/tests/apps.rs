@@ -10,7 +10,8 @@
 //! Part 4: the "idle but heavy" tag with a fake focus source, the
 //! `top-apps` minute row, `apps.inspect` with a start time (S5), GPU
 //! memory read only from DRM fds and capped (D2), `.flatpak-info` read
-//! only as a regular file (D7), and `get`'s first reading taken in
+//! only as a regular file (D7) and never through a FUSE root (audit
+//! 2026-11-21, L7), and `get`'s first reading taken in
 //! `prime` (D1). From the audit: code on an interpreter's command line
 //! never names a terminal job; a `process` get's primed reading serves
 //! that get only, and a get whose baseline a tick replaced does not wait
@@ -1365,6 +1366,73 @@ fn a_fifo_for_flatpak_info_does_not_stall_the_walk() {
     let d = data(a.sample(&root, Instant::now()));
     let g = d.groups.iter().find(|g| g.pids.contains(&9401)).unwrap();
     assert_ne!(g.kind, "flatpak");
+}
+
+#[test]
+fn flatpak_info_is_not_opened_through_a_fuse_root() {
+    // Audit 2026-11-21, L7: O_NONBLOCK does not stop an open on a FUSE
+    // mount from waiting on its server, so a process whose root (or whose
+    // `/.flatpak-info`) is on a hung FUSE mount would stall the walk under
+    // the sampler lock. Its mountinfo says so before anything is opened.
+    let s = bare_root("fuse");
+    let info = "[Application]\nname=org.example.Notes\n";
+    let ext4 = "21 1 254:1 / / rw,relatime shared:1 - ext4 none rw\n";
+    let rows = [
+        (
+            9500,
+            "21 1 0:40 / / rw,nosuid shared:1 - fuse.sshfs example:/ rw\n".to_string(),
+        ),
+        (
+            9501,
+            format!(
+                "{ext4}30 21 0:41 / /.flatpak-info ro,nosuid shared:2 - fuse.portal portal ro\n"
+            ),
+        ),
+        // Any FUSE mount at `/` counts, under another one or not:
+        // mountinfo does not say which of them is the process's root.
+        (
+            9502,
+            format!("20 1 0:40 / / rw shared:1 - fuse.sshfs example:/ rw\n{ext4}"),
+        ),
+        (9503, ext4.to_string()),
+        (
+            9504,
+            "21 1 0:42 / /home rw - fuse.sshfs example:/ rw\n".to_string(),
+        ),
+    ];
+    for (pid, mounts) in &rows {
+        let p = own_proc(&s.0, *pid, "notes");
+        std::fs::create_dir_all(p.join("root")).unwrap();
+        std::fs::write(p.join("root/.flatpak-info"), info).unwrap();
+        std::fs::write(p.join("mountinfo"), mounts).unwrap();
+    }
+    // No mountinfo at all (a fixture without one) still reads the file.
+    let p = own_proc(&s.0, 9505, "notes");
+    std::fs::create_dir_all(p.join("root")).unwrap();
+    std::fs::write(p.join("root/.flatpak-info"), info).unwrap();
+
+    let root = Root::new(&s.0);
+    let mut a = Apps::with_pacman(s.0.join("pacman").to_string_lossy());
+    a.probe(&root).unwrap();
+    let d = data(a.sample(&root, Instant::now()));
+    let kind = |pid: u32| {
+        d.groups
+            .iter()
+            .find(|g| g.pids.contains(&pid))
+            .unwrap()
+            .kind
+            .clone()
+    };
+    for pid in [9500, 9501, 9502] {
+        assert_ne!(kind(pid), "flatpak", "{pid}");
+        let v = inspect(&mut a, &root, pid);
+        assert!(v.get("flatpak").is_none(), "{pid}: {v}");
+    }
+    for pid in [9503, 9504, 9505] {
+        assert_eq!(kind(pid), "flatpak", "{pid}");
+        let v = inspect(&mut a, &root, pid);
+        assert_eq!(v["flatpak"], "org.example.Notes", "{pid}: {v}");
+    }
 }
 
 fn cargo_cpu(v: Value) -> f64 {

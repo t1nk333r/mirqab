@@ -155,12 +155,36 @@ const FLATPAK_INFO_MAX: usize = 4096;
 /// The Flatpak app id of the process at `dir` (`proc/<pid>`), from its
 /// root's `.flatpak-info`, read only when that is a regular file (plan
 /// 006, part 4, decision 14; D7 of PR #16): the process controls its own
-/// root, and a FIFO there would stall the walk.
+/// root, and a FIFO there would stall the walk. Nor is it opened when the
+/// process's mountinfo puts a FUSE filesystem on that path (audit
+/// 2026-11-21, L7): O_NONBLOCK does not stop an open on FUSE from waiting
+/// on its server, and a hung server would hold the walk under the sampler
+/// lock. Reading mountinfo asks the kernel only. A missing mountinfo (a
+/// fixture without one) is no objection.
 pub fn read_flatpak_info(root: &Root, dir: &str) -> Option<String> {
+    if read_text(root, &format!("{dir}/mountinfo")).is_some_and(|t| fuse_on_flatpak_info(&t)) {
+        return None;
+    }
     let bytes = root
         .read_regular_prefix(&format!("{dir}/root/.flatpak-info"), FLATPAK_INFO_MAX)
         .ok()?;
     flatpak_info(&String::from_utf8_lossy(&bytes))
+}
+
+/// Whether a process's `mountinfo` has a FUSE filesystem (`fuse`,
+/// `fuseblk`, `fuse.<subtype>`) mounted at `/` or at `/.flatpak-info`,
+/// the two mounts an open of its root's `.flatpak-info` can reach. Any
+/// mount at `/` counts, since mountinfo does not say which of several is
+/// the process's root. The mount point is field 5; the type follows the
+/// ` - ` separator. Spaces inside fields are escaped as `\040`, so neither
+/// split can be fooled by a name.
+pub fn fuse_on_flatpak_info(mountinfo: &str) -> bool {
+    mountinfo.lines().any(|l| {
+        let point = l.split(' ').nth(4);
+        let fstype = l.split(" - ").nth(1).and_then(|r| r.split(' ').next());
+        matches!(point, Some("/" | "/.flatpak-info"))
+            && fstype.is_some_and(|t| t.starts_with("fuse"))
+    })
 }
 
 /// One account of `etc/passwd`.
