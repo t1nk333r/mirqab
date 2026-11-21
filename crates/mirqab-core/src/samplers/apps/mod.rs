@@ -73,23 +73,6 @@ pub const MAX_PRIMED: usize = 16;
 /// one tick is 4 % of a core over 250 ms.
 pub const PRIMED_MIN: Duration = Duration::from_millis(250);
 
-/// The oldest of `queue` whose age at `now` is 250 ms to 10 s, popping it
-/// and every older or younger one before it (review of PR #20, S1: one
-/// slot let a second `get` read rates over a millisecond).
-pub fn take_primed<T>(
-    queue: &mut VecDeque<T>,
-    now: Instant,
-    at: impl Fn(&T) -> Instant,
-) -> Option<T> {
-    while let Some(b) = queue.pop_front() {
-        let age = now.saturating_duration_since(at(&b));
-        if (PRIMED_MIN..=LIVE_STALE).contains(&age) {
-            return Some(b);
-        }
-    }
-    None
-}
-
 /// One process's counters: CPU ticks, and storage bytes read and written
 /// when the daemon may read them.
 type Counters = (u64, Option<(u64, u64)>);
@@ -127,7 +110,8 @@ pub struct Apps {
     cores: Option<u32>,
     live: Option<Tick>,
     /// The first readings `prime` took, one per pending `get`, oldest
-    /// first (review of PR #20, S1).
+    /// first (review of PR #20, S1): each `prime` queues one and each
+    /// `snapshot` takes one (plan 023's follow-up).
     get_base: VecDeque<Tick>,
     focus: Box<dyn Focus>,
     /// When the focus source may be asked to start again while none runs:
@@ -211,6 +195,23 @@ impl Apps {
     /// Primed readings waiting for their `snapshot` (tests).
     pub fn primed(&self) -> usize {
         self.get_base.len()
+    }
+
+    /// Takes a `get`'s primed reading: the oldest queued that is 250 ms to
+    /// 10 s old at `now` (review of PR #20, S1: one slot let a second
+    /// `get` read rates over a millisecond). Older ones are dropped;
+    /// younger ones belong to gets still in their gap and stay queued for
+    /// them (plan 023's follow-up: a get with none of its own popped the
+    /// next get's, dropped it, and both slept under the lock). Every
+    /// reading is a whole walk, so one get's serves another as well.
+    fn take_mine(&mut self, now: Instant) -> Option<Tick> {
+        self.get_base
+            .retain(|t| now.saturating_duration_since(t.at) <= LIVE_STALE);
+        let at = self
+            .get_base
+            .iter()
+            .position(|t| now.saturating_duration_since(t.at) >= PRIMED_MIN)?;
+        self.get_base.remove(at)
     }
 
     /// Groups with a CPU window kept (tests).
@@ -606,41 +607,59 @@ impl Sampler for Apps {
 
     /// The last subscriber left: the focus source stops (no thread, no
     /// socket while the window is closed), and the windows and the last
-    /// frame go, so a page opened later counts afresh.
+    /// frame go, so a page opened later counts afresh. The primed readings
+    /// are the pending gets', not the subscribers': they stay, or a get in
+    /// its gap would find none and sleep under the lock (plan 023's
+    /// follow-up). Its `snapshot` takes each, and drops any past 10 s.
     fn idle(&mut self) {
         self.focus.stop();
         self.focus_retry = None;
         self.windows.clear();
         self.last = None;
-        self.get_base.clear();
     }
 
-    /// `get` with no young subscriber baseline: the first reading, here
-    /// under the lock, and half a second without it before `snapshot`.
+    /// `get`: the first reading, here under the lock, and half a second
+    /// without it before `snapshot`. A young subscriber baseline needs no
+    /// wait, and is queued as this get's reading: a tick between the get's
+    /// two locked steps replaces it, and `snapshot` must not then wait
+    /// holding the lock (plan 023's follow-up, as `process` in PR #26).
+    /// Only one young enough to still serve half a second later is; an
+    /// older one gets a fresh reading and the wait.
     fn prime(&mut self, root: &Root, now: Instant) -> Option<Duration> {
-        if self.young(now) {
-            return None;
-        }
-        let first = self.walk(root);
-        self.get_base.push_back(Tick::of(&first, Instant::now()));
+        let serves = self
+            .live
+            .as_ref()
+            .filter(|t| {
+                self.young(now) && now.saturating_duration_since(t.at) <= LIVE_STALE - SNAPSHOT_GAP
+            })
+            .cloned();
+        let (base, gap) = match serves {
+            Some(t) => (t, None),
+            None => {
+                let first = self.walk(root);
+                (Tick::of(&first, Instant::now()), Some(SNAPSHOT_GAP))
+            }
+        };
+        self.get_base.push_back(base);
         while self.get_base.len() > MAX_PRIMED {
             self.get_base.pop_front();
         }
-        Some(SNAPSHOT_GAP)
+        gap
     }
 
     /// `get`: against a subscriber's baseline when it is 1–10 s old,
     /// without moving it; otherwise against the oldest reading `prime`
-    /// queued, when it is 250 ms to 10 s old (each serves one `get`;
-    /// younger or older ones are dropped); otherwise against a second
-    /// reading of its own, half a second later.
+    /// queued that is 250 ms to 10 s old (`take_mine`); otherwise against
+    /// a second reading of its own, half a second later. A reading is
+    /// taken whichever answers, so none is left over.
     fn snapshot(&mut self, root: &Root, now: Instant) -> Value {
+        let mine = self.take_mine(now);
         if self.young(now) {
             let procs = self.walk(root);
             let live = self.live.clone();
             return self.data(&procs, live.as_ref(), now);
         }
-        if let Some(base) = take_primed(&mut self.get_base, now, |b| b.at) {
+        if let Some(base) = mine {
             let procs = self.walk(root);
             return self.data(&procs, Some(&base), Instant::now());
         }

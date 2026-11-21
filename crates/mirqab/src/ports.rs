@@ -129,10 +129,6 @@ pub(crate) fn port_lines(rows: &[&PortRow]) -> Vec<String> {
 }
 
 pub fn run(command: &str, args: Args) -> ExitCode {
-    let socket = match socket_or_exit(&args) {
-        Ok(s) => s,
-        Err(code) => return code,
-    };
     let (mut json_out, mut udp, mut port, mut proto) = (false, false, None, "tcp");
     let mut it = args.rest.iter();
     while let Some(a) = it.next() {
@@ -160,6 +156,12 @@ pub fn run(command: &str, args: Args) -> ExitCode {
         }
         udp = proto == "udp";
     }
+    // The arguments first: a usage error is 64 even with no socket to
+    // name (audit 2026-11-21).
+    let socket = match socket_or_exit(&args) {
+        Ok(s) => s,
+        Err(code) => return code,
+    };
     let req = Request::new(1, "get")
         .with_stream(PORTS)
         .with_params(json!({ "udp": udp }));

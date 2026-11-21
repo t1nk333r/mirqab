@@ -151,7 +151,7 @@ file up beside itself first. Default is print only.
 | `crates/mirqab/tests/mcp.rs` | `initialize` handshake; `tools/list` matches the table for the plans merged so far; unknown tool; malformed JSON gives a JSON-RPC error and the server stays up; daemon absent gives tool errors, not a crash |
 | same | Confirm flow against a fixture root and a recording `act`: first call acts on nothing; second call with the plan id acts on exactly the listed targets; an expired or foreign plan id is refused; the caller's ancestry is never in the list |
 | `tests/test-cli.sh` | Exit codes 0, 2, 3, 64; `--json` is one line of valid JSON; no ANSI codes when piped; `--dry-run` changes nothing (the stub log is empty) |
-| `tests/test-mcp-config.sh` | Printed config for each client parses; `--write --dry-run` touches nothing; `--write` in the sandbox `HOME` makes a backup and a valid file |
+| `tests/test-mcp-config.sh` | Printed config for each client parses; `--write --dry-run` runs nothing; `--write` with no terminal and no `-y` runs nothing and exits 3; `--write -y` runs exactly the client's own command (a recording stub); a client configured by file is print only (As built: mirqab edits no other program's file, so there is no backup to make) |
 | `tools/check-docs.sh` | `docs/cli.md` equals `mirqab help --markdown` |
 
 ## Acceptance
@@ -199,7 +199,17 @@ Part 1 (2026-11-14), where it differs from the plan:
   `tests/test-cli.sh` checks that piped output has no escape codes.
 - Every CLI line goes through `out.rs`: `println!` panicked on a closed
   pipe and the release profile aborted (review of PR #10). A broken pipe
-  exits 0; any other failed write (a full disk under a redirect) prints a
+  exits 0, except once a command is in the confirm flow
+  (`confirm::ask_with` calls `out::keep_going`): then stdout is marked
+  gone, nothing more is written, and the command acts as told and exits
+  with its own code, so `mirqab quit NAME -y | head -c0` still quits and
+  no `-y` with no terminal still exits 3 (audit 2026-11-21, L40;
+  `tests/test-cli.sh`). With stdout gone, `mirqab quit` writes the lines
+  of what failed to stderr (`out::stdout_gone`, `quit::failed_lines`), so
+  a failed act is not silent (review of L40; unit test
+  `the_failed_lines_are_those_result_lines_prints_for_failures`; the
+  recording sender cannot fail, so no binary test drives a failed act into
+  a broken pipe). Any other failed write (a full disk under a redirect) prints a
   message and exits 1, so a truncated file never looks like success;
   stderr goes through `out::err`, which ignores a stderr that is gone
   (review of PR #12). A `tools/lint.sh` rule bans `println!`, `print!`,
@@ -287,11 +297,21 @@ Part 2 (2026-11-14), where it differs from the plan:
   both terminals, otherwise exit 3); for a client configured by file it
   refuses. mirqab never edits another
   program's file. The registered command is `mirqab mcp`, found on `PATH`.
+  The command runs through `act::run_command` (dry-run aware, through
+  exec.rs), like every other change (audit 2026-11-21, L13 and L26: it
+  called exec.rs directly; `a_command_runs_only_without_dry_run` in
+  `crates/mirqab-core/src/act.rs`).
 - The modules are `crates/mirqab/src/{mcp/{mod,rpc,tools},confirm,
   mcp_config}.rs`; the CLI stayed one file (`cli.rs`).
 - Tests: `crates/mirqab/tests/mcp.rs` (both eras, the tools against a
   fixture daemon, bad input, no daemon, EOF); `tests/test-mcp-config.sh`
   with recording stubs (the agent CLIs are always stubbed in the sandbox).
+- A `system` frame this mirqab cannot read (after an upgrade, the old
+  daemon's) is the "answer could not be read" error, not an empty
+  summary: `system_load` and `explain_slowness` return `isError: true`
+  and `mirqab load` / `sensors` exit 1 (audit 2026-11-21, L38;
+  `an_unreadable_daemon_answer_is_a_tool_error_not_an_empty_summary` in
+  `crates/mirqab/tests/mcp.rs`).
 
 ## Unverified
 

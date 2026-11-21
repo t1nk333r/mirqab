@@ -174,12 +174,17 @@ impl Process {
     }
 
     /// Takes this get's primed reading: the oldest queued for the pids it
-    /// asks for. Readings past `LIVE_STALE` are dropped on the way; other
-    /// gets' readings stay queued for them.
+    /// asks for that is 250 ms to 10 s old at `now`. Older ones are
+    /// dropped; younger ones belong to gets still in their gap and stay
+    /// queued for them, as other pids' readings do (review of the apps
+    /// follow-up: a get took another's 2 ms-old reading for the same pid,
+    /// could not use it, and slept under the lock).
     fn take_mine(&mut self, now: Instant) -> Option<Base> {
         self.get_base
             .retain(|p| now.saturating_duration_since(p.base.at) <= LIVE_STALE);
-        let at = self.get_base.iter().position(|p| p.pids == self.want)?;
+        let at = self.get_base.iter().position(|p| {
+            p.pids == self.want && now.saturating_duration_since(p.base.at) >= PRIMED_MIN
+        })?;
         self.get_base.remove(at).map(|p| p.base)
     }
 
@@ -309,11 +314,13 @@ impl Sampler for Process {
     }
 
     /// No subscriber since the last sample: the pins and the baseline were
-    /// theirs (review of PR #18).
+    /// theirs (review of PR #18). The primed readings are the pending
+    /// gets': they stay, or a get in its gap would find none and sleep
+    /// under the lock (audit 2026-11-21, L23). `take_mine` drops any past
+    /// 10 s, and the queue stays capped at `MAX_PRIMED`.
     fn idle(&mut self) {
         self.pins.clear();
         self.base = None;
-        self.get_base.clear();
     }
 
     /// `get`: the first reading, under the lock; half a second without it
@@ -360,7 +367,8 @@ impl Sampler for Process {
     /// `get`: against a subscriber's baseline when it is 1–10 s old and
     /// holds the process, without moving it, and never reading the pins;
     /// otherwise against the oldest reading `prime` queued for these pids
-    /// when it is 250 ms to 10 s old and holds the process, or a second
+    /// that is 250 ms to 10 s old (`take_mine`) when it holds the
+    /// process, or a second
     /// reading of its own half a second later. Nothing read is answered at
     /// once. This get's primed reading is taken whichever answers, so none
     /// is left for another get.
@@ -374,10 +382,9 @@ impl Sampler for Process {
             return self.data(&first, self.base.as_ref(), now, false);
         }
         if let Some(base) = mine.filter(|b| {
-            now.saturating_duration_since(b.at) >= PRIMED_MIN
-                && first
-                    .iter()
-                    .all(|(pid, r)| b.ticks.contains_key(&(*pid, r.stat.start)))
+            first
+                .iter()
+                .all(|(pid, r)| b.ticks.contains_key(&(*pid, r.stat.start)))
         }) {
             return self.data(&first, Some(&base), Instant::now(), false);
         }
