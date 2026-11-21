@@ -209,7 +209,10 @@ does not change any other interval.
   stream. `subscribe(stream, interval, live, callback)` returns a handle
   that unsubscribes when dropped; subscriptions are reference-counted per
   (stream, live); reconnects with a one-shot back-off (2 s, 4 s, 8 s,
-  capped at 30 s, each `// mirqab:ui-timeout`); exposes `connected`,
+  capped at 30 s, each `// mirqab:ui-timeout`); a connection with no
+  hello within 5 s counts as a failed one, so a stopped daemon whose
+  socket is still bound gets the notice and the retry (audit 2026-11-21,
+  L49); exposes `connected`,
   `capabilities`, `unavailable`. Socket path from `MIRQAB_SOCKET` or the
   default. No thread and no async runtime: `glib::MainContext::spawn_local`.
 - `window.rs`: one `adw::ApplicationWindow` holding a horizontal box of

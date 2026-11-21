@@ -1463,3 +1463,32 @@ fn config_listeners_go_with_their_widgets() {
     drop(kept);
     ctx.client.close();
 }
+
+/// Audit 2026-11-21, L49: a daemon that stopped with its socket still
+/// bound lets the connection complete from the backlog and then says
+/// nothing. The client gives up waiting for its hello, says it is
+/// disconnected (the footer's reconnect notice) and tries again.
+#[gtk::test]
+#[ignore = "needs a display: run tests/test-ui-widgets.sh"]
+fn a_daemon_that_never_says_hello_counts_as_disconnected() {
+    let dir = std::env::temp_dir().join(format!("mirqab-hello-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("daemon.sock");
+    let _ = std::fs::remove_file(&path);
+    // Bound and listening, never accepting or writing.
+    let listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
+    let client = mirqab_ui::client::Client::new(path);
+    let down = Rc::new(Cell::new(0));
+    let d = Rc::clone(&down);
+    client.on_state(move |c| {
+        if !c.connected() {
+            d.set(d.get() + 1);
+        }
+    });
+    settle("the client gives up on the hello", || down.get() > 0);
+    assert!(!client.connected());
+    assert!(client.retry_in() > 0, "a retry is scheduled");
+    client.close();
+    drop(listener);
+    let _ = std::fs::remove_dir_all(&dir);
+}
