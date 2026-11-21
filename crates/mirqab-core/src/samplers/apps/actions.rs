@@ -1135,6 +1135,13 @@ mod tests {
         std::fs::write(d.join("wayland-8"), "not a socket").unwrap();
         let listener = std::os::unix::net::UnixListener::bind(d.join("wayland-9")).unwrap();
         assert_eq!(compositor_sockets(&d), Ok(vec![std::process::id()]));
+        // Shut the listener down rather than only drop it: a test on another
+        // thread that spawns a child holds a copy of every fd between fork
+        // and exec (CLOEXEC acts only at exec), and that copy keeps the
+        // socket accepting, with SO_PEERCRED naming this process. Shutdown
+        // acts on the socket, not the fd, so every copy refuses at once.
+        let listener = std::os::unix::net::UnixStream::from(std::os::fd::OwnedFd::from(listener));
+        listener.shutdown(std::net::Shutdown::Both).unwrap();
         drop(listener);
         assert!(d.join("wayland-9").exists(), "the socket file stays");
         assert_eq!(compositor_sockets(&d), Ok(vec![]), "nobody listens");
