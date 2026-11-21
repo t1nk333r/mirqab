@@ -516,7 +516,9 @@ to a daemon:
   `act.rs` and `exec.rs`.
 - The strings `sudo` and `pkexec` appear in exactly one file,
   `crates/mirqab/src/elevate.rs`, which only ever runs the fixed commands
-  listed in §8. Check: `grep -rn 'sudo\|pkexec' crates tools dist | grep -v elevate.rs`.
+  listed in §8. Check: `grep -rnwE 'sudo|pkexec' crates dist | grep -v elevate.rs`
+  prints nothing (the rule `tools/lint.sh` runs; `tools/` is not
+  searched, because the lint script names both words to grep for them).
 - An action on one process may name it by `{"pid": N}` or by
   `{"pid": N, "start": S}`, the start time a row of the `apps` frame
   lists; when the pid's process started at another time the action is
