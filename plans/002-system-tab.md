@@ -246,7 +246,10 @@ Part 1 (2026-11-13), where it differs from the plan:
   0–100; series a later plan registers are reloaded at open; prune deletes
   one series' range at a time instead of scanning the table.
 - `page.in`/`page.out` are KiB per minute and per second (vmstat counts
-  pgpgin in KiB); `swap.in`/`swap.out` pages. The CLI prints Celsius;
+  pgpgin in KiB); `swap.in`/`swap.out` pages. The history's per-minute
+  counts are scaled to 60 s from the minute's real gap (the first minute
+  after start is shorter, a late tick up to 90 s; audit 2026-11-21, L24).
+  The CLI prints Celsius;
   `units.temperature` reaches the CLI with plan 005.
 - The restart advice's pressure condition uses the sampler's own last 60
   minutes of memory `some60`, not a history query.

@@ -450,17 +450,21 @@ impl System {
                 );
             }
         }
-        if let (Some(p), Some(n)) = (prev.as_ref().and_then(|p| p.vm), cur.vm) {
-            put("page.in", n.pgpgin.checked_sub(p.pgpgin).map(|d| d as f64));
-            put(
-                "page.out",
-                n.pgpgout.checked_sub(p.pgpgout).map(|d| d as f64),
-            );
-            put("swap.in", n.pswpin.checked_sub(p.pswpin).map(|d| d as f64));
-            put(
-                "swap.out",
-                n.pswpout.checked_sub(p.pswpout).map(|d| d as f64),
-            );
+        // The series are per minute (`history::SERIES`), but the gap is
+        // what is left of the first minute after start, or up to 90 s for
+        // a late tick: the count is scaled to 60 s rather than the minute
+        // dropped, which would lose every first minute (audit 2026-11-21,
+        // L24).
+        let gap = prev
+            .as_ref()
+            .map(|p| cur.at.saturating_duration_since(p.at))
+            .filter(|g| *g >= BASELINE_MIN);
+        if let (Some(p), Some(n), Some(gap)) = (prev.as_ref().and_then(|p| p.vm), cur.vm, gap) {
+            let per_minute = |d: u64| d as f64 * 60.0 / gap.as_secs_f64();
+            put("page.in", n.pgpgin.checked_sub(p.pgpgin).map(per_minute));
+            put("page.out", n.pgpgout.checked_sub(p.pgpgout).map(per_minute));
+            put("swap.in", n.pswpin.checked_sub(p.pswpin).map(per_minute));
+            put("swap.out", n.pswpout.checked_sub(p.pswpout).map(per_minute));
         }
         if let Some(p) = &data.pressure {
             put("psi.cpu", p.cpu.as_ref().map(|s| s.some60));

@@ -69,6 +69,27 @@ fn a_minute_of_counters_gives_the_rates_and_series() {
 }
 
 #[test]
+fn page_counts_are_per_minute_whatever_the_gap() {
+    // Audit 2026-11-21, L24: the first minute after start covers what is
+    // left of it, and a late tick up to 90 s. The same counters 30 s
+    // apart are twice the per-minute count.
+    let t0 = Instant::now();
+    let mut s = System::new();
+    s.probe(&fixture("root-desktop")).unwrap();
+    s.minute_at(&fixture("root-desktop"), WALL, t0);
+    let m = s.minute_at(
+        &fixture("root-desktop.t1"),
+        WALL + 30,
+        t0 + Duration::from_secs(30),
+    );
+    let get = |k: &str| m.iter().find(|(key, _)| *key == k).map(|(_, v)| *v);
+    assert_eq!(get("page.in"), Some(1200));
+    assert_eq!(get("page.out"), Some(2400));
+    assert_eq!(get("swap.in"), Some(12));
+    assert_eq!(get("swap.out"), Some(24));
+}
+
+#[test]
 fn live_samples_give_shares_and_their_means_fill_the_minute() {
     let t0 = Instant::now();
     let mut s = System::new();
