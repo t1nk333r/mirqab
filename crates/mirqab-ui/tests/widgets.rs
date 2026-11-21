@@ -826,9 +826,37 @@ fn the_dialog_goes_when_the_sheet_leaves_the_screen() {
     win.0.set_visible(false);
     settle("the sheet is unmapped", || !i.root.is_mapped());
     let held = fake.held.borrow_mut().take().expect("a held reply");
-    held(needs_confirm("p2", would));
+    held(needs_confirm("p2", would.clone()));
     assert_eq!(i.dialog(), None, "no dialog off screen");
     assert!(quit.is_sensitive(), "not left busy");
+
+    // Hiding frees Quit while a plan is out; when the window comes back
+    // and Quit is pressed again, the first act's late reply opens nothing,
+    // so no second dialog stacks over the one the user answers.
+    win.0.present();
+    settle("the sheet is mapped again", || i.root.is_mapped());
+    fake.defer.set(true);
+    quit.emit_clicked();
+    let first = fake
+        .held
+        .borrow_mut()
+        .take()
+        .expect("the first act's reply");
+    win.0.set_visible(false);
+    settle("the sheet is unmapped", || !i.root.is_mapped());
+    win.0.present();
+    settle("the sheet is mapped again", || i.root.is_mapped());
+    quit.emit_clicked();
+    fake.defer.set(false);
+    let second = fake
+        .held
+        .borrow_mut()
+        .take()
+        .expect("the second act's reply");
+    first(needs_confirm("p3", would.clone()));
+    assert_eq!(i.dialog(), None, "the first act's reply is dropped");
+    second(needs_confirm("p4", would));
+    assert!(i.dialog().is_some(), "the second act asks");
     drop(win);
 }
 

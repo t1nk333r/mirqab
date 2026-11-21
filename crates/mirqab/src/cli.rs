@@ -384,15 +384,25 @@ mod tests {
     use super::*;
     use std::os::unix::net::UnixListener;
 
+    /// A scratch directory, removed when dropped: also when an assertion
+    /// fails (review of PR #24).
+    struct Scratch(PathBuf);
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = mirqab_core::act::remove_path(&self.0, false);
+        }
+    }
+
     /// A socket in a fresh scratch directory. Under /tmp, not $TMPDIR: a
     /// socket path must stay under 108 bytes.
-    fn scratch_socket(name: &str) -> (PathBuf, UnixListener) {
+    fn scratch_socket(name: &str) -> (Scratch, PathBuf, UnixListener) {
         let dir = PathBuf::from("/tmp").join(format!("mqt-{name}-{}", std::process::id()));
         let _ = mirqab_core::act::remove_path(&dir, false);
         std::fs::create_dir_all(&dir).unwrap();
         let socket = dir.join("daemon.sock");
         let listener = UnixListener::bind(&socket).unwrap();
-        (socket, listener)
+        (Scratch(dir), socket, listener)
     }
 
     /// A daemon that reads the request, then keeps the connection open
@@ -408,7 +418,7 @@ mod tests {
 
     #[test]
     fn a_slow_reply_is_a_timeout_not_a_missing_daemon() {
-        let (socket, listener) = scratch_socket("slow");
+        let (_dir, socket, listener) = scratch_socket("slow");
         let handle = serve_once(listener, Duration::from_millis(1500));
         let r = call_within(
             &socket,
@@ -424,17 +434,15 @@ mod tests {
         assert!(strings::daemon_no_answer(1).contains("did not answer"));
         assert!(!strings::daemon_no_answer(1).contains("start it with"));
         handle.join().unwrap();
-        let _ = mirqab_core::act::remove_path(socket.parent().unwrap(), false);
     }
 
     #[test]
     fn a_closed_connection_is_still_no_daemon() {
-        let (socket, listener) = scratch_socket("closed");
+        let (_dir, socket, listener) = scratch_socket("closed");
         let handle = serve_once(listener, Duration::ZERO);
         let r = call_within(&socket, Request::new(1, "status"), Duration::from_secs(5));
         assert!(matches!(r, Err(CallError::NoDaemon(_))), "no daemon");
         handle.join().unwrap();
-        let _ = mirqab_core::act::remove_path(socket.parent().unwrap(), false);
     }
 
     #[test]
