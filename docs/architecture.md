@@ -296,14 +296,18 @@ so once in the footer.
 
 - Path: `$XDG_RUNTIME_DIR/mirqab/daemon.sock`. Directory mode 0700, socket
   mode 0600. The daemon refuses to start if `XDG_RUNTIME_DIR` is unset or
-  not owned by the user.
+  not owned by the user, and if the socket's directory exists but is a
+  symlink, someone else's, or open to group or others; it never changes
+  the mode of a directory it did not make.
 - `SO_PEERCRED` is checked on accept: a peer with another uid is closed.
 - systemd units: `mirqab.socket` (`ListenStream=%t/mirqab/daemon.sock`,
   `SocketMode=0600`, `DirectoryMode=0700`) and `mirqab.service`
-  (`Type=notify`). Run by hand, the daemon prints `ready <socket path>` on
-  stdout once it listens. A client connects only after that line or after
-  the unit is active, and retries with a backoff (250 ms doubling to 4 s)
-  if the daemon restarts.
+  (`Type=notify`). When `LISTEN_PID` and `LISTEN_FDS` name the daemon, it
+  adopts fd 3 only if that is a listening Unix stream socket, and
+  otherwise refuses to start rather than bind a socket of its own. Run by
+  hand, the daemon prints `ready <socket path>` on stdout once it listens.
+  A client connects only after that line or after the unit is active, and
+  retries with a backoff (250 ms doubling to 4 s) if the daemon restarts.
 - The interface reads the socket on GLib's main loop (`gio`'s Unix socket
   client and a line reader), not on a thread of its own.
 
@@ -354,6 +358,9 @@ Rules:
   `unknown-stream`, `unavailable`, `refused`, `needs-confirm`,
   `needs-helper`, `failed`. An error may carry `data` beside its
   `message` (a `needs-confirm` reply's plan); it is omitted when empty.
+- A line that is not a valid request is answered `bad-request` with the
+  line's `id` when it is a JSON object whose `id` is a whole number, else
+  with id 0. A line longer than 1 MiB closes that connection only.
 
 ### 5.3 Streams and samplers
 
@@ -366,6 +373,10 @@ Streams: `system`, `apps`, `process`, `ports`, `agents`, `awake`, `disk`,
   subscriber the sampler's thread sleeps on a condition variable and reads
   nothing.
 - Several subscribers share one sampler at the shortest requested interval.
+  A new or changed subscription is sampled at once, but never sooner after
+  the last sample than the smallest floor its stream's subscribers hold
+  (2 s, or the live floor while one is live), so re-subscribing in a loop
+  cannot beat the floor.
 - A sampler may shape what each subscriber receives (`Sampler::view`: the
   sample and the subscriber's params in, its data out), so one reading
   serves a page, a card and the CLI with their own order and length; and
@@ -376,14 +387,15 @@ Streams: `system`, `apps`, `process`, `ports`, `agents`, `awake`, `disk`,
   subscribers before each sample (`Sampler::wants`), so it reads only what
   they name. When a stream is left with no subscriber, the sampler is
   told once, within an interval (`Sampler::idle`), and forgets and stops
-  what it kept for the earlier subscribers. No sampler sleeps or asks
-  another program while holding its lock, except the `apps` sampler:
-  its focus source waits on the compositor under the lock, up to 1.5 s
-  once when the page opens (two connects and a request) and up to 0.5 s
-  when it closes (a request's deadline), and its `get` sleeps 500 ms
-  under the lock only when no primed reading fits. A `get` whose rates
-  need two readings takes the
-  first in `Sampler::prime`, which returns the wait and queues the
+  what it kept for the earlier subscribers. A `get` of a stream nobody
+  subscribes to tells it too, right after the get's snapshot. No sampler
+  sleeps or asks another program while holding its lock, except the
+  `apps` sampler: its focus source waits on the compositor under the
+  lock, up to 1.5 s once when the page opens (two connects and a
+  request) and up to 0.5 s when it closes (a request's deadline), and
+  its `get` sleeps 500 ms under the lock only when no primed reading
+  fits. A `get` whose rates need two readings takes the first in
+  `Sampler::prime`, which returns the wait and queues the
   reading (one per pending `get`, served in order, used at 250 ms to
   10 s old), and the server sleeps it without the lock before
   `snapshot`; a query may answer
@@ -596,9 +608,16 @@ to a daemon:
 | Cache (weather, geocoding) | `~/.cache/mirqab/` |
 | Shipped defaults | `/usr/share/mirqab/` |
 
-XDG variables override each directory. The daemon is the only writer of
-`config.json`; the interface and CLI change settings through `config.set`,
-and every subscriber to `ui` gets a `config-changed` event. A config the
+XDG variables override each directory when they are absolute paths (a
+relative one is ignored, as the XDG spec says); without one the daemon
+uses `$HOME`, and refuses to start when that is not absolute either. The
+daemon is the only writer of `config.json`; the interface and CLI change
+settings through `config.set`,
+and every subscriber to `ui` gets a `config-changed` event. A hand edit
+is noticed at the next read (a request that reads the config, a
+`config.set` of any key, dry run included, or the minute writer's
+wakeup) and treated the same way: open live subscriptions take a new
+`live.intervalMs` and `ui` gets `config-changed`. A config the
 daemon cannot parse is left untouched, reported in `status`, and defaults
 are used: the app never rewrites a file the user broke by hand.
 
@@ -707,7 +726,10 @@ history in the interface (gone when the window closes).
 One wakeup a minute, aligned to the minute, one transaction. This is the
 only work the daemon does with no subscribers. Woken just after a minute
 boundary, it labels the values with the minute that just ended, so the
-minute running now is never half-written in a query.
+minute running now is never half-written in a query. Woken more than 5 s
+past a boundary (after a suspend or a clock step), it writes nothing and
+sleeps to the next one, so no row is labelled with a minute it covers
+only in part.
 
 - **Counters** (CPU jiffies, network and disk bytes, paging counts, energy)
   are read once a minute and differenced, so the stored value is the true
@@ -724,7 +746,8 @@ minute running now is never half-written in a query.
   and differences against the previous minute's walk, so the first minute
   after start writes nothing; with one it reads its last sample.
 - A gap (suspend, daemon stopped) stores nothing; graphs draw a break.
-- Pruning runs once an hour: `DELETE … WHERE ts < now − 30 d` for `sample`
+- Pruning runs once an hour, and at once when the clock went back past
+  the last prune: `DELETE … WHERE ts < now − 30 d` for `sample`
   and `event`, 3 d for `top-apps` events, 90 d for `daily`.
 - Compaction runs once a day (`VACUUM`, then a truncating checkpoint):
   rows arrive series by series, so each series' run grows in the middle of
