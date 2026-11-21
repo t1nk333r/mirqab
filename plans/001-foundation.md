@@ -540,7 +540,9 @@ squash merge leaves `e72bfef` out of `main`, and is removed then.
     hello, subscribe/unsubscribe/get/status/shutdown, merged intervals,
     the `live` floor, per-client queue). Model: haseen PR #128 `core/sidecar/src/server.rs`.
 15. `selfcost.rs` and the `self` stream; `config.rs` with
-    `config.get`/`config.set` and atomic write (temporary file, `rename`).
+    `config.get`/`config.set` and atomic write (temporary file, `rename`;
+    since audit 2026-11-21, L8, the temporary is synced before the rename
+    and its directory after, so a crash cannot leave a 0-byte file).
 16. `crates/mirqab/src/{main,daemon,cli}.rs`: `daemon [--root] [--socket]`,
     socket activation (`LISTEN_FDS`), `sd_notify` ready by writing to
     `NOTIFY_SOCKET` (no library), the `ready <path>` line; `status`,
