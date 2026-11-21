@@ -2514,6 +2514,13 @@ socket or a directory there is "no Flatpak". Test: a FIFO at that path in
 a scratch copy of the fixture; the walk returns within the test's
 timeout.
 
+Audit 2026-11-21, L6: the open also carries `O_NOCTTY`. The daemon is a
+session leader without a terminal under systemd, so a tty planted at that
+path would otherwise become its controlling terminal on open. Test:
+`root.rs`, `opening_a_tty_does_not_make_it_the_controlling_terminal`
+(a child copy of the test binary starts a session, opens a fresh
+pseudo-terminal through `read_regular_prefix`, and checks `/dev/tty`).
+
 **15. The session bus by command name (owner question 1).** See the
 question; if the owner says yes, `guard::SESSION_BUS_COMMS = ["dbus-daemon",
 "dbus-broker", "dbus-broker-launch"]` joins `act::refusal` beside the

@@ -122,7 +122,9 @@ impl Root {
     /// .flatpak-info` would block a plain open, and the read with it. The
     /// file is opened with O_NONBLOCK and O_NOFOLLOW and checked with
     /// fstat on the open descriptor, so nothing can be swapped in between
-    /// a check and the read. Links before the last component stay inside a
+    /// a check and the read; O_NOCTTY too, because the daemon is a session
+    /// leader without a terminal, and a planted tty would otherwise become
+    /// its controlling terminal on open. Links before the last component stay inside a
     /// fixture tree, as in `read_prefix`.
     pub fn read_regular_prefix(&self, rel: &str, n: usize) -> io::Result<Vec<u8>> {
         use std::io::Read;
@@ -141,7 +143,7 @@ impl Root {
         }
         let file = std::fs::OpenOptions::new()
             .read(true)
-            .custom_flags(libc::O_NONBLOCK | libc::O_NOFOLLOW)
+            .custom_flags(libc::O_NONBLOCK | libc::O_NOFOLLOW | libc::O_NOCTTY)
             .open(&path)?;
         if !file.metadata()?.is_file() {
             return Err(io::Error::new(
@@ -178,5 +180,79 @@ mod tests {
         assert!(r.path("../etc/passwd").is_err());
         assert!(r.path("proc/../../x").is_err());
         assert!(r.path("/etc/passwd").is_err());
+    }
+
+    /// Set in the environment of the child that `opening_a_tty_does_not_
+    /// make_it_the_controlling_terminal` starts.
+    const NOCTTY_CHILD: &str = "MIRQAB_TEST_NOCTTY_CHILD";
+
+    #[test]
+    fn opening_a_tty_does_not_make_it_the_controlling_terminal() {
+        // Audit 2026-11-21, L6: the daemon is a session leader without a
+        // terminal under systemd, so a tty a process planted at its
+        // `.flatpak-info` would become the daemon's controlling terminal
+        // when opened without O_NOCTTY. That takes a session leader, which
+        // this test process is not and must not become, so a child copy of
+        // this binary does it: it starts a session and reports back.
+        let exe = std::env::current_exe().unwrap();
+        let out = crate::exec::run(
+            &[
+                "env",
+                &format!("{NOCTTY_CHILD}=1"),
+                &exe.to_string_lossy(),
+                "--exact",
+                "root::tests::noctty_child",
+                "--ignored",
+                "--test-threads=1",
+            ],
+            None,
+            std::time::Duration::from_secs(20),
+        )
+        .unwrap();
+        assert!(
+            out.success() && out.stdout.contains("1 passed"),
+            "status {:?}\n{}{}",
+            out.status,
+            out.stdout,
+            out.stderr
+        );
+    }
+
+    #[test]
+    #[ignore = "run only as the child of the test above"]
+    // Two libc calls with no safe wrapper in std; root.rs is one of the
+    // files allowed `unsafe` (CLAUDE.md), and only this test uses it.
+    #[allow(unsafe_code)]
+    fn noctty_child() {
+        use std::os::fd::AsRawFd;
+        use std::os::unix::fs::OpenOptionsExt;
+        if std::env::var_os(NOCTTY_CHILD).is_none() {
+            return;
+        }
+        // SAFETY: setsid takes no arguments and touches no memory; this
+        // process was spawned without a process group of its own, so it is
+        // not a group leader and the call succeeds.
+        assert_ne!(unsafe { libc::setsid() }, -1, "setsid");
+        let ptmx = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .custom_flags(libc::O_NOCTTY)
+            .open("/dev/ptmx")
+            .expect("a pseudo-terminal");
+        let unlock: libc::c_int = 0;
+        let mut n: libc::c_uint = 0;
+        // SAFETY: both ioctls take a pointer to an int that lives across
+        // the call, on a descriptor this function owns.
+        unsafe {
+            assert_eq!(libc::ioctl(ptmx.as_raw_fd(), libc::TIOCSPTLCK, &unlock), 0);
+            assert_eq!(libc::ioctl(ptmx.as_raw_fd(), libc::TIOCGPTN, &mut n), 0);
+        }
+        let r = Root::host().read_regular_prefix(&format!("dev/pts/{n}"), 16);
+        assert!(r.is_err(), "a tty is not a regular file");
+        let tty = std::fs::File::open("/dev/tty");
+        assert!(
+            tty.is_err(),
+            "the pseudo-terminal became the controlling terminal"
+        );
     }
 }
