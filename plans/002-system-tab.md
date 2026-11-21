@@ -294,7 +294,7 @@ From the review of PR #7 (2026-11-13):
 - Left for a follow-up: reading static sensor files (labels, limits,
   `cpu_capacity`) once at probe and slow sensors (disks) every 10 s; CPUs
   brought online after the probe; matching `nvidia-smi` rows by PCI bus
-  id.
+  id. Disks every 10 s is done (2026-11-21, below under the audit).
 
 Part 2 (2026-11-13), where it differs from the plan:
 
@@ -338,8 +338,25 @@ From the audit of the samplers (2026-11-21):
   some drives a temperature read restarts the spin-down timer (kernel
   `Documentation/hwmon/drivetemp.rst`, Known issues), and no series
   stores a disk temperature. Live samples and `get` still read them.
-  The follow-up above (disks every 10 s) is still open; it would not
-  have fixed this.
+  The follow-up above (disks every 10 s) would not have fixed this.
+- Disks every 10 s, the follow-up above (audit of 2026-11-21, plan 023,
+  Unverified): live readers at 2–5 s (bar items, the System page) read
+  `drivetemp` and `nvme` on every tick, and a drivetemp read is an ATA
+  command. The disk chips are now read at most every 10 s (`DISK_EVERY`
+  in `samplers/system/mod.rs`, `temps::Disks`): between reads their rows
+  are repeated from the last reading, kept by `class/hwmon` directory,
+  while the other sensors are read every tick. The first sample or `get`
+  that wants the disks reads them at once, and so does any after the
+  last reading is 10 s old: a reader that leaves and comes back within
+  10 s of the last read gets the held rows, later a fresh read, so a
+  shown value is never older than 10 s. The minute neither reads them
+  nor moves the pace, and a `get` shares it. A disk chip that appears
+  between reads waits for the next one; one that is gone is left out at
+  once. Test: `disk_sensors_are_read_at_most_every_ten_seconds`
+  (`crates/mirqab-core/tests/system.rs`). Rejected: one pace for every
+  hwmon chip (CPU and GPU temperatures would lose their 1 s graph) and
+  a pace per reader (one sampler serves all readers, so the disks would
+  still be read at the fastest reader's rate).
 - An awake dGPU is read at most every 10 s (`DGPU_EVERY`): in amdgpu each
   read of `gpu_busy_percent` or a hwmon sensor restarts the card's 5 s
   autosuspend timer, so a 1–2 s stream kept an idle card powered. A dGPU

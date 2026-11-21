@@ -46,6 +46,11 @@ const NVIDIA_RETRY: Duration = Duration::from_secs(60);
 /// 5 s autosuspend delay, so polling never keeps an idle card powered;
 /// a faster stream repeats the last values (audit of plan 002).
 const DGPU_EVERY: Duration = Duration::from_secs(10);
+/// The disk temperature sensors are read at most this often for live
+/// readers; a faster stream (a bar item, the System page at 2 s) repeats
+/// the last rows. A drivetemp read is an ATA command and can keep a disk
+/// from spinning down (follow-up of plan 002's audit).
+const DISK_EVERY: Duration = Duration::from_secs(10);
 /// A baseline younger than this gives no useful rate; older than the
 /// minute gap, a stale one (review of PR #7).
 const BASELINE_MIN: Duration = Duration::from_secs(1);
@@ -133,6 +138,10 @@ pub struct System {
     has_nvidia: bool,
     /// Each awake dGPU's last reading, by card.
     dgpu: BTreeMap<String, DgpuReading>,
+    /// The disk chips' last reading: when, and their rows by hwmon
+    /// directory. Used only while younger than `DISK_EVERY`, so a reader
+    /// that comes back later (or a `get`) reads afresh at once.
+    disk: Option<(Instant, BTreeMap<String, Vec<Temp>>)>,
     cpu_ids: Vec<u32>,
     model: Option<String>,
     physical: Option<u32>,
@@ -263,7 +272,10 @@ impl System {
     }
 
     /// One snapshot of everything, with rates against `prev` when given.
-    /// `disks`: whether the disk temperature sensors are read (`temps::read`).
+    /// `disks`: whether the disk temperature sensors are wanted: read when
+    /// the last reading is `DISK_EVERY` old or there is none, otherwise
+    /// repeated (`temps::Disks`). Without it they are neither read nor
+    /// shown, and the pace does not move.
     fn build(
         &mut self,
         root: &Root,
@@ -323,7 +335,20 @@ impl System {
             mut chips,
             due,
         } = self.dgpu_plan(root, cur.at);
-        let temps = temps::read(root, disks, &mut chips);
+        let held_disks = self
+            .disk
+            .as_ref()
+            .filter(|(at, _)| cur.at.saturating_duration_since(*at) < DISK_EVERY);
+        let temps = match (disks, held_disks) {
+            (false, _) => temps::read(root, temps::Disks::Skip, &mut chips),
+            (true, Some((_, rows))) => temps::read(root, temps::Disks::Held(rows), &mut chips),
+            (true, None) => {
+                let mut rows = BTreeMap::new();
+                let t = temps::read(root, temps::Disks::Read(&mut rows), &mut chips);
+                self.disk = Some((cur.at, rows));
+                t
+            }
+        };
         let throttling = match (prev.and_then(|p| p.throttle), cur.throttle) {
             (Some(p), Some(n)) => n > p,
             (_, Some(_)) => false,

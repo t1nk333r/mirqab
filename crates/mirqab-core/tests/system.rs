@@ -2,10 +2,11 @@
 //! `.t1` twin, the thermal word at each threshold, throttling, hybrid
 //! cores, a suspended GPU that is never read, battery power, the restart
 //! advice, and a minimal machine where every missing file is `None`. From
-//! the audit: the minute reads no disk sensor, and an awake dGPU is read
-//! at most every 10 s. From the audit of 2026-11-21: page counts are per
-//! minute whatever the gap (none under 10 s), and a stub `nvidia-smi`'s
-//! temperature reaches the thermal word and `temp.gpu`.
+//! the audit: the minute reads no disk sensor, an awake dGPU is read at
+//! most every 10 s, and so are the disk sensors for a live reader. From
+//! the audit of 2026-11-21: page counts are per minute whatever the gap
+//! (none under 10 s), and a stub `nvidia-smi`'s temperature reaches the
+//! thermal word and `temp.gpu`.
 
 use mirqab_core::Root;
 use mirqab_core::proto::stream::{SystemData, Temp};
@@ -604,4 +605,85 @@ fn an_awake_dgpu_is_read_at_most_every_ten_seconds() {
     assert!(fourth.gpus[0].suspended);
     assert_eq!(fourth.gpus[0].busy_percent, None);
     assert_eq!(edge(&fourth), None);
+}
+
+#[test]
+fn disk_sensors_are_read_at_most_every_ten_seconds() {
+    // A drivetemp read is an ATA command, and on some drives it restarts
+    // the spin-down timer (kernel Documentation/hwmon/drivetemp.rst,
+    // Known issues): a bar item or the System page at 2 s would read the
+    // disks on every tick. They are read at most once per 10 s, the last
+    // rows repeated between; a value is never shown more than 10 s old.
+    let d = scratch("disk-pace", "root-desktop");
+    let root = Root::new(&d.0);
+    let hwmon = d.0.join("sys/class/hwmon");
+    let set = |dir: &str, milli: u32| {
+        std::fs::write(hwmon.join(dir).join("temp1_input"), format!("{milli}\n")).unwrap();
+    };
+    let disks = |d: &SystemData| -> Vec<(String, f64)> {
+        d.temps
+            .iter()
+            .filter(|t| t.kind == "disk")
+            .map(|t| (t.id.clone(), t.celsius))
+            .collect()
+    };
+    let shown = |pairs: &[(&str, f64)]| -> Vec<(String, f64)> {
+        pairs.iter().map(|(i, c)| (i.to_string(), *c)).collect()
+    };
+    let mut s = System::new();
+    s.probe(&root).unwrap();
+    let t0 = Instant::now();
+    // The minute reads no disk and starts no pace.
+    s.minute_at(&root, WALL, t0);
+    set("hwmon1", 42_000);
+    set("hwmon5", 40_000);
+    // The first tick that wants the disks reads them at once.
+    let first = data(s.sample(&root, t0 + Duration::from_secs(1)));
+    assert_eq!(
+        disks(&first),
+        shown(&[("nvme/temp1", 42.0), ("nvme.1/temp1", 40.0)])
+    );
+    // Between reads the rows are repeated, the CPU sensor still read.
+    set("hwmon1", 50_000);
+    set("hwmon5", 48_000);
+    set("hwmon0", 77_000);
+    // A disk that appears between reads waits for the next one.
+    std::fs::create_dir_all(hwmon.join("hwmon7")).unwrap();
+    std::fs::write(hwmon.join("hwmon7/name"), "drivetemp\n").unwrap();
+    set("hwmon7", 33_000);
+    for secs in [3, 5, 7, 9] {
+        let held = data(s.sample(&root, t0 + Duration::from_secs(secs)));
+        assert_eq!(
+            disks(&held),
+            shown(&[("nvme/temp1", 42.0), ("nvme.1/temp1", 40.0)]),
+            "repeated at {secs} s"
+        );
+        let cpu = held.temps.iter().find(|t| t.id == "k10temp/temp1");
+        assert_eq!(cpu.map(|t| t.celsius), Some(77.0));
+    }
+    // Neither the minute nor a `get` reads them or moves the pace.
+    s.minute_at(&root, WALL + 60, t0 + Duration::from_secs(10));
+    let get = data(s.snapshot(&root, t0 + Duration::from_secs(10)));
+    assert_eq!(
+        disks(&get),
+        shown(&[("nvme/temp1", 42.0), ("nvme.1/temp1", 40.0)])
+    );
+    // 10 s after the last read: read again, the new disk with them.
+    let again = data(s.sample(&root, t0 + Duration::from_secs(11)));
+    assert_eq!(
+        disks(&again),
+        shown(&[
+            ("nvme/temp1", 50.0),
+            ("nvme.1/temp1", 48.0),
+            ("drivetemp/temp1", 33.0)
+        ])
+    );
+    // The readers leave and come back within 10 s of the last read: the
+    // held rows, still under 10 s old.
+    set("hwmon1", 55_000);
+    let back = data(s.sample(&root, t0 + Duration::from_secs(16)));
+    assert_eq!(disks(&back)[0], ("nvme/temp1".to_string(), 50.0));
+    // Later than that: read at once.
+    let later = data(s.sample(&root, t0 + Duration::from_secs(60)));
+    assert_eq!(disks(&later)[0], ("nvme/temp1".to_string(), 55.0));
 }
