@@ -66,7 +66,9 @@ impl PinnedCard {
                 return glib::Propagation::Proceed;
             };
             let pinned = ctx.config.borrow().pinned.clone();
-            let list = home::moved(&pinned, id, up);
+            let caps = ctx.client.capabilities();
+            let shown: Vec<&str> = home::visible(&pinned, &caps).iter().map(|c| c.id).collect();
+            let list = home::moved(&pinned, &shown, id, up);
             if list != pinned {
                 ctx.set_setting("home.pinned", json!(list));
             }

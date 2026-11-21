@@ -65,12 +65,7 @@ impl Page {
     /// daemon has said what it serves, every known pinned card.
     fn wanted(ctx: &Ctx) -> Vec<&'static cards::Card> {
         let pinned = ctx.config.borrow().pinned.clone();
-        let caps = ctx.client.capabilities();
-        if caps.is_empty() {
-            cards::pinned(&pinned)
-        } else {
-            home::shown(&pinned, &caps)
-        }
+        home::visible(&pinned, &ctx.client.capabilities())
     }
 
     fn rebuild(self: &Rc<Self>) {
