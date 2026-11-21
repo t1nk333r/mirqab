@@ -112,3 +112,13 @@ if command -v socat >/dev/null 2>&1; then
     for k in $kids; do kill -0 "$k" 2>/dev/null && left=$((left + 1)); done
     is "SIGTERM leaves nothing running" 0 "$left"
 fi
+
+# Without --bin it measures the binary it just built, wherever
+# CARGO_TARGET_DIR puts it, never a stale one under ./target (audit of the
+# gates). A stub cargo "builds" a binary that says so and exits at start.
+stub cargo 'mkdir -p "$CARGO_TARGET_DIR/release"
+printf "#!/bin/sh\necho FRESH-BUILD >&2\nexit 3\n" >"$CARGO_TARGET_DIR/release/mirqab"
+chmod +x "$CARGO_TARGET_DIR/release/mirqab"'
+capture env CARGO_TARGET_DIR="$SANDBOX/target" "$REPO/tools/bench-idle.sh" --seconds 1
+status_is "the fresh build exits at start: cannot measure" 2 "$STATUS"
+like "it ran the binary cargo built in CARGO_TARGET_DIR" "$OUTPUT" "FRESH-BUILD"
