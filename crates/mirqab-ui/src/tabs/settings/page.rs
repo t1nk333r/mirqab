@@ -16,7 +16,6 @@ use std::rc::Rc;
 
 const MODES: &[&str] = &["window", "popover"];
 const TEMPERATURES: &[&str] = &["c", "f"];
-const CLOCKS: &[&str] = &["auto", "12", "24"];
 
 /// A row choosing one of `values`, shown with `label`.
 fn combo(
@@ -134,16 +133,9 @@ pub fn build(ctx: &Rc<Ctx>) -> gtk::Widget {
         move |v| s(json!(v)),
         Rc::clone(&quiet),
     );
-    let s = set("units.clock");
-    let clock = combo(
-        strings::SETTINGS_CLOCK,
-        CLOCKS,
-        strings::clock_label,
-        move |v| s(json!(v)),
-        Rc::clone(&quiet),
-    );
+    // No clock row: `units.clock` is reserved until plan 016 shows a
+    // clock (audit 2026-11-21, L11).
     units.add(&temperature);
-    units.add(&clock);
 
     let live = adw::PreferencesGroup::builder()
         .title(strings::SETTINGS_LIVE)
@@ -211,9 +203,9 @@ pub fn build(ctx: &Rc<Ctx>) -> gtk::Widget {
     let refresh = {
         let page = page.downgrade();
         let ctx = Rc::downgrade(ctx);
-        move || -> bool {
+        move || {
             let (Some(_page), Some(ctx)) = (page.upgrade(), ctx.upgrade()) else {
-                return false;
+                return;
             };
             let cfg: UiConfig = ctx.config.borrow().clone();
             quiet.set(true);
@@ -237,7 +229,6 @@ pub fn build(ctx: &Rc<Ctx>) -> gtk::Widget {
                     TempUnit::Fahrenheit => "f",
                 },
             );
-            select(&clock, CLOCKS, &cfg.clock);
             interval.set_value(cfg.live_interval_ms as f64);
             for (id, row) in switches.iter() {
                 row.set_active(!cfg.hidden.iter().any(|h| h == id));
@@ -263,11 +254,10 @@ pub fn build(ctx: &Rc<Ctx>) -> gtk::Widget {
                 Some(n) if st["history"]["enabled"] == json!(true) => format::bytes(n),
                 _ => strings::HISTORY_OFF.to_string(),
             });
-            true
         }
     };
     refresh();
-    ctx.on_config(refresh);
+    ctx.on_config(&page, move |_| refresh());
     ctx.refresh_status();
     page.upcast()
 }

@@ -85,14 +85,7 @@ impl Default for Meter {
 impl Meter {
     pub fn new() -> Meter {
         let m: Meter = glib::Object::new();
-        let weak = m.downgrade();
-        style::on_change(move || {
-            let Some(m) = weak.upgrade() else {
-                return false;
-            };
-            m.queue_draw();
-            true
-        });
+        style::on_change(&m, Meter::queue_draw);
         m
     }
 

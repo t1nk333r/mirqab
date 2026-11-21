@@ -20,14 +20,23 @@ pub fn mark_seeded(pinned: &[String], seeded: bool) -> bool {
     !seeded && !pinned.is_empty()
 }
 
-/// `id` moved one place up (or down); unchanged at an end or when absent.
-pub fn moved(pinned: &[String], id: &str, up: bool) -> Vec<String> {
+/// `id` moved one place up (or down) among the cards Home shows: it swaps
+/// with the nearest card on that side that Home puts on screen (in
+/// `shown`, and that id's first entry), passing over pinned ids it does
+/// not show (unknown, unserved, or a repeat), which would otherwise make
+/// the move look like nothing (audit 2026-11-21, L51). Unchanged at an end
+/// or when absent.
+pub fn moved(pinned: &[String], shown: &[&str], id: &str, up: bool) -> Vec<String> {
     let mut out = pinned.to_vec();
-    if let Some(i) = out.iter().position(|p| p == id) {
+    let on_screen = |k: usize| {
+        shown.contains(&pinned[k].as_str())
+            && pinned.iter().position(|p| *p == pinned[k]) == Some(k)
+    };
+    if let Some(i) = pinned.iter().position(|p| p == id) {
         let j = if up {
-            i.checked_sub(1)
+            (0..i).rev().find(|&k| on_screen(k))
         } else {
-            (i + 1 < out.len()).then_some(i + 1)
+            (i + 1..pinned.len()).find(|&k| on_screen(k))
         };
         if let Some(j) = j {
             out.swap(i, j);
@@ -71,6 +80,17 @@ pub fn shown(pinned: &[String], capabilities: &[String]) -> Vec<&'static Card> {
                 .all(|s| capabilities.iter().any(|cap| cap == s))
         })
         .collect()
+}
+
+/// The cards Home puts on screen: those `shown` lets through, or, before
+/// the daemon has said what it serves (`capabilities` empty), every known
+/// pinned card.
+pub fn visible(pinned: &[String], capabilities: &[String]) -> Vec<&'static Card> {
+    if capabilities.is_empty() {
+        cards::pinned(pinned)
+    } else {
+        shown(pinned, capabilities)
+    }
 }
 
 /// Every stream the shown cards need, once each, in order.
