@@ -953,7 +953,10 @@ merge:
   `live` parameter is private to the client; a trailing timer marker
   marks only its own line, and `timeout_future` and `interval_stream`
   need markers too; the footer has one border; the exit-timer test
-  outlasts the delay it checks.
+  outlasts the delay it checks. (Review of the audit 2026-11-21 lows:
+  `glib::future_with_timeout`, used by the client's hello wait, needs a
+  marker too; `tests/test-lint-rules.sh`, "an unmarked
+  future_with_timeout".)
 
 Deferred: a failed `subscribe` reply, and accessible labels for Graph and
 Meter (plan 002, their first users); a card's pin state (plan 003); a
