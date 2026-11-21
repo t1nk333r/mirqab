@@ -17,7 +17,8 @@
 //! under the lock. Plan 023's follow-up, the same for `apps`: a get whose
 //! baseline a tick replaced, or whose subscriber left in its gap, does not
 //! wait under the lock, never takes a reading another get is still
-//! waiting on, and leaves none queued.
+//! waiting on, and leaves none queued; nor does a `process` get take one
+//! for the same pids that is still too young to use.
 
 use mirqab_core::Root;
 use mirqab_core::desktop::{Focus, FocusedSince, focused_since};
@@ -1497,7 +1498,10 @@ fn a_primed_reading_left_by_one_get_never_answers_another_pid() {
     let s = scratch("procleft");
     std::fs::create_dir_all(s.0.join("proc")).unwrap();
     p.wants(&[json!({"pid": 2010})]);
-    p.prime(&t0, Instant::now()).expect("a wait");
+    let gap = p.prime(&t0, Instant::now()).expect("a wait");
+    // The snapshot comes after the gap, as the server runs it: a reading
+    // under 250 ms old is another get's (review of the apps follow-up).
+    std::thread::sleep(gap);
     assert_eq!(
         process_get(&mut p, &Root::new(&s.0), 2010),
         json!({"pid": 2010, "gone": true})
@@ -1689,6 +1693,41 @@ fn the_last_subscriber_leaving_keeps_a_pending_process_gets_reading() {
     std::thread::sleep(gap);
     let (took, got) = timed(|| process_get(&mut p, &t1, 2001));
     assert!(took < Duration::from_millis(400), "{took:?}");
+    assert!(got["cpu"].is_number(), "{got}");
+    assert_eq!(p.primed(), 0);
+}
+
+#[test]
+fn a_process_get_never_takes_another_gets_reading_too_young_to_use() {
+    // Review of the follow-up: `take_mine` took the first reading queued
+    // for the same pids whatever its age, and `snapshot` then found it
+    // under 250 ms old and slept half a second under the lock. G1 primes
+    // fresh; a tick leaves a 2 s baseline; G2 primes from it; a tick
+    // replaces it; G2's snapshot took G1's reading.
+    let (t0, t1) = (fixture("root-desktop"), fixture("root-desktop.t1"));
+    let ask = [json!({"pid": 2001})];
+    let mut p = process_probed();
+    p.wants(&ask);
+    let gap = p.prime(&t0, Instant::now()).expect("G1: a fresh reading");
+    p.wants(&ask);
+    p.sample(&t0, Instant::now() - Duration::from_secs(2));
+    p.wants(&ask);
+    assert!(
+        p.prime(&t0, Instant::now()).is_none(),
+        "G2: the baseline serves"
+    );
+    p.wants(&ask);
+    p.sample(&t1, Instant::now());
+    let (took, got) = timed(|| process_get(&mut p, &t1, 2001));
+    assert!(took < Duration::from_millis(400), "G2 waited {took:?}");
+    // 80 ticks of 100 over the 2 s since the baseline G2 primed with.
+    let cpu = got["cpu"].as_f64().expect("a rate");
+    assert!((cpu - 40.0).abs() < 4.0, "{cpu}");
+    assert_eq!(p.primed(), 1, "G1's reading is left for G1");
+    // G1's snapshot, after its gap without the lock, takes its own.
+    std::thread::sleep(gap);
+    let (took, got) = timed(|| process_get(&mut p, &t1, 2001));
+    assert!(took < Duration::from_millis(400), "G1 waited {took:?}");
     assert!(got["cpu"].is_number(), "{got}");
     assert_eq!(p.primed(), 0);
 }

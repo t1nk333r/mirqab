@@ -3454,6 +3454,35 @@ readings past 10 s, the cap stays 16). Test:
 `the_last_subscriber_leaving_keeps_a_pending_process_gets_reading`
 (failed before on a 0.50 s wait).
 
+Review of this follow-up (2026-11-21), three lows:
+
+1. `Process::take_mine` took the first reading queued for the same pids
+   whatever its age, and only then did `snapshot` check the 250 ms
+   floor. G1 primes a fresh reading; a tick leaves a 2 s baseline; G2
+   primes a copy of it; a tick replaces it; G2's snapshot took G1's
+   2 ms-old reading, could not use it, and slept 500 ms under the lock.
+   Changed (`samplers/process.rs`, `take_mine`, `snapshot`): as in
+   `apps`, it takes the first reading for these pids that is 250 ms to
+   10 s old, so a younger one stays for the get still in its gap; the
+   floor check in `snapshot` went with it. No get is left without a
+   reading: its own is at least 500 ms old at its snapshot (the gap) or
+   at least 1 s (a copy of a baseline), so a get that took another's
+   leaves its own old enough for that one. Test (`tests/apps.rs`):
+   `a_process_get_never_takes_another_gets_reading_too_young_to_use`
+   (failed before on "G2 waited 500.18 ms"); G1 then takes its own at
+   once and none is left. `a_primed_reading_left_by_one_get_never_answers_another_pid`
+   now waits the gap before the snapshot of a process that left, as the
+   server does: without it the reading is 0 ms old and stays queued.
+2. Declined: letting `take_mine` keep a baseline copy a little past 10 s
+   for a get that waited on the lock. A copy is queued only at 9.5 s or
+   younger (review of PR #26), so it misses only when the lock was held
+   over 500 ms between `prime` and `snapshot`; any slack moves that edge
+   rather than removing it, as nothing bounds the lock wait, and the
+   miss costs the bounded 500 ms wait, never a wrong rate.
+3. The `Sampler::prime` doc (`sampler.rs`) and `docs/architecture.md`
+   said the readings are "served in order"; both now say each
+   `snapshot` takes the oldest that fits it and is 250 ms to 10 s old.
+
 
 ## Unverified
 
