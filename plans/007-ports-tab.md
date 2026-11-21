@@ -392,9 +392,10 @@ built, with where it lives:
   `wants` (`:569`) records whether anyone asked for UDP and whether every
   subscriber is lite. Each tick (`measure`, `:373`): the tables; with a
   subscriber that is not lite, the owner map, rebuilt (`rebuild`, `:333`)
-  only when the user's listening inodes differ from the last build or
+  only when the user's listening inodes differ from the last build,
   the `stat` of any mapped pid (every member of every tree) is gone or
-  has another start time (`stale`, `:304`, which otherwise refreshes the
+  has another start time, or the map is 30 s old (`OWNER_MAX_AGE`, added
+  by the audit below) (`stale`, `:304`, which otherwise refreshes the
   trees' summed `statm`); then the interface table (`table`, `:283`) and
   the fold (`fold`, `:423`). A `get` that is not lite rebuilds
   (`snapshot`, `:580`); `idle` (`:595`) drops the process cache, the map
@@ -509,7 +510,8 @@ fd scan): 0.000 % of one core over 60 s, 7.8 MiB, 233 context switches;
 with `--procs 400` (432 processes, 8 clones of the 47 user processes)
 0.033 %, 8.1 MiB, 268 context switches. Both under the brief's 1 % (and
 the 0.3 % idle row). The scan now reads every process of the user's on a
-rebuild, which happens only when the inodes or a mapped pid change.
+rebuild, which happens only when the inodes or a mapped pid change (and,
+since the audit below, every 30 s).
 After the review (same build settings, same day): 0.000 %, 7.6 MiB, 211
 context switches; with `--procs 400` 0.067 %, 8.5 MiB, 230 context
 switches. The CI line and the §9.1 row come
@@ -569,3 +571,23 @@ the brief's §9 records the amendments for later parts. Built in this PR:
     holding only `.git` is a project.
 13. The `other` scope and its sentence stay as written, with no
     firewall clause.
+
+### Audit of the samplers (2026-11-21)
+
+- **The owner map is built again once it is 30 s old** (`OWNER_MAX_AGE`
+  in `samplers/ports/mod.rs`, checked in `stale`). A worker forked after
+  a build (a respawn after a worker died, a prefork server scaling up)
+  holds a mapped socket without changing the inode set or any mapped
+  pid, so no tick added it and the row's `pids` and `rssBytes` stayed
+  short until a `get` (ruling 1 wants every worker named for a stop).
+  Test: `a_tick_maps_a_worker_that_joined_a_mapped_socket_within_30_s`.
+  Cost: one walk of the user's processes every sixth 5 s tick, only
+  while a subscriber is not lite; part 4's bench measures it with ruling
+  7. Rejected: reading `proc/<pid>/task/<pid>/children` of each member
+  every tick. It needs `CONFIG_PROC_CHILDREN`, misses children forked by
+  another thread and holders that are not children (a socket passed
+  over `SCM_RIGHTS`), and a child that holds no socket (a dev server's
+  esbuild) would force a rebuild on every tick.
+- For part 2a: `ports.stop` and `ports.kill` resolve the port's
+  processes from a forced rebuild (the `get` path), never from the
+  cached map, so a stop never works from a `pids` list up to 30 s old.

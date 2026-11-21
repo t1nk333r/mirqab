@@ -30,9 +30,20 @@ fn read_milli(root: &Root, rel: &str) -> Option<f64> {
     Some(v as f64 / 1000.0)
 }
 
+/// A dGPU's sensor chips by their `sys/class/hwmon` directory (`hwmon6`):
+/// `Some` rows are repeated without reading the chip; a `None` chip is
+/// read and its rows filled in (audit of plan 002: each read of an awake
+/// amdgpu chip restarts the card's autosuspend timer).
+pub type Held = std::collections::BTreeMap<String, Option<Vec<Temp>>>;
+
 /// Every hwmon temperature, in hwmon order. A driver name seen twice
 /// (two NVMe drives) gets `.1`, `.2` in its id so ids stay unique.
-pub fn read(root: &Root) -> Vec<Temp> {
+/// Without `disks` the disk chips (`drivetemp`, `nvme`) are not read: on
+/// some drives a temperature read restarts the spin-down timer (kernel
+/// Documentation/hwmon/drivetemp.rst, Known issues), so only a reader
+/// someone is looking at reads them, never the history minute (audit of
+/// plan 002).
+pub fn read(root: &Root, disks: bool, held: &mut Held) -> Vec<Temp> {
     let mut out = Vec::new();
     let Ok(mut dirs) = root.read_dir("sys/class/hwmon") else {
         return thermal_zones(root);
@@ -54,6 +65,10 @@ pub fn read(root: &Root) -> Vec<Temp> {
             continue;
         };
         let name = name.trim().to_string();
+        let k = kind(&name);
+        if k == "disk" && !disks {
+            continue;
+        }
         let Ok(files) = root.read_dir(&base) else {
             continue;
         };
@@ -72,7 +87,14 @@ pub fn read(root: &Root) -> Vec<Temp> {
             format!("{name}.{n}")
         };
         *n += 1;
-        let k = kind(&name);
+        // Listing the directory and its `name` wakes nothing; the inputs
+        // would.
+        let slot = held.get_mut(&dir);
+        if let Some(Some(rows)) = &slot {
+            out.extend(rows.iter().cloned());
+            continue;
+        }
+        let first = out.len();
         for (i, t) in inputs.iter().enumerate() {
             let Some(celsius) = read_milli(root, &format!("{base}/temp{t}_input")) else {
                 continue;
@@ -90,6 +112,9 @@ pub fn read(root: &Root) -> Vec<Temp> {
                 critical: read_milli(root, &format!("{base}/temp{t}_crit")),
                 kind: k.to_string(),
             });
+        }
+        if let Some(slot) = slot {
+            *slot = Some(out[first..].to_vec());
         }
     }
     if !out.iter().any(|t| t.kind == "cpu") {

@@ -309,6 +309,30 @@ From the review of PR #8 (2026-11-13):
   three ways is a follow-up.
 - A thermal state this version does not know is neutral, not "cool".
 
+From the audit of the samplers (2026-11-21):
+
+- The history minute reads no disk sensor (`drivetemp`, `nvme`):
+  `temps::read` takes a `disks` switch, false only in `minute_at`. On
+  some drives a temperature read restarts the spin-down timer (kernel
+  `Documentation/hwmon/drivetemp.rst`, Known issues), and no series
+  stores a disk temperature. Live samples and `get` still read them.
+  The follow-up above (disks every 10 s) is still open; it would not
+  have fixed this.
+- An awake dGPU is read at most every 10 s (`DGPU_EVERY`): in amdgpu each
+  read of `gpu_busy_percent` or a hwmon sensor restarts the card's 5 s
+  autosuspend timer, so a 1–2 s stream kept an idle card powered. A dGPU
+  is any card but the boot display (`gpu::throttled`: `boot_vga` is not
+  1; NVIDIA is paced by `nvidia-smi`) whose `power/control` is `auto`: a
+  card that never suspends (a second desktop card, `control` set to `on`,
+  a virtual GPU) gains nothing from the pace and keeps its 1 s graph
+  (review of PR #25). Between reads the card's fields
+  and its chips' rows under `class/hwmon` (matched by the `hwmonN` names
+  under the card's `device/hwmon`) are repeated. `runtime_status` is
+  still checked on every sample, so a card that has gone to sleep shows
+  as suspended at once and is read afresh when it wakes. Rejected:
+  deriving the interval from `power/autosuspend_delay_ms`, one file
+  more per card for no case at hand.
+
 ## Unverified
 
 - Hybrid-core sysfs paths and the ARM `cpu_capacity` file (no such machine
