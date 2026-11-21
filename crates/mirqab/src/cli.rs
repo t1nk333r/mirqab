@@ -59,11 +59,11 @@ fn call_within(socket: &Path, req: Request, timeout: Duration) -> Result<Value, 
     loop {
         line.clear();
         match reader.read_line(&mut line) {
-            Ok(0) => return Err(CallError::NoDaemon("the connection closed".into())),
+            Ok(0) => return Err(CallError::NoDaemon(strings::CONNECTION_CLOSED.into())),
             Err(e) if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {
                 return Err(CallError::Timeout(timeout.as_secs().max(1)));
             }
-            Err(_) => return Err(CallError::NoDaemon("the connection closed".into())),
+            Err(_) => return Err(CallError::NoDaemon(strings::CONNECTION_CLOSED.into())),
             Ok(_) => {}
         }
         if let Ok(ServerFrame::Reply(Reply {
@@ -113,7 +113,7 @@ fn print_status(v: &Value) {
     }
     if let Some(m) = v["unavailable"].as_object() {
         for (k, why) in m {
-            notes.push(format!("unavailable {k}: {}", why.as_str().unwrap_or("")));
+            notes.push(strings::status_unavailable(k, why.as_str().unwrap_or("")));
         }
     }
     crate::out::print(&strings::status_lines(
@@ -127,8 +127,10 @@ fn print_status(v: &Value) {
 }
 
 /// One line per bucket: unix time, series, average and peak; or, with
-/// `--list`, one series per line.
-fn print_history(v: &Value, list: bool) {
+/// `--list`, one series per line. False when a series asked for is one
+/// history does not keep: the command then exits 1 (audit 2026-11-21).
+fn print_history(v: &Value, list: bool) -> bool {
+    let mut all_found = true;
     if list {
         for s in v.as_array().into_iter().flatten() {
             crate::out::line(&format!(
@@ -137,27 +139,38 @@ fn print_history(v: &Value, list: bool) {
                 s["unit"].as_str().unwrap_or("")
             ));
         }
-        return;
+        return all_found;
     }
     for (key, s) in v["series"].as_object().into_iter().flatten() {
         if s.is_null() {
             crate::out::err(&strings::no_such_series(key));
+            all_found = false;
             continue;
         }
         let unit = s["unit"].as_str().unwrap_or("");
         for p in s["points"].as_array().into_iter().flatten() {
-            crate::out::line(&format!(
-                "{}\t{key}\tavg {:.2}\tmax {:.2}\t{unit}",
+            crate::out::line(&strings::history_row(
                 p[0].as_i64().unwrap_or(0),
+                key,
                 p[1].as_f64().unwrap_or(0.0),
-                p[2].as_f64().unwrap_or(0.0)
+                p[2].as_f64().unwrap_or(0.0),
+                unit,
             ));
         }
     }
+    all_found
 }
 
-pub(crate) fn system(v: &Value) -> SystemData {
-    serde_json::from_value(v.clone()).unwrap_or_default()
+fn has_null_series(v: &Value) -> bool {
+    v["series"]
+        .as_object()
+        .is_some_and(|m| m.values().any(Value::is_null))
+}
+
+/// The `system` frame, or the message for an answer this mirqab cannot
+/// read (audit 2026-11-21: it used to read as an all-empty frame).
+pub(crate) fn system(v: &Value) -> Result<SystemData, String> {
+    serde_json::from_value(v.clone()).map_err(|e| strings::bad_daemon_answer(&e.to_string()))
 }
 
 fn pct(v: Option<f64>) -> String {
@@ -165,8 +178,8 @@ fn pct(v: Option<f64>) -> String {
 }
 
 /// `mirqab load`: CPU, load, memory, swap, pressure, thermal word.
-fn print_load(v: &Value) {
-    for l in load_lines(&system(v)) {
+fn print_load(d: &SystemData) {
+    for l in load_lines(d) {
         crate::out::line(&l);
     }
 }
@@ -230,8 +243,7 @@ pub(crate) fn load_lines(d: &SystemData) -> Vec<String> {
 
 /// `mirqab sensors`: temperatures, GPUs, power. Celsius; plan 005 reads
 /// `units.temperature`.
-fn print_sensors(v: &Value) {
-    let d = system(v);
+fn print_sensors(d: &SystemData) {
     let c = format::TempUnit::Celsius;
     for t in &d.temps {
         let crit = t.critical.map(|x| format::temperature(x, c));
@@ -273,8 +285,8 @@ pub(crate) fn socket_or_exit(args: &Args) -> Result<PathBuf, ExitCode> {
         .or_else(server::default_socket)
         .ok_or_else(|| {
             crate::out::err(&strings::no_daemon(
-                "$XDG_RUNTIME_DIR/mirqab/daemon.sock",
-                "XDG_RUNTIME_DIR is not set",
+                strings::DEFAULT_SOCKET_HINT,
+                strings::NO_RUNTIME_DIR_WHY,
             ));
             ExitCode::from(EXIT_NO_DAEMON)
         })
@@ -303,10 +315,6 @@ pub(crate) fn exit_for(socket: &Path, e: CallError) -> ExitCode {
 }
 
 pub fn run(command: &str, args: Args) -> ExitCode {
-    let socket = match socket_or_exit(&args) {
-        Ok(s) => s,
-        Err(code) => return code,
-    };
     let mut json_out = false;
     let mut window = false;
     let mut dry_run = false;
@@ -340,6 +348,12 @@ pub fn run(command: &str, args: Args) -> ExitCode {
     if command == "history" && !list && series.is_empty() {
         return usage(&strings::command_help("history").unwrap_or_default());
     }
+    // The arguments first: a usage error is 64 even with no socket to
+    // name (audit 2026-11-21).
+    let socket = match socket_or_exit(&args) {
+        Ok(s) => s,
+        Err(code) => return code,
+    };
     let req = match command {
         "status" => Request::new(1, "status"),
         "load" | "sensors" => Request::new(1, "get").with_stream("system"),
@@ -365,13 +379,29 @@ pub fn run(command: &str, args: Args) -> ExitCode {
             if command == "status" && !json_out {
                 print_status(&v);
             } else if command == "history" && !json_out {
-                print_history(&v, list);
-            } else if command == "load" && !json_out {
-                print_load(&v);
-            } else if command == "sensors" && !json_out {
-                print_sensors(&v);
+                if !print_history(&v, list) {
+                    return ExitCode::from(EXIT_FAILED);
+                }
+            } else if matches!(command, "load" | "sensors") && !json_out {
+                let d = match system(&v) {
+                    Ok(d) => d,
+                    Err(why) => {
+                        crate::out::err(&why);
+                        return ExitCode::from(EXIT_FAILED);
+                    }
+                };
+                if command == "load" {
+                    print_load(&d);
+                } else {
+                    print_sensors(&d);
+                }
             } else if matches!(command, "status" | "history" | "load" | "sensors") || dry_run {
                 crate::out::line(&format!("{v}"));
+                // A series history does not keep is null in the answer,
+                // and a failure with --json too (review of audit 2026-11-21).
+                if command == "history" && !list && has_null_series(&v) {
+                    return ExitCode::from(EXIT_FAILED);
+                }
             }
             ExitCode::SUCCESS
         }
@@ -443,6 +473,13 @@ mod tests {
         let r = call_within(&socket, Request::new(1, "status"), Duration::from_secs(5));
         assert!(matches!(r, Err(CallError::NoDaemon(_))), "no daemon");
         handle.join().unwrap();
+    }
+
+    #[test]
+    fn an_unreadable_system_frame_is_an_error_not_an_empty_one() {
+        let why = system(&json!({"cpu": "x"})).expect_err("an error");
+        assert!(why.contains("could not be read"), "{why}");
+        assert!(system(&json!({})).is_ok(), "a frame with nothing yet reads");
     }
 
     #[test]

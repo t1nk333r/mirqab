@@ -24,7 +24,9 @@ pub const MAX_SERIES: usize = 64;
 
 /// Every series history keeps: key, unit, scale. Plan 001 fixed the first
 /// four; plan 002 adds the System tab's (architecture §6.1). Page counts are
-/// per minute (`page.*` in KiB, as vmstat counts them; `swap.*` in pages).
+/// per minute (`page.*` in KiB, as vmstat counts them; `swap.*` in pages),
+/// scaled to 60 s from the minute's real gap; a minute whose gap is under
+/// 10 s (a start in its last seconds) has no page or swap point.
 pub const SERIES: &[(&str, &str, i64)] = &[
     ("cpu.total", "percent", 100),
     ("mem.used", "bytes", 1),
@@ -207,7 +209,10 @@ pub fn private_dir(dir: &Path, own: bool) -> Result<(), HistoryError> {
 /// mirqab owns only when it is the default one (`History::default_path`).
 pub fn private_dir_of(path: &Path) -> Result<(), HistoryError> {
     match path.parent() {
-        Some(dir) => private_dir(dir, History::default_path().parent() == Some(dir)),
+        Some(dir) => {
+            let default = History::default_path().ok();
+            private_dir(dir, default.as_deref().and_then(Path::parent) == Some(dir))
+        }
         None => Ok(()),
     }
 }
@@ -343,13 +348,15 @@ fn move_aside(path: &Path, now_unix: i64) -> std::io::Result<PathBuf> {
 
 impl History {
     /// `$XDG_STATE_HOME/mirqab/history.db`, else `~/.local/state/mirqab/history.db`.
-    pub fn default_path() -> PathBuf {
-        let base = std::env::var_os("XDG_STATE_HOME")
-            .filter(|v| !v.is_empty())
-            .map(PathBuf::from)
-            .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/state")))
-            .unwrap_or_else(|| PathBuf::from(".local/state"));
-        base.join("mirqab/history.db")
+    /// Err when neither is an absolute path (`config::xdg_base`).
+    pub fn default_path() -> Result<PathBuf, String> {
+        crate::config::xdg_base(
+            "XDG_STATE_HOME",
+            std::env::var_os("XDG_STATE_HOME"),
+            std::env::var_os("HOME"),
+            ".local/state",
+        )
+        .map(|b| b.join("mirqab/history.db"))
     }
 
     /// Opens or creates the file. One that cannot be opened is renamed

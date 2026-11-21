@@ -39,6 +39,19 @@ for c in daemon status open toggle close history ports port help; do
     status_is "help $c exits 0" 0 "$STATUS"
 done
 
+# `--mcp` is the other spelling of `mcp`, so its help is mcp's (audit
+# 2026-11-21, L43).
+capture "$BIN/mirqab" --mcp --help
+status_is "--mcp --help exits 0" 0 "$STATUS"
+like "--mcp --help prints mcp's usage" "$OUTPUT" "usage: mirqab mcp"
+
+# A usage error is a usage error even with no socket to name: the
+# arguments are read before the socket (audit 2026-11-21, L44).
+for c in history apps ports quit; do
+    capture env -u XDG_RUNTIME_DIR -u MIRQAB_SOCKET "$BIN/mirqab" "$c" --bogus
+    status_is "$c --bogus with no runtime dir exits 64" 64 "$STATUS"
+done
+
 # The daemon refuses a runtime dir that is missing.
 capture env -u XDG_RUNTIME_DIR "$BIN/mirqab" daemon
 status_is "the daemon needs XDG_RUNTIME_DIR" 1 "$STATUS"
@@ -319,6 +332,16 @@ capture "$BIN/mirqab" history cpu.total --range 2y
 status_is "an unknown range is refused" 1 "$STATUS"
 capture "$BIN/mirqab" history
 status_is "history needs a series" 64 "$STATUS"
+# A series history does not keep is a failure, alone or beside a known one
+# (audit 2026-11-21, L41).
+capture "$BIN/mirqab" history nope
+status_is "an unknown series exits 1" 1 "$STATUS"
+like "and says which" "$OUTPUT" "no series named nope"
+capture "$BIN/mirqab" history cpu.total nope
+status_is "a known series beside an unknown one still exits 1" 1 "$STATUS"
+capture "$BIN/mirqab" history cpu.total nope --json
+status_is "with --json too" 1 "$STATUS"
+is "where the unknown series is null" "null" "$(jq -c '.series.nope' <<<"$OUTPUT")"
 # --json is one line, and nothing piped carries an escape code.
 capture "$BIN/mirqab" status --json
 is "status --json is one line" 1 "$(wc -l <<<"$OUTPUT" | tr -d ' ')"

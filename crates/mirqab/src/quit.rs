@@ -196,10 +196,6 @@ fn subject(socket: &Path, target: &str) -> Result<Value, ExitCode> {
 }
 
 pub fn run(args: Args) -> ExitCode {
-    let socket = match socket_or_exit(&args) {
-        Ok(s) => s,
-        Err(code) => return code,
-    };
     let (mut yes, mut force, mut dry_run, mut json_out) = (false, false, false, false);
     let mut target: Option<&str> = None;
     let mut group: Option<&str> = None;
@@ -220,13 +216,24 @@ pub fn run(args: Args) -> ExitCode {
             other => return usage(&strings::unknown_option(other)),
         }
     }
+    // One of a name or pid, or --group, never both or neither.
+    let usage_error = || usage(&strings::command_help("quit").unwrap_or_default());
+    if target.is_some() == group.is_some() {
+        return usage_error();
+    }
+    // The arguments first: a usage error is 64 even with no socket to
+    // name (audit 2026-11-21).
+    let socket = match socket_or_exit(&args) {
+        Ok(s) => s,
+        Err(code) => return code,
+    };
     let subject = match (target, group) {
         (None, Some(id)) => json!({ "group": id }),
-        (Some(target), None) => match subject(&socket, target) {
+        (Some(target), _) => match subject(&socket, target) {
             Ok(s) => s,
             Err(code) => return code,
         },
-        _ => return usage(&strings::command_help("quit").unwrap_or_default()),
+        (None, None) => return usage_error(),
     };
     let name = if force { APPS_KILL } else { APPS_QUIT };
     let header = if force {

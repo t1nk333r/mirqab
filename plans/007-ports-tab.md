@@ -444,7 +444,11 @@ built, with where it lives:
   1 (`families_of`, `:224`). `label` (`:74`): an interpreter's script or
   `-m` module stands for the program, joined by the next argument when it
   is a word (`next dev`, `http.server`, `manage.py runserver`, `vite`),
-  cut to 40 characters and made `plain`. `uptimeSec` is
+  cut to 40 characters and made `plain`. The script is found by the apps
+  grouping's `group::script_and_rest`, so an option's value
+  (`-W ignore`, `-r dotenv/config`) is skipped and inline code
+  (`perl -E`, `python3 -c`) leaves the interpreter's name alone (audit
+  2026-11-21, L18). `uptimeSec` is
   `procfs::age_secs` (`samplers/apps/procfs.rs:259`), which the
   inspector now uses for `ageSec` too (`inspect.rs:466`). `url`
   (`mod.rs:121`) is `http://localhost:<port>`, `https` for 443 and 8443.
@@ -555,6 +559,14 @@ the brief's §9 records the amendments for later parts. Built in this PR:
 4. **`total` counts every row** in the lite view as in the full one
    (KEEP); there is no `yourCount`, and part 4's badge shows `total`,
    coloured by `exposedCount`. (The first build counted your rows there.)
+   *Corrected by the audit of 2026-11-21, L32:* the rows are not the full
+   view's while every subscriber is lite. The sampler then skips the
+   owner walk (`measure`, `samplers/ports/mod.rs`), so a row folds by
+   (port, proto, uid, bind) instead of by process: `total` and
+   `exposedCount` can be lower than the full view's (two processes of
+   one user on one port are one row), and `leftBehindCount` is 0, since
+   no row has a launcher. With a full subscriber as well, the lite counts
+   are the full view's. The `PortsLite` doc comment says so.
 5. **A row is `(port, proto, bind pair, owner)`** (KEEP the words and
    the test). DEFER: part 3's `RowKey` gains `bind`.
 6. **The interface table's refresh is tested** (KEEP).

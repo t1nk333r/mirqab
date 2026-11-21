@@ -594,7 +594,7 @@ fn the_default_directory_is_tightened() {
     // test sees the variable, and none is set with `unsafe`.
     use std::os::unix::fs::PermissionsExt;
     if std::env::var_os(DEFAULT_DIR_CHILD).is_some() {
-        let path = History::default_path();
+        let path = History::default_path().unwrap();
         let dir = path.parent().unwrap();
         std::fs::create_dir_all(dir).unwrap();
         std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o755)).unwrap();

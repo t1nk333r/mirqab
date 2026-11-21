@@ -99,6 +99,15 @@ impl Drop for Daemon {
     }
 }
 
+/// A scratch directory, removed when dropped: a failed assertion too.
+struct Scratch(PathBuf);
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
 fn start(name: &str) -> Daemon {
     // Under /tmp, not $TMPDIR: a socket path must stay under 108 bytes.
     let dir = PathBuf::from("/tmp").join(format!("mqp-{name}-{}", std::process::id()));
@@ -194,6 +203,45 @@ impl Client {
     fn interval(&mut self, stream: &str) -> Value {
         self.call("status", None, Value::Null).unwrap()["streams"][stream]["intervalMs"].clone()
     }
+}
+
+#[test]
+fn a_socket_directory_others_can_reach_or_a_symlink_is_refused() {
+    // Audit 2026-11-21, L36: an existing directory was taken whatever its
+    // owner, mode or kind (architecture §5.1: 0700).
+    use std::os::unix::fs::PermissionsExt;
+    let scratch =
+        Scratch(PathBuf::from("/tmp").join(format!("mqp-sockdir-{}", std::process::id())));
+    let dir = &scratch.0;
+    let _ = std::fs::remove_dir_all(dir);
+    let open_dir = dir.join("open");
+    std::fs::create_dir_all(&open_dir).unwrap();
+    std::fs::set_permissions(&open_dir, std::fs::Permissions::from_mode(0o777)).unwrap();
+    let private = dir.join("private");
+    std::fs::create_dir_all(&private).unwrap();
+    std::fs::set_permissions(&private, std::fs::Permissions::from_mode(0o700)).unwrap();
+    std::os::unix::fs::symlink(&private, dir.join("link")).unwrap();
+    let listen = |sub: &str| {
+        server::listen(Options {
+            socket: dir.join(sub).join("daemon.sock"),
+            root: Root::new(fixture("root-desktop")),
+            config_path: dir.join("config.json"),
+            samplers: Vec::new(),
+            history: None,
+            minute_period: None,
+        })
+    };
+    for sub in ["open", "link"] {
+        match listen(sub) {
+            Err(server::ListenError::Failed(why)) => assert!(why.contains(sub), "{why}"),
+            Err(other) => panic!("{sub}: {other:?}"),
+            Ok(_) => panic!("{sub}: listened"),
+        }
+        assert!(!dir.join(sub).join("daemon.sock.lock").exists(), "{sub}");
+    }
+    let mode = std::fs::metadata(&open_dir).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode, 0o777, "the user's directory is left as it was");
+    assert!(listen("private").is_ok());
 }
 
 #[test]
@@ -442,6 +490,80 @@ fn bad_json_is_answered_not_fatal() {
 }
 
 #[test]
+fn a_bad_request_with_a_usable_id_is_answered_with_that_id() {
+    // Audit 2026-11-21, L16: the reply carried id 0, so the caller waited
+    // for its timeout.
+    let d = start("badid");
+    let mut c = Client::connect(&d);
+    c.hello();
+    c.stream.write_all(b"{\"id\":7,\"method\":5}\n").unwrap();
+    match c.frame() {
+        Some(ServerFrame::Reply(r)) => {
+            assert_eq!(r.id, 7);
+            assert_eq!(r.error.unwrap().code.as_str(), "bad-request");
+        }
+        other => panic!("expected an error reply, got {other:?}"),
+    }
+    // An id that is not a whole number is not guessed at.
+    c.stream
+        .write_all(b"{\"id\":\"x\",\"method\":5}\n")
+        .unwrap();
+    match c.frame() {
+        Some(ServerFrame::Reply(r)) => assert_eq!(r.id, 0),
+        other => panic!("expected an error reply, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_request_split_over_two_writes_is_one_request() {
+    // Audit 2026-11-21, L17: read_lines joins the halves.
+    let d = start("split");
+    let mut c = Client::connect(&d);
+    c.hello();
+    c.stream.write_all(b"{\"id\":3,\"meth").unwrap();
+    c.stream.flush().unwrap();
+    std::thread::sleep(Duration::from_millis(100));
+    c.stream.write_all(b"od\":\"status\"}\r\n").unwrap();
+    match c.frame() {
+        Some(ServerFrame::Reply(r)) => {
+            assert_eq!(r.id, 3);
+            assert!(r.error.is_none(), "{:?}", r.error);
+        }
+        other => panic!("expected the status reply, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_line_over_a_mebibyte_closes_only_that_connection() {
+    // Audit 2026-11-21, L17: MAX_LINE without a newline ends the reader;
+    // another client is still served.
+    let d = start("longline");
+    let mut long = Client::connect(&d);
+    let mut other = Client::connect(&d);
+    long.hello();
+    other.hello();
+    let chunk = vec![b'x'; 64 * 1024];
+    let mut closed = false;
+    for _ in 0..64 {
+        if long.stream.write_all(&chunk).is_err() {
+            closed = true;
+            break;
+        }
+    }
+    // Past 1 MiB the daemon stops reading and shuts the socket: a read
+    // sees the end (or a reset), not a timeout and never a reply.
+    if !closed {
+        let mut line = String::new();
+        match long.reader.read_line(&mut line) {
+            Ok(0) => {}
+            Err(e) if e.kind() == ErrorKind::ConnectionReset => {}
+            other => panic!("the connection was still open: {other:?} {line}"),
+        }
+    }
+    assert!(other.call("status", None, Value::Null).is_ok());
+}
+
+#[test]
 fn the_interface_hears_actions_and_config_changes() {
     let d = start("ui");
     let mut ui = Client::connect(&d);
@@ -516,6 +638,31 @@ fn the_interface_hears_actions_and_config_changes() {
         )
         .unwrap()["interval"],
         2000
+    );
+}
+
+#[test]
+fn an_interface_pid_out_of_range_is_not_taken() {
+    // Audit 2026-11-21, L37: 4294967297 was cut to 1, and 0 was taken.
+    let d = start("uipid");
+    let mut ui = Client::connect(&d);
+    let mut cli = Client::connect(&d);
+    ui.hello();
+    cli.hello();
+    for pid in [json!(4_294_967_297u64), json!(0), json!(2_147_483_648u64)] {
+        ui.call("subscribe", Some("ui"), json!({"role": "ui", "pid": pid}))
+            .unwrap();
+        assert_eq!(
+            cli.call("status", None, Value::Null).unwrap()["ui"],
+            Value::Null,
+            "pid {pid}"
+        );
+    }
+    ui.call("subscribe", Some("ui"), json!({"role": "ui", "pid": 4321}))
+        .unwrap();
+    assert_eq!(
+        cli.call("status", None, Value::Null).unwrap()["ui"]["pid"],
+        4321
     );
 }
 
@@ -608,6 +755,34 @@ fn re_subscribing_cannot_beat_the_floor() {
         }
     }
     assert!((1..=4).contains(&events), "{events} events in 2.5 s");
+}
+
+#[test]
+fn re_subscribing_to_a_stream_that_is_not_live_keeps_its_two_second_floor() {
+    // Audit 2026-11-21, L14: each subscribe asked for a sample at once,
+    // held back only by a 1 s gap, so re-subscribing every second sampled
+    // a stream that is not live every second.
+    let d = start("resubfloor");
+    let mut c = Client::connect(&d);
+    c.hello();
+    let t = Instant::now();
+    for at in [0u64, 600, 1200, 1800] {
+        if let Some(wait) = Duration::from_millis(at).checked_sub(t.elapsed()) {
+            std::thread::sleep(wait);
+        }
+        c.send("subscribe", Some("fake"), json!({}));
+    }
+    std::thread::sleep(Duration::from_millis(2300).saturating_sub(t.elapsed()));
+    c.stream
+        .set_read_timeout(Some(Duration::from_millis(200)))
+        .unwrap();
+    let mut events = 0;
+    while let Some(f) = c.frame() {
+        if matches!(f, ServerFrame::Event(_)) {
+            events += 1;
+        }
+    }
+    assert!((1..=2).contains(&events), "{events} samples in 2.5 s");
 }
 
 #[test]
@@ -747,6 +922,58 @@ fn copy_tree(from: &std::path::Path, to: &std::path::Path) {
             std::fs::copy(e.path(), dest).unwrap();
         }
     }
+}
+
+#[test]
+fn a_get_of_self_leaves_the_subscribers_baseline() {
+    // Audit 2026-11-21, L30: `get self` read the subscriber's meter, so
+    // the next event's CPU covered only the time since the get.
+    let dir = PathBuf::from("/tmp").join(format!("mqp-selfget-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let tree = dir.join("root");
+    std::fs::create_dir_all(tree.join("proc/self")).unwrap();
+    let stat = |ticks: u64| {
+        format!("4321 (mirqab) S 1 4321 4321 0 -1 0 0 0 0 0 {ticks} 0 0 0 20 0 4 0 100 0 0 0\n")
+    };
+    std::fs::write(tree.join("proc/self/stat"), stat(100)).unwrap();
+    std::fs::write(
+        tree.join("proc/self/status"),
+        "VmRSS:\t100 kB\nThreads:\t2\n",
+    )
+    .unwrap();
+    let socket = dir.join("run/daemon.sock");
+    let server = server::listen(Options {
+        socket: socket.clone(),
+        root: Root::new(&tree),
+        config_path: dir.join("config.json"),
+        samplers: Vec::new(),
+        history: None,
+        minute_period: None,
+    })
+    .expect("listens");
+    std::thread::spawn(move || server.serve());
+    let d = Daemon { socket, dir };
+    let mut sub = Client::connect(&d);
+    let mut cli = Client::connect(&d);
+    sub.hello();
+    cli.hello();
+    sub.call("subscribe", Some("self"), json!({"interval": 2000}))
+        .unwrap();
+    assert_eq!(
+        sub.event("self").unwrap()["daemon"]["cpu"],
+        0.0,
+        "the first"
+    );
+    std::thread::sleep(Duration::from_millis(400));
+    // The only CPU the process ever uses comes before the get.
+    std::fs::write(d.dir.join("root/proc/self/stat"), stat(150)).unwrap();
+    let got = cli.call("get", Some("self"), Value::Null).unwrap();
+    assert!(got["daemon"]["cpu"].as_f64().unwrap() > 0.0, "{got}");
+    let next = sub.event("self").unwrap();
+    assert!(
+        next["daemon"]["cpu"].as_f64().unwrap() > 0.0,
+        "the get moved the baseline: {next}"
+    );
 }
 
 #[test]
@@ -988,7 +1215,7 @@ fn subscribers(c: &mut Client, stream: &str) -> Value {
 #[test]
 fn a_re_subscribe_replaces_the_view_and_leaves_no_old_one() {
     // D6 of the review of PR #16.
-    let d = start("resub");
+    let d = start("resubview");
     let mut c = Client::connect(&d);
     c.hello();
     c.call("subscribe", Some("counted"), json!({"x": 1}))
@@ -997,12 +1224,13 @@ fn a_re_subscribe_replaces_the_view_and_leaves_no_old_one() {
     c.call("subscribe", Some("counted"), json!({"x": 2}))
         .unwrap();
     // `call` skipped what came before its reply; everything after it is
-    // the new view, at once (a changed subscription samples now) and on.
+    // the new view, as soon as the 2 s floor allows (a changed
+    // subscription samples now, audit 2026-11-21, L14) and on.
     let t = Instant::now();
     for _ in 0..2 {
         assert_eq!(c.event("counted").unwrap()["params"], json!({"x": 2}));
     }
-    assert!(t.elapsed() < Duration::from_secs(4));
+    assert!(t.elapsed() < Duration::from_secs(5));
     assert_eq!(subscribers(&mut c, "counted"), 1, "replaced, not added");
     c.call("unsubscribe", Some("counted"), Value::Null).unwrap();
     assert_eq!(subscribers(&mut c, "counted"), 0);
@@ -1181,6 +1409,26 @@ fn a_stream_left_without_subscribers_is_told_before_its_next_sample() {
     assert_eq!(c.event("counted").unwrap()["idle"], 1, "and only one");
 }
 
+#[test]
+fn a_get_with_no_subscriber_leaves_nothing_kept() {
+    // Audit 2026-11-21, L20: a `get` left what the sampler kept for it
+    // (the procfs cache, the owner map) until a later subscribe came and
+    // went. With a subscriber, the sampler keeps what it serves.
+    let d = start("getidle");
+    let mut c = Client::connect(&d);
+    c.hello();
+    let idle =
+        |c: &mut Client| c.call("status", None, Value::Null).unwrap()["counted_idle"].clone();
+    c.call("get", Some("counted"), json!({})).unwrap();
+    assert_eq!(idle(&mut c), 1, "told once, after the get");
+    let mut sub = Client::connect(&d);
+    sub.hello();
+    sub.call("subscribe", Some("counted"), json!({})).unwrap();
+    sub.event("counted").unwrap();
+    c.call("get", Some("counted"), json!({})).unwrap();
+    assert_eq!(idle(&mut c), 1, "not told while a subscriber is served");
+}
+
 /// A stream whose minute writes one event naming the config it was given.
 struct Minuter;
 impl Sampler for Minuter {
@@ -1285,6 +1533,94 @@ fn the_minute_writer_writes_a_samplers_events() {
 
 /// The gaps between `n` consecutive `stream` events, with `busy` called
 /// between reads from another client.
+#[test]
+fn a_hand_edit_of_the_config_is_applied_and_announced() {
+    // Audit 2026-11-21, L10: a hand edit was read, but open live
+    // subscriptions kept the old floor and the interface was not told.
+    let d = start_with("cfgedit", Vec::new(), true, Some(Duration::from_secs(1)));
+    let mut ui = Client::connect(&d);
+    let mut c = Client::connect(&d);
+    ui.hello();
+    c.hello();
+    ui.call("subscribe", Some("ui"), json!({"role": "ui", "pid": 4321}))
+        .unwrap();
+    c.call(
+        "subscribe",
+        Some("self"),
+        json!({"interval": 1000, "live": true}),
+    )
+    .unwrap();
+    assert_eq!(c.interval("self"), 1000);
+    let path = d.dir.join("config/mirqab/config.json");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(&path, r#"{"live":{"intervalMs":3000}}"#).unwrap();
+    // The minute writer reads the file each period; nothing else asks.
+    assert_eq!(ui.event("ui").unwrap(), json!({"event": "config-changed"}));
+    assert_eq!(c.interval("self"), 3000);
+    // Read again unchanged, it is not announced again.
+    ui.stream
+        .set_read_timeout(Some(Duration::from_millis(1500)))
+        .unwrap();
+    assert!(ui.event("ui").is_none(), "announced twice");
+}
+
+#[test]
+fn a_hand_edit_found_by_a_set_is_applied_and_announced() {
+    // Review of audit 2026-11-21, L10: `config.set` re-reads the file
+    // itself, dry run or not, so a hand edit it found was taken in without
+    // the new floor or `config-changed`. No minute writer: only the sets
+    // read the file here.
+    let d = start_with("cfgset", Vec::new(), false, None);
+    let mut ui = Client::connect(&d);
+    let mut c = Client::connect(&d);
+    ui.hello();
+    c.hello();
+    ui.call("subscribe", Some("ui"), json!({"role": "ui", "pid": 4321}))
+        .unwrap();
+    c.call(
+        "subscribe",
+        Some("self"),
+        json!({"interval": 1000, "live": true}),
+    )
+    .unwrap();
+    let path = d.dir.join("config/mirqab/config.json");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let edit = "{\"live\":{\"intervalMs\":3000}}";
+    std::fs::write(&path, edit).unwrap();
+    let dry = c
+        .call(
+            "config.set",
+            None,
+            json!({"key": "trends.topApps", "value": false, "dryRun": true}),
+        )
+        .unwrap();
+    assert!(dry["wouldDo"].is_array(), "{dry}");
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), edit, "dry run");
+    assert_eq!(ui.event("ui").unwrap(), json!({"event": "config-changed"}));
+    assert_eq!(c.interval("self"), 3000);
+    // A real set of another key carries the next hand edit too.
+    std::fs::write(&path, "{\"live\":{\"intervalMs\":4000}}").unwrap();
+    c.call(
+        "config.set",
+        None,
+        json!({"key": "trends.topApps", "value": false}),
+    )
+    .unwrap();
+    assert_eq!(ui.event("ui").unwrap(), json!({"event": "config-changed"}));
+    assert_eq!(c.interval("self"), 4000);
+    // A dry run that finds nothing new announces nothing.
+    c.call(
+        "config.set",
+        None,
+        json!({"key": "trends.topApps", "value": true, "dryRun": true}),
+    )
+    .unwrap();
+    ui.stream
+        .set_read_timeout(Some(Duration::from_millis(1500)))
+        .unwrap();
+    assert!(ui.event("ui").is_none(), "a plain dry run announced");
+}
+
 #[test]
 fn a_history_query_is_clamped_and_its_series_capped() {
     // Plan 001, deferred to plan 005.
