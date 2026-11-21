@@ -1210,7 +1210,12 @@ read commands of 5. Where it differs from the plan or adds to it:
   a session's job is its foreground process group's leader, else its
   oldest process that is not a shell, and a script run by `node`,
   `python` and the like is named after the script (`vite`); a session of
-  shells only stays with the terminal. Rule 5 climbs only through other
+  shells only stays with the terminal. Code given inline (`python3 -c`,
+  `perl -e`, `node -e`/`--eval`, `deno eval`) or a script argument that
+  is not a plain file name of at most 64 bytes names the job after the
+  interpreter, and an option's separate value (`-W ignore`) is skipped:
+  the name reaches the top-apps row and agents (`script_of`, audit of
+  2026-11-21). Rule 5 climbs only through other
   rule-5 processes of the user (`tree_groups`, `group.rs:409`). Group ids:
   `scope:`, `service:`, `flatpak:`, `container:` (12 hex), `session:`,
   `tree:`, `system`.

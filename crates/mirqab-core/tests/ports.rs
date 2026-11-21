@@ -11,7 +11,8 @@
 //! (`pids`), independent holders are rows of their own, one process on two
 //! binds is two rows, addresses on `lo`, a veth and an alias label get
 //! their scopes, and the interface table is read again when the bind
-//! addresses change.
+//! addresses change. From the audit: a tick maps a worker that joined a
+//! mapped socket once the map is 30 s old.
 
 use mirqab_core::Root;
 use mirqab_core::act::Recording;
@@ -25,7 +26,7 @@ use serde_json::{Value, json};
 use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 fn fixture_dir(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -547,6 +548,42 @@ fn a_forked_servers_workers_join_the_parents_row() {
         status["owners"], 7,
         "every pid that holds a socket: {status}"
     );
+}
+
+#[test]
+fn a_tick_maps_a_worker_that_joined_a_mapped_socket_within_30_s() {
+    // A worker forked after the build (a respawn, a prefork server
+    // scaling up) changes neither the inodes nor a mapped pid. The map
+    // is built again once it is 30 s old, so `pids` and `rssBytes` catch
+    // up without a `get` (audit of plan 007).
+    let s = scratch_copy("joined");
+    let root = Root::new(&s.0);
+    let mut p = probed(&root);
+    let all = [json!({})];
+    p.wants(&all);
+    let t0 = Instant::now();
+    p.sample(&root, t0);
+    assert_eq!(rebuilds(&p), 1);
+    clone_proc(&s.0, 6410, 6700, 6410);
+    let d = data(ports::view(
+        &p.sample(&root, t0 + Duration::from_secs(25)),
+        &json!({}),
+    ));
+    assert_eq!(rebuilds(&p), 1, "no rebuild inside the window");
+    assert_eq!(row(&d, 3000).pids, [6410]);
+    let d = data(ports::view(
+        &p.sample(&root, t0 + Duration::from_secs(30)),
+        &json!({}),
+    ));
+    assert_eq!(rebuilds(&p), 2, "built again at 30 s");
+    let next = row(&d, 3000);
+    assert_eq!(next.pids, [6410, 6700]);
+    assert_eq!(
+        next.rss_bytes,
+        Some(2 * 60_000 * selfcost::page_size(&root))
+    );
+    p.sample(&root, t0 + Duration::from_secs(35));
+    assert_eq!(rebuilds(&p), 2, "the window starts again");
 }
 
 #[test]

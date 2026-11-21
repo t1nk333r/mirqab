@@ -18,7 +18,7 @@ pub mod pressure;
 pub mod temps;
 
 use crate::history::SERIES;
-use crate::proto::stream::{self, Advice, Cpu, Mem, Power, SystemData};
+use crate::proto::stream::{self, Advice, Cpu, Gpu, Mem, Power, SystemData, Temp};
 use crate::root::Root;
 use crate::sampler::Sampler;
 use cpu::Stat;
@@ -41,6 +41,10 @@ const NVIDIA_EVERY: Duration = Duration::from_secs(2);
 /// After a failed or empty `nvidia-smi` (no driver: nouveau, vfio), wait
 /// this long before the next try (review of PR #7).
 const NVIDIA_RETRY: Duration = Duration::from_secs(60);
+/// An awake dGPU's sensors are read at most this often, twice amdgpu's
+/// 5 s autosuspend delay, so polling never keeps an idle card powered;
+/// a faster stream repeats the last values (audit of plan 002).
+const DGPU_EVERY: Duration = Duration::from_secs(10);
 /// A baseline younger than this gives no useful rate; older than the
 /// minute gap, a stale one (review of PR #7).
 const BASELINE_MIN: Duration = Duration::from_secs(1);
@@ -81,6 +85,26 @@ impl Reading {
     }
 }
 
+/// A dGPU's last reading: when, the card's fields and its hwmon chips'
+/// rows by directory.
+#[derive(Debug, Clone)]
+struct DgpuReading {
+    at: Instant,
+    gpu: Gpu,
+    chips: BTreeMap<String, Vec<Temp>>,
+}
+
+/// What one build does with the awake dGPUs (`System::dgpu_plan`).
+#[derive(Default)]
+struct DgpuPlan {
+    /// Cards that repeat their last reading.
+    held: BTreeMap<String, Gpu>,
+    /// Their chips' rows, and the due cards' chips to fill in.
+    chips: temps::Held,
+    /// Cards due for a read, with their hwmon directories.
+    due: Vec<(String, Vec<String>)>,
+}
+
 #[derive(Default)]
 pub struct System {
     live: Option<Reading>,
@@ -92,6 +116,8 @@ pub struct System {
     psi_hour: VecDeque<f64>,
     nvidia: Option<(Instant, Vec<NvidiaRow>)>,
     has_nvidia: bool,
+    /// Each awake dGPU's last reading, by card.
+    dgpu: BTreeMap<String, DgpuReading>,
     cpu_ids: Vec<u32>,
     model: Option<String>,
     physical: Option<u32>,
@@ -153,8 +179,53 @@ impl System {
         }
     }
 
+    /// Which awake dGPUs repeat their last reading (read less than
+    /// `DGPU_EVERY` before `now`), with their chips' rows; and which are
+    /// due, with their hwmon directories, to be read and remembered. A
+    /// suspended card's reading is dropped: it is read afresh once awake.
+    fn dgpu_plan(&mut self, root: &Root, now: Instant) -> DgpuPlan {
+        let DgpuPlan {
+            mut held,
+            mut chips,
+            mut due,
+        } = DgpuPlan::default();
+        for card in gpu::cards(root) {
+            let dev = format!("sys/class/drm/{card}/device");
+            if !gpu::throttled(root, &dev) {
+                continue;
+            }
+            if gpu::suspended(root, &dev) {
+                self.dgpu.remove(&card);
+                continue;
+            }
+            match self
+                .dgpu
+                .get(&card)
+                .filter(|r| now.saturating_duration_since(r.at) < DGPU_EVERY)
+            {
+                Some(r) => {
+                    chips.extend(r.chips.iter().map(|(d, t)| (d.clone(), Some(t.clone()))));
+                    held.insert(card, r.gpu.clone());
+                }
+                None => {
+                    let dirs = gpu::hwmon_dirs(root, &dev);
+                    chips.extend(dirs.iter().map(|d| (d.clone(), None)));
+                    due.push((card, dirs));
+                }
+            }
+        }
+        DgpuPlan { held, chips, due }
+    }
+
     /// One snapshot of everything, with rates against `prev` when given.
-    fn build(&mut self, root: &Root, cur: &Reading, prev: Option<&Reading>) -> SystemData {
+    /// `disks`: whether the disk temperature sensors are read (`temps::read`).
+    fn build(
+        &mut self,
+        root: &Root,
+        cur: &Reading,
+        prev: Option<&Reading>,
+        disks: bool,
+    ) -> SystemData {
         let secs = prev.map_or(0.0, |p| cur.at.duration_since(p.at).as_secs_f64());
         let shares = match (prev.and_then(|p| p.stat.all), cur.stat.all) {
             (Some(p), Some(n)) => cpu::shares(&p, &n),
@@ -202,7 +273,12 @@ impl System {
             swap_out_per_sec: rates.map(|r| cpu::round1(r[3])),
             oom_kills: cur.vm.and_then(|v| v.oom_kill),
         });
-        let temps = temps::read(root);
+        let DgpuPlan {
+            held,
+            mut chips,
+            due,
+        } = self.dgpu_plan(root, cur.at);
+        let temps = temps::read(root, disks, &mut chips);
         let throttling = match (prev.and_then(|p| p.throttle), cur.throttle) {
             (Some(p), Some(n)) => n > p,
             (_, Some(_)) => false,
@@ -210,7 +286,27 @@ impl System {
         };
         let thermal = temps::thermal(&temps, throttling);
         let nvidia = self.nvidia_rows(root, cur.at);
-        let gpus = gpu::read(root, &nvidia);
+        let gpus = gpu::read(root, &nvidia, &held);
+        for (card, dirs) in due {
+            let Some(g) = gpus.iter().find(|g| g.id == card && !g.suspended) else {
+                continue;
+            };
+            let chips = dirs
+                .into_iter()
+                .filter_map(|d| {
+                    let rows = chips.get(&d).cloned().flatten()?;
+                    Some((d, rows))
+                })
+                .collect();
+            self.dgpu.insert(
+                card,
+                DgpuReading {
+                    at: cur.at,
+                    gpu: g.clone(),
+                    chips,
+                },
+            );
+        }
         let package = match (prev.and_then(|p| p.energy), cur.energy) {
             (Some((p, _)), Some((n, max))) => power::watts(p, n, max, secs).map(cpu::round1),
             _ => None,
@@ -320,7 +416,9 @@ impl System {
             .take()
             .filter(|(_, w)| wall > *w && wall - w <= MAX_MINUTE_GAP_SECS)
             .map(|(r, _)| r);
-        let data = self.build(root, &cur, prev.as_ref());
+        // No series stores a disk temperature, and the minute runs with
+        // nobody looking: it leaves the disks to spin down.
+        let data = self.build(root, &cur, prev.as_ref(), false);
         let acc = std::mem::take(&mut self.acc);
         let mean =
             |k: &str, point: Option<f64>| acc.get(k).map(|(s, n)| s / f64::from(*n)).or(point);
@@ -458,7 +556,7 @@ impl Sampler for System {
             .take()
             .filter(|p| now.duration_since(p.at) <= LIVE_STALE)
             .or_else(|| self.minute_baseline(now));
-        let data = self.build(root, &cur, prev.as_ref());
+        let data = self.build(root, &cur, prev.as_ref(), true);
         self.accumulate(&data);
         self.live = Some(cur);
         serde_json::to_value(data).unwrap_or(Value::Null)
@@ -493,7 +591,7 @@ impl Sampler for System {
                 )
             }
         };
-        let data = self.build(root, &cur, Some(&prev));
+        let data = self.build(root, &cur, Some(&prev), true);
         serde_json::to_value(data).unwrap_or(Value::Null)
     }
 
