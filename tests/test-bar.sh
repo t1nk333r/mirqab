@@ -6,6 +6,8 @@
 # mirqab:covers crates/mirqab/src/bar/** crates/mirqab/src/{main,cli}.rs
 # mirqab:covers crates/mirqab-proto/src/strings.rs crates/mirqab-core/src/sys.rs
 # mirqab:covers tests/fixtures/root-desktop/** tests/fixtures/root-desktop.t1/**
+# mirqab:covers crates/mirqab-core/src/samplers/system/**
+# mirqab:covers-shared
 
 sandbox
 build_bins

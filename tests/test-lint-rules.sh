@@ -162,3 +162,18 @@ status_is "cargo tree failing fails the link rule" 1 "$STATUS"
 like "and says so" "$OUTPUT" "cargo tree -p mirqab-no-such-crate failed"
 capture env CARGO_DENY=/nonexistent "$REPO/tools/lint.sh" --tree mirqab-proto
 status_is "--tree runs only the link rule, and a headless crate passes it" 0 "$STATUS"
+
+# A test that starts the daemon declares covers-shared and covers the
+# fixture trees it runs the daemon on (audit of the gates).
+plant "a daemon test without covers-shared" tests/test-x.sh "$(printf '%s\n' '# mirqab:covers tests/fixtures/root-desktop/**' '' 'start_daemon root-desktop')" "starts the daemon without # mirqab:covers-shared"
+plant "a daemon test on a fixture it does not cover" tests/test-x.sh "$(printf '%s\n' '# mirqab:covers-shared' '' 'start_daemon root-minimal')" "fixture root-minimal is not in a covers line"
+plant "a daemon test on a copy of a fixture it does not cover" tests/test-x.sh "$(printf '%s\n' '# mirqab:covers-shared' '# mirqab:covers tests/fixtures/root-minimal/**' '' 'cp -r "$FIXTURES/root-desktop" "$ROOT"' 'start_daemon "$ROOT"')" "fixture root-desktop is not in a covers line"
+t="$(tree daemon)"
+mkdir -p "$t/tests"
+printf '%s\n' '# mirqab:covers-shared' '# mirqab:covers tests/fixtures/root-desktop/**' '' \
+    'cp -r "$FIXTURES/root-desktop" "$ROOT"' 'start_daemon "$ROOT"' >"$t/tests/test-x.sh"
+printf '%s\n' '# mirqab:covers tests/fixtures/** crates/**' '# mirqab:covers-shared' '' 'start_daemon root-laptop' >"$t/tests/test-y.sh"
+printf '%s\n' '# mirqab:covers tools/x.sh' '' 'ls "$FIXTURES/root-desktop"' >"$t/tests/test-z.sh"
+capture "$REPO/tools/lint.sh" --rules "$t"
+status_is "declared daemon tests and a test that starts no daemon pass" 0 "$STATUS"
+is "and report nothing" "" "$OUTPUT"
