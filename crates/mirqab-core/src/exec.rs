@@ -110,9 +110,7 @@ pub fn run(argv: &[&str], input: Option<&[u8]>, timeout: Duration) -> Result<Out
             Err(_) => break,
         }
     }
-    while let Ok(Chunk::Data(i, b)) = rx.try_recv() {
-        bufs[i].extend_from_slice(&b);
-    }
+    drain_ready(&rx, &mut bufs);
     // One byte that is not UTF-8 must not cost the whole stream.
     let [out, err] = bufs;
     Ok(Output {
@@ -130,6 +128,17 @@ const GRACE: Duration = Duration::from_millis(100);
 enum Chunk {
     Data(usize, Vec<u8>),
     Eof,
+}
+
+/// Takes the data already queued, past any end-of-stream between: once
+/// the wait has given up, one stream's end can sit ahead of the other's
+/// last bytes.
+fn drain_ready(rx: &mpsc::Receiver<Chunk>, bufs: &mut [Vec<u8>; 2]) {
+    while let Ok(c) = rx.try_recv() {
+        if let Chunk::Data(i, b) = c {
+            bufs[i].extend_from_slice(&b);
+        }
+    }
 }
 
 /// Reads `pipe` to its end on a thread of its own, sending what arrives.
@@ -207,12 +216,27 @@ mod tests {
         let r = run(
             &["sh", "-c", "echo early; sleep 5 & exit 0"],
             None,
-            Duration::from_millis(300),
+            Duration::from_secs(1),
         );
         assert!(t.elapsed() < Duration::from_secs(2), "{:?}", t.elapsed());
         let out = r.unwrap();
         assert_eq!(out.status, Some(0));
         assert_eq!(out.stdout, "early\n");
+    }
+
+    #[test]
+    fn the_final_drain_reads_past_an_end_of_stream() {
+        // Review of audit 2026-11-21, L4: after the wait times out, the
+        // queue can hold stderr's end ahead of stdout's last bytes. The
+        // threads' timing cannot be forced through `run`, so the queue is
+        // built by hand.
+        let (tx, rx) = mpsc::channel();
+        tx.send(Chunk::Eof).unwrap();
+        tx.send(Chunk::Data(0, b"late".to_vec())).unwrap();
+        tx.send(Chunk::Data(1, b"err".to_vec())).unwrap();
+        let mut bufs = [Vec::new(), Vec::new()];
+        drain_ready(&rx, &mut bufs);
+        assert_eq!(bufs, [b"late".to_vec(), b"err".to_vec()]);
     }
 
     #[test]
