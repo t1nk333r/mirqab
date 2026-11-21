@@ -1195,3 +1195,68 @@ fn a_remapped_page_shows_nothing_before_its_first_frame() {
     assert!(!handle.rows().is_empty(), "the next frame fills it");
     ctx.client.close();
 }
+
+/// Every widget under `w` with an accessible label on the Generic role,
+/// as "type name: role" lines. GTK 4.14+ computes names by ARIA's rules,
+/// and Generic is a nameless container, so its label never reaches a
+/// screen reader (audit: "Range" and "Sidebar" were lost). Presentation
+/// is left out on purpose: a decorative glyph's text is meant to stay
+/// hidden.
+fn nameless_labels(w: &gtk::Widget, out: &mut Vec<String>) {
+    let role = w.accessible_role();
+    if role == gtk::AccessibleRole::Generic
+        && gtk::test_accessible_has_property(w, gtk::AccessibleProperty::Label)
+    {
+        out.push(format!(
+            "{} {:?}: {role:?}",
+            w.type_().name(),
+            w.widget_name()
+        ));
+    }
+    let mut c = w.first_child();
+    while let Some(child) = c {
+        nameless_labels(&child, out);
+        c = child.next_sibling();
+    }
+}
+
+#[gtk::test]
+#[ignore = "needs a display: run tests/test-ui-widgets.sh"]
+fn every_accessible_label_sits_on_a_role_that_carries_a_name() {
+    use mirqab_ui::tabs::apps::process_row::ProcessRow;
+    use mirqab_ui::widgets::range_picker::RangePicker;
+    use mirqab_ui::widgets::sidebar::Sidebar;
+    use mirqab_view::tabs::apps::{self as model, AppsState, Row};
+    let mut bad = Vec::new();
+
+    let picker = RangePicker::new("1h", |_| {});
+    nameless_labels(picker.root.upcast_ref(), &mut bad);
+
+    let sidebar = Sidebar::new(|_| {});
+    let tiles = mirqab_view::shell::sidebar(mirqab_view::shell::TABS, &[], &[]);
+    sidebar.set_tiles(&tiles, "home");
+    nameless_labels(sidebar.root.upcast_ref(), &mut bad);
+
+    // A process row, from the flat list.
+    let frame = golden_frame();
+    let mut flat = AppsState::default();
+    flat.flatten = true;
+    let rows = model::rows(&frame, &flat, "");
+    let p = rows
+        .iter()
+        .find_map(|r| match r {
+            Row::Process(p) => Some(p),
+            _ => None,
+        })
+        .expect("a process row");
+    let row = ProcessRow::new();
+    row.show(p);
+    nameless_labels(row.root.upcast_ref(), &mut bad);
+
+    // The Apps page: its group rows, list and inspector.
+    let (ctx, page, _handle, _win) = apps_page();
+    nameless_labels(&page, &mut bad);
+    ctx.client.close();
+
+    assert!(bad.is_empty(), "labels no screen reader hears: {bad:#?}");
+}

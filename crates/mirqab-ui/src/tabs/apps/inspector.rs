@@ -24,6 +24,7 @@ use crate::tabs::apps::{icon_slot, set_app_icon};
 use crate::widgets::confirm_dialog;
 use crate::widgets::graph::{Graph, Live};
 use crate::widgets::icon::icon_button;
+use crate::widgets::named_box;
 use adw::prelude::*;
 use gtk::glib;
 use mirqab_proto::stream::{self, Inspect};
@@ -121,7 +122,7 @@ impl Inspector {
         on_close: Rc<dyn Fn()>,
         on_outcome: Rc<dyn Fn(Outcome)>,
     ) -> Rc<Inspector> {
-        let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        let root = named_box(gtk::Orientation::Vertical, gtk::AccessibleRole::Group);
         root.add_css_class("mirqab-apps-inspector");
         root.set_widget_name("apps-inspector");
         root.update_property(&[gtk::accessible::Property::Label(strings::APPS_INSPECTOR)]);

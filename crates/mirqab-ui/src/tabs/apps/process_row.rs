@@ -3,6 +3,7 @@
 //! is indented; in the flat list it names its group instead.
 
 use crate::widgets::meter::Meter;
+use crate::widgets::named_box;
 use gtk::prelude::*;
 use mirqab_view::tabs::apps::ProcessLine;
 
@@ -25,7 +26,7 @@ impl Default for ProcessRow {
 
 impl ProcessRow {
     pub fn new() -> ProcessRow {
-        let root = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        let root = named_box(gtk::Orientation::Horizontal, gtk::AccessibleRole::Group);
         root.add_css_class("mirqab-apps-row");
         let name = gtk::Label::new(None);
         name.set_xalign(0.0);
