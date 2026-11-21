@@ -624,6 +624,10 @@ wakeup) and treated the same way: open live subscriptions take a new
 `live.intervalMs` and `ui` gets `config-changed`. A config the
 daemon cannot parse is left untouched, reported in `status`, and defaults
 are used: the app never rewrites a file the user broke by hand.
+`theme.accent` and `units.clock` are reserved keys: accepted and checked,
+so a config that sets them stays valid, but read by nothing yet. No clock
+is shown before plan 016, which decides the clock format's key; its
+draft names `time.hour12` (`plans/016-time-tab.md`, "Clock format").
 
 With `mirqab daemon --root DIR` (fixture trees, used by the tests) the
 daemon keeps `history.db` and `config.json` beside its socket instead, so
@@ -772,7 +776,9 @@ only in part.
 
 `history.query` returns `avg` and `max` per bucket, so a short spike stays
 visible at 30 d. The 2 min range arrives on the live stream itself (each
-event carries the newest point; the interface keeps the ring). Choosing
+event carries the newest point; the interface keeps the ring, stamped
+with the wall clock, and starts it again when that clock steps back by
+more than a second). Choosing
 any other range on a graph ends its `live` subscription (§5.3): a graph of
 stored minutes is redrawn once a minute, not once a second.
 
@@ -787,7 +793,9 @@ own tokens, icons and words:
   tile filled with the accent. Order: Home, Apps, System, Fans, Disk,
   Network, Devices, Battery, Volume, Ports, Agents, Awake, Time, Weather;
   then, pushed to the bottom, Trends and Support. A tile can carry a count
-  badge (Ports: listeners; Agents: sessions that need the user). Tabs the
+  badge (Ports: listeners; Agents: sessions that need the user), which is
+  also the tile's accessible description in words ("3 ports listening"),
+  since its label is the tab's name. Tabs the
   machine cannot serve are hidden (Battery, Fans without sensors).
 - **Page**, right: a scrolling column of cards with rounded corners. A card
   has a title, an optional range picker (2m, 1h, 24h, 7d, 30d) and a
@@ -962,7 +970,8 @@ Three layers, cheapest first:
 3. **Each page once, against a real daemon.** `mirqab-ui --selftest <tab>`
    builds that page in window mode against the socket of a daemon serving
    a fixture root, waits for the first event, prints the widget tree as
-   JSON (type, style classes, text, accessible label) and exits.
+   JSON (type, style classes, text, accessible label) and exits. A tab
+   id the window cannot open is refused at once (exit 64).
    `tests/test-ui-<tab>.sh` asserts on that JSON with `jq`.
    With `--do STEPS` (accepted only with `MIRQAB_TEST=1`, also when the
    arguments reach a running interface over the session bus, which never

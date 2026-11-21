@@ -976,6 +976,20 @@ pub fn tab_label(id: &str) -> Option<&'static str> {
     })
 }
 
+/// A tile's count badge in words, its accessible description: Ports
+/// counts listening ports, Agents the sessions that need the user
+/// (architecture §7.1; audit 2026-11-21, L54). Another tab's count is
+/// read as the bare number.
+pub fn tile_badge(tab: &str, n: u32) -> String {
+    match (tab, n) {
+        ("ports", 1) => "1 port listening".to_string(),
+        ("ports", _) => format!("{n} ports listening"),
+        ("agents", 1) => "1 session needs you".to_string(),
+        ("agents", _) => format!("{n} sessions need you"),
+        _ => n.to_string(),
+    }
+}
+
 /// The placeholder on a tab whose plan has not landed yet.
 pub fn placeholder_title(tab: &str) -> String {
     format!("{} is not built yet", tab_label(tab).unwrap_or(tab))
@@ -2196,6 +2210,9 @@ pub fn apps_outcome(name: &str, text: &str) -> String {
 pub const UI_SELFTEST_NOT_FORWARDED: &str =
     "mirqab-ui: --selftest is not passed to a running interface";
 
+/// `--selftest` with a tab id that names no tab (audit 2026-11-21, L57).
+pub const UI_SELFTEST_UNKNOWN_TAB: &str = "mirqab-ui: --selftest takes a tab id";
+
 /// A warning the daemon gave with the plan (the sound server, a portal).
 pub fn apps_warning(text: &str) -> String {
     format!("Warning: {}", plain(text))
@@ -2355,6 +2372,15 @@ pub fn bad_proto(v: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_tile_badge_says_what_it_counts() {
+        assert_eq!(tile_badge("ports", 1), "1 port listening");
+        assert_eq!(tile_badge("ports", 3), "3 ports listening");
+        assert_eq!(tile_badge("agents", 1), "1 session needs you");
+        assert_eq!(tile_badge("agents", 2), "2 sessions need you");
+        assert_eq!(tile_badge("trends", 4), "4");
+    }
 
     #[test]
     fn docs_cli_md_is_the_generated_markdown() {

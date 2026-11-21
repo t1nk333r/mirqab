@@ -231,14 +231,7 @@ impl Default for Graph {
 impl Graph {
     pub fn new() -> Graph {
         let g: Graph = glib::Object::new();
-        let weak = g.downgrade();
-        style::on_change(move || {
-            let Some(g) = weak.upgrade() else {
-                return false;
-            };
-            g.queue_draw();
-            true
-        });
+        style::on_change(&g, Graph::queue_draw);
         g
     }
 
@@ -401,10 +394,16 @@ impl Graph {
 
     /// Adds a live sample and keeps the ring to two minutes. Samples are
     /// stamped in whole seconds, so a second arrival in the same second
-    /// replaces the first rather than drawing a vertical step.
+    /// replaces the first rather than drawing a vertical step. Stamps are
+    /// wall-clock time: when the clock steps back by more than a second the
+    /// ring starts again, since the later stamps left in it would stall the
+    /// trim and the ring would grow without bound (audit 2026-11-21, L53).
     pub fn push_live(&self, t: i64, v: f64) {
         {
             let mut st = self.imp().state.borrow_mut();
+            if st.ring.back().is_some_and(|&(last, _)| last > t + 1) {
+                st.ring.clear();
+            }
             if st.ring.back().is_some_and(|&(last, _)| last >= t) {
                 st.ring.pop_back();
             }

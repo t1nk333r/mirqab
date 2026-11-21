@@ -142,7 +142,10 @@ Where it differs from the plan (2026-11-13):
 - Reordering: a drag handle (`md-drag_vertical`) shown on hover or focus
   and dropped onto another card (`home::dropped`), and Alt+Up / Alt+Down
   anywhere inside a card (`home::moved`); the moved card keeps focus after
-  the rebuild. A rebuild keeps the widgets of cards that stay pinned.
+  the rebuild. A move swaps with the nearest card Home shows, passing
+  over pinned ids it skips (unknown, unserved or repeated), so the card
+  always moves on screen (audit 2026-11-21, L51). A rebuild keeps the
+  widgets of cards that stay pinned.
 - `window.rememberTab` needs the last tab across restarts of the
   interface, which quits 60 s after it is hidden, so the config gains
   `window.lastTab`, written only while `rememberTab` is true.
