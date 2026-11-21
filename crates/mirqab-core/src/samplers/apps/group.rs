@@ -350,7 +350,18 @@ const SCRIPT_MAX: usize = 64;
 /// reaches the top-apps history row and agents, which never hold a
 /// command line (audit of plan 006). An option whose value comes as the
 /// next argument (`-W ignore`, `-r dotenv/config`) skips that value.
-fn script_of(comm: &str, mut args: &[String]) -> Option<String> {
+fn script_of(comm: &str, args: &[String]) -> Option<String> {
+    script_and_rest(comm, args).map(|(name, _)| name)
+}
+
+/// `script_of`, with the arguments after the script: the `ports` stream's
+/// label adds the next one when it is a subcommand (audit 2026-11-21, L18:
+/// the label had its own copy, without the inline-code and option-value
+/// rules).
+pub(crate) fn script_and_rest<'a>(
+    comm: &str,
+    mut args: &'a [String],
+) -> Option<(String, &'a [String])> {
     // Letters that put code on the command line, alone or in a bundle.
     let code: &[char] = match comm {
         "python" | "python3" => &['c'],
@@ -388,12 +399,12 @@ fn script_of(comm: &str, mut args: &[String]) -> Option<String> {
         }
     }
     let mut i = 0;
-    let found = loop {
+    let at = loop {
         let a = args.get(i)?.as_str();
         match a {
-            "--" => break args.get(i + 1)?.as_str(),
+            "--" => break i + 1,
             "-" => return None,
-            "-m" if comm.starts_with("python") => break args.get(i + 1)?.as_str(),
+            "-m" if comm.starts_with("python") => break i + 1,
             _ if a.starts_with("--") => {
                 let flag = a.split('=').next().unwrap_or(a);
                 if matches!(flag, "--eval" | "--print") {
@@ -407,16 +418,17 @@ fn script_of(comm: &str, mut args: &[String]) -> Option<String> {
                 }
                 i += if takes_value.contains(&a) { 2 } else { 1 };
             }
-            script => break script,
+            _ => break i,
         }
     };
+    let found = args.get(at)?.as_str();
     let name = basename(found);
     let plain = |c: char| c.is_ascii_alphanumeric() || "._-+@".contains(c);
     (!name.is_empty()
         && name.len() <= SCRIPT_MAX
         && !found.chars().any(|c| c.is_whitespace() || c.is_control())
         && name.chars().all(plain))
-    .then(|| name.to_string())
+    .then(|| (name.to_string(), args.get(at + 1..).unwrap_or(&[])))
 }
 
 fn named(entry: Option<&Entry>, fallback: String) -> (String, Option<String>) {

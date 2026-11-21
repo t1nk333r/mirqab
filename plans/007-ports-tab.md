@@ -444,7 +444,11 @@ built, with where it lives:
   1 (`families_of`, `:224`). `label` (`:74`): an interpreter's script or
   `-m` module stands for the program, joined by the next argument when it
   is a word (`next dev`, `http.server`, `manage.py runserver`, `vite`),
-  cut to 40 characters and made `plain`. `uptimeSec` is
+  cut to 40 characters and made `plain`. The script is found by the apps
+  grouping's `group::script_and_rest`, so an option's value
+  (`-W ignore`, `-r dotenv/config`) is skipped and inline code
+  (`perl -E`, `python3 -c`) leaves the interpreter's name alone (audit
+  2026-11-21, L18). `uptimeSec` is
   `procfs::age_secs` (`samplers/apps/procfs.rs:259`), which the
   inspector now uses for `ageSec` too (`inspect.rs:466`). `url`
   (`mod.rs:121`) is `http://localhost:<port>`, `https` for 443 and 8443.
