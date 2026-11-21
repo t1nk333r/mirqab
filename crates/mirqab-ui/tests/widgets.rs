@@ -1383,3 +1383,36 @@ fn every_accessible_label_sits_on_a_role_that_carries_a_name() {
 
     assert!(bad.is_empty(), "labels no screen reader hears: {bad:#?}");
 }
+
+/// Audit 2026-11-21, L54: a tile's accessible label is its tab's name, so
+/// the badge's text inside it never reached a screen reader. The count is
+/// the tile's accessible description while it shows.
+#[gtk::test]
+#[ignore = "needs a display: run tests/test-ui-widgets.sh"]
+fn a_tile_badge_is_the_tiles_accessible_description() {
+    use mirqab_ui::widgets::sidebar::Sidebar;
+    let sidebar = Sidebar::new(|_| {});
+    let tiles = mirqab_view::shell::sidebar(mirqab_view::shell::TABS, &[], &[]);
+    sidebar.set_tiles(&tiles, "home");
+    let label = tiles.iter().find(|t| t.id == "ports").unwrap().label;
+    let mut found = None;
+    let mut stack = vec![sidebar.root.clone().upcast::<gtk::Widget>()];
+    while let Some(w) = stack.pop() {
+        if w.has_css_class("mirqab-tile") && w.tooltip_text().as_deref() == Some(label) {
+            found = Some(w.clone());
+        }
+        let mut c = w.first_child();
+        while let Some(child) = c {
+            c = child.next_sibling();
+            stack.push(child);
+        }
+    }
+    let tile = found.expect("the Ports tile");
+    let described =
+        || gtk::test_accessible_has_property(&tile, gtk::AccessibleProperty::Description);
+    assert!(!described(), "no badge: no description");
+    sidebar.set_badge("ports", 3);
+    assert!(described(), "a badge of 3 is described");
+    sidebar.set_badge("ports", 0);
+    assert!(!described(), "a hidden badge is not");
+}
