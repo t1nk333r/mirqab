@@ -11,7 +11,9 @@
 //! `top-apps` minute row, `apps.inspect` with a start time (S5), GPU
 //! memory read only from DRM fds and capped (D2), `.flatpak-info` read
 //! only as a regular file (D7), and `get`'s first reading taken in
-//! `prime` (D1).
+//! `prime` (D1). Audit fixes: a `process` get's primed reading serves that
+//! get only, and a get whose baseline a tick replaced does not wait under
+//! the lock.
 
 use mirqab_core::Root;
 use mirqab_core::desktop::{Focus, FocusedSince, focused_since};
@@ -1390,4 +1392,90 @@ fn the_process_stream_serves_each_get_its_own_primed_reading() {
         t.elapsed() >= Duration::from_millis(400),
         "the queue is empty"
     );
+}
+
+/// A get of `pid` on `root`, with its `wants` set as the server sets it.
+fn process_get(p: &mut Process, root: &Root, pid: u32) -> Value {
+    let ask = json!({"pid": pid});
+    p.wants(std::slice::from_ref(&ask));
+    let got = p.snapshot(root, Instant::now());
+    process::view(&got, &ask)
+}
+
+#[test]
+fn a_primed_reading_left_by_one_get_never_answers_another_pid() {
+    // Audit: a get answered from the subscribers' baseline left its primed
+    // reading queued, and the next get of another pid took it and answered
+    // `cpu: null`.
+    let (t0, t1) = (fixture("root-desktop"), fixture("root-desktop.t1"));
+    let mut p = process_probed();
+    p.wants(&[json!({"pid": 2001})]);
+    p.sample(&t0, Instant::now());
+    // The baseline is too young for the get, which primes; by its snapshot
+    // the baseline serves, and the primed reading goes with the get.
+    p.prime(&t0, Instant::now())
+        .expect("a young baseline: a wait");
+    p.wants(&[json!({"pid": 2001})]);
+    let from_base = p.snapshot(&t1, Instant::now() + Duration::from_millis(1200));
+    assert!(process::view(&from_base, &json!({"pid": 2001}))["cpu"].is_number());
+    assert_eq!(p.primed(), 0, "the get's reading went with it");
+
+    // The process left in the gap: its reading goes too.
+    let s = scratch("procleft");
+    std::fs::create_dir_all(s.0.join("proc")).unwrap();
+    p.wants(&[json!({"pid": 2010})]);
+    p.prime(&t0, Instant::now()).expect("a wait");
+    assert_eq!(
+        process_get(&mut p, &Root::new(&s.0), 2010),
+        json!({"pid": 2010, "gone": true})
+    );
+    assert_eq!(p.primed(), 0);
+
+    // Two gets whose snapshots run in the other order each take their own.
+    let mut p = process_probed();
+    p.wants(&[json!({"pid": 2001})]);
+    p.prime(&t0, Instant::now()).expect("a wait");
+    p.wants(&[json!({"pid": 2010})]);
+    p.prime(&t0, Instant::now()).expect("a wait");
+    std::thread::sleep(Duration::from_millis(500));
+    let t = Instant::now();
+    assert!(process_get(&mut p, &t1, 2010)["cpu"].is_number());
+    assert!(process_get(&mut p, &t1, 2001)["cpu"].is_number());
+    assert!(
+        t.elapsed() < Duration::from_millis(400),
+        "{:?}",
+        t.elapsed()
+    );
+    assert_eq!(p.primed(), 0);
+}
+
+#[test]
+fn a_get_whose_baseline_a_tick_replaced_does_not_wait_under_the_lock() {
+    // Audit: `prime` found the subscribers' baseline usable and queued
+    // nothing; a tick between the get's two locked steps replaced it with
+    // a fresh one, and `snapshot` slept half a second holding the lock.
+    let (t0, t1) = (fixture("root-desktop"), fixture("root-desktop.t1"));
+    let ask = [json!({"pid": 2001})];
+    let mut p = process_probed();
+    let past = Instant::now() - Duration::from_secs(2);
+    p.wants(&ask);
+    p.sample(&t0, past);
+    p.wants(&ask);
+    assert!(
+        p.prime(&t0, Instant::now()).is_none(),
+        "the baseline serves"
+    );
+    p.wants(&ask);
+    p.sample(&t1, Instant::now());
+    let t = Instant::now();
+    let got = process_get(&mut p, &t1, 2001);
+    assert!(
+        t.elapsed() < Duration::from_millis(400),
+        "{:?}",
+        t.elapsed()
+    );
+    // 80 ticks of 100 over the 2 s since the baseline the get primed with.
+    let cpu = got["cpu"].as_f64().expect("a rate");
+    assert!((cpu - 40.0).abs() < 4.0, "{cpu}");
+    assert_eq!(p.primed(), 0);
 }

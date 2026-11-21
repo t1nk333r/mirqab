@@ -2,9 +2,12 @@
 //! Written by the daemon only; clients ask with `history.query` and
 //! `history.events`.
 
+use crate::proto::strings;
 use rusqlite::{Connection, OptionalExtension, params};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
+use std::io::ErrorKind;
+use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
 pub const SCHEMA: &str = "1";
@@ -64,9 +67,10 @@ pub const RANGES: &[(&str, i64, i64)] = &[
 /// The epoch is on a 2-hour boundary, so range buckets align as before.
 pub const EPOCH: i64 = 1_767_225_600;
 
-/// The stored minute for a unix time.
+/// The stored minute for a unix time. Saturating: a time a client gives
+/// cannot overflow it (plan 001: `i64::MIN` panicked a debug daemon).
 pub fn minute(ts: i64) -> i64 {
-    (ts - EPOCH).div_euclid(60)
+    ts.saturating_sub(EPOCH).div_euclid(60)
 }
 
 /// The unix time a stored minute starts at.
@@ -76,6 +80,30 @@ pub fn unix(minute: i64) -> i64 {
 
 pub fn range(name: &str) -> Option<(i64, i64)> {
     RANGES.iter().find(|r| r.0 == name).map(|r| (r.1, r.2))
+}
+
+/// The most points a `from`/`to` query gives a series, as the ranges do
+/// (§6.4: 360 at most).
+pub const MAX_POINTS: i64 = 360;
+
+/// A `from`/`to` query's span at `now`: clamped to what is kept, from 30
+/// days back to a minute ahead, with the smallest range bucket that keeps
+/// it within MAX_POINTS (2 hours past 30 days). None when nothing of it is
+/// kept. Unclamped, one query over years at 1-minute buckets built
+/// hundreds of MB of points (plan 001, deferred to plan 005).
+pub fn span(from: i64, to: i64, now: i64) -> Option<(i64, i64, i64)> {
+    let from = from.max(now - KEEP_SECS);
+    let to = to.min(now + 60);
+    if from >= to {
+        return None;
+    }
+    let width = to - from;
+    let bucket = RANGES
+        .iter()
+        .map(|r| r.2)
+        .find(|b| (width + b - 1) / b <= MAX_POINTS)
+        .unwrap_or(RANGES[RANGES.len() - 1].2);
+    Some((from, to, bucket))
 }
 
 const DDL: &str = "
@@ -93,8 +121,14 @@ pub struct History {
     conn: Connection,
     path: PathBuf,
     ids: BTreeMap<String, (i64, i64)>,
-    /// Set when the file was unreadable and was moved aside at open.
+    /// Set when the file was unreadable and was moved aside, at open or
+    /// by `recover`.
     pub moved_aside: Option<PathBuf>,
+    /// Why history is off: the file was found corrupt while open and could
+    /// not be replaced. `recover` tries again.
+    pub broken: Option<String>,
+    /// The file at `path` was found corrupt and is not moved aside yet.
+    corrupt_in_place: bool,
 }
 
 #[derive(Debug)]
@@ -125,6 +159,78 @@ impl From<rusqlite::Error> for HistoryError {
     }
 }
 
+/// The directory `default_path` keeps history in, which mirqab owns.
+const OWN_DIR: &str = "mirqab";
+
+/// Makes the directory history lives in private (plan 001, deferred to the
+/// first plan that writes events; the `top-apps` and `action` rows say what
+/// the owner ran and stopped). A missing one is made 0700, and parents it
+/// has to make (a fresh `~/.local/state`) keep the default mode (review of
+/// PR #6). An existing one is tightened to 0700 only when it is mirqab's own
+/// (`mirqab`, as `default_path` names it): a directory of another name was
+/// given by path and may be the user's. The files are private either way.
+pub fn private_dir(dir: &Path) -> Result<(), HistoryError> {
+    if dir.as_os_str().is_empty() {
+        return Ok(());
+    }
+    let failed = |e: std::io::Error| HistoryError::msg(format!("{}: {e}", dir.display()));
+    if let Some(parent) = dir.parent().filter(|p| !p.as_os_str().is_empty()) {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| HistoryError::msg(format!("{}: {e}", parent.display())))?;
+    }
+    match std::fs::DirBuilder::new().mode(0o700).create(dir) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == ErrorKind::AlreadyExists => {
+            if dir.file_name().is_some_and(|n| n == OWN_DIR) {
+                std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
+                    .map_err(failed)?;
+            }
+            Ok(())
+        }
+        Err(e) => Err(failed(e)),
+    }
+}
+
+/// Makes `path` 0600: created so when missing, before SQLite opens it (its
+/// log and shared memory then take the same mode), and tightened when it
+/// exists (a file made before modes were set).
+fn private_file(path: &Path) -> Result<(), HistoryError> {
+    let failed = |e: std::io::Error| HistoryError::msg(format!("{}: {e}", path.display()));
+    match std::fs::symlink_metadata(path) {
+        Ok(meta) if meta.is_file() => {
+            if meta.permissions().mode() & 0o777 != 0o600 {
+                std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+                    .map_err(failed)?;
+            }
+            Ok(())
+        }
+        // Not a regular file: SQLite says what it is.
+        Ok(_) => Ok(()),
+        Err(e) if e.kind() == ErrorKind::NotFound => std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .mode(0o600)
+            .open(path)
+            .map(|_| ())
+            .map_err(failed),
+        Err(e) => Err(failed(e)),
+    }
+}
+
+/// `open_conn` on a file made private first, its `-wal` and `-shm` after.
+fn open_private(path: &Path) -> Result<Connection, HistoryError> {
+    private_file(path)?;
+    let conn = open_conn(path)?;
+    for suffix in ["-wal", "-shm"] {
+        let side = PathBuf::from(format!("{}{suffix}", path.display()));
+        if side.exists() {
+            private_file(&side)?;
+        }
+    }
+    Ok(conn)
+}
+
 fn open_conn(path: &Path) -> Result<Connection, HistoryError> {
     let conn = Connection::open(path)?;
     conn.pragma_update(None, "journal_mode", "WAL")?;
@@ -150,12 +256,31 @@ fn open_conn(path: &Path) -> Result<Connection, HistoryError> {
         Some(SCHEMA) => {}
         // A later schema written by a newer mirqab: do not guess at it.
         Some(other) => {
-            return Err(HistoryError::msg(format!(
-                "history schema {other} is newer than {SCHEMA}"
+            return Err(HistoryError::msg(strings::history_schema_newer(
+                other, SCHEMA,
             )));
         }
     }
     Ok(conn)
+}
+
+/// Renames a file SQLite called corrupt, with its log and shared memory,
+/// to `<name>.broken-<now>`, and returns the new name.
+fn move_aside(path: &Path, now_unix: i64) -> std::io::Result<PathBuf> {
+    let aside = path.with_file_name(format!(
+        "{}.broken-{now_unix}",
+        path.file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default()
+    ));
+    std::fs::rename(path, &aside)?;
+    for suffix in ["-wal", "-shm"] {
+        let side = PathBuf::from(format!("{}{suffix}", path.display()));
+        if side.exists() {
+            let _ = std::fs::rename(&side, PathBuf::from(format!("{}{suffix}", aside.display())));
+        }
+    }
+    Ok(aside)
 }
 
 impl History {
@@ -174,35 +299,19 @@ impl History {
     /// says so for `status`.
     pub fn open(path: &Path, now_unix: i64) -> Result<History, HistoryError> {
         if let Some(dir) = path.parent() {
-            std::fs::create_dir_all(dir)
-                .map_err(|e| HistoryError::msg(format!("{}: {e}", dir.display())))?;
+            private_dir(dir)?;
         }
-        let (conn, moved_aside) = match open_conn(path) {
+        let (conn, moved_aside) = match open_private(path) {
             Ok(c) => (c, None),
             // Only a file SQLite calls not a database, or corrupt, is moved
             // aside. A newer schema, a permission error, a full disk or a
             // lock leaves the file alone and history off (review of phase C:
             // each of those hid thirty days of data).
             Err(first) if first.1 => {
-                let aside = path.with_file_name(format!(
-                    "{}.broken-{now_unix}",
-                    path.file_name()
-                        .map(|n| n.to_string_lossy().into_owned())
-                        .unwrap_or_default()
-                ));
-                std::fs::rename(path, &aside).map_err(|e| {
+                let aside = move_aside(path, now_unix).map_err(|e| {
                     HistoryError::msg(format!("{first}; and moving it aside failed: {e}"))
                 })?;
-                for suffix in ["-wal", "-shm"] {
-                    let side = PathBuf::from(format!("{}{suffix}", path.display()));
-                    if side.exists() {
-                        let _ = std::fs::rename(
-                            &side,
-                            PathBuf::from(format!("{}{suffix}", aside.display())),
-                        );
-                    }
-                }
-                (open_conn(path)?, Some(aside))
+                (open_private(path)?, Some(aside))
             }
             Err(other) => return Err(other),
         };
@@ -211,6 +320,8 @@ impl History {
             path: path.to_path_buf(),
             ids: BTreeMap::new(),
             moved_aside,
+            broken: None,
+            corrupt_in_place: false,
         };
         // Every series the file already has, so a series a later plan
         // registers (net.rx) is queryable after a restart before it is
@@ -233,6 +344,45 @@ impl History {
         &self.path
     }
 
+    /// Replaces a file SQLite found corrupt while it was open (a write or a
+    /// query said so: `open` reads only the schema, `meta` and `series`, so
+    /// a damaged `sample` page opens without complaint). The connection is
+    /// closed, the file moved aside as at open (`moved_aside` says where)
+    /// and a new one made. On failure `broken` says why, and the next call
+    /// tries again from where this one stopped (audit: history stayed on
+    /// while every write and query failed).
+    pub fn recover(&mut self, now_unix: i64) -> Result<(), HistoryError> {
+        if self.broken.is_none() {
+            self.corrupt_in_place = true;
+        }
+        let result = self.replace(now_unix);
+        if let Err(e) = &result {
+            self.broken = Some(e.to_string());
+        }
+        result
+    }
+
+    fn replace(&mut self, now_unix: i64) -> Result<(), HistoryError> {
+        // Closed first, its log and shared memory with it, so nothing writes
+        // to the file once it is moved.
+        drop(std::mem::replace(
+            &mut self.conn,
+            Connection::open_in_memory()?,
+        ));
+        if self.corrupt_in_place {
+            let aside = move_aside(&self.path, now_unix)
+                .map_err(|e| HistoryError::msg(format!("{}: {e}", self.path.display())))?;
+            self.corrupt_in_place = false;
+            self.moved_aside = Some(aside);
+        }
+        let fresh = History::open(&self.path, now_unix)?;
+        *self = History {
+            moved_aside: fresh.moved_aside.clone().or(self.moved_aside.take()),
+            ..fresh
+        };
+        Ok(())
+    }
+
     /// Adds a series, or confirms it. Fails past MAX_SERIES.
     pub fn register(&mut self, key: &str, unit: &str, scale: i64) -> Result<i64, HistoryError> {
         if let Some((id, _)) = self.ids.get(key) {
@@ -251,9 +401,7 @@ impl History {
                     .conn
                     .query_row("SELECT count(*) FROM series", [], |r| r.get(0))?;
                 if count as usize >= MAX_SERIES {
-                    return Err(HistoryError::msg(format!(
-                        "history holds at most {MAX_SERIES} series"
-                    )));
+                    return Err(HistoryError::msg(strings::history_series_full(MAX_SERIES)));
                 }
                 self.conn.execute(
                     "INSERT INTO series (key, unit, scale) VALUES (?1, ?2, ?3)",

@@ -8,7 +8,11 @@
 //! writer writes a sampler's events; a `get apps` and an `apps.inspect`
 //! whose `pacman` takes 2 s no longer hold a subscriber's frame back
 //! (D1); `status.focus` is null without a focus source. Plan 007: the
-//! `ports` stream takes only its own params, served at 5 s.
+//! `ports` stream takes only its own params, served at 5 s. Audit fixes: a
+//! subscriber that joins a narrowed stream mid-sample waits for a sample
+//! read for it; `history.query` is clamped and its series capped; the
+//! history file, its directory and the locks are private; the minute
+//! writer replaces a file found corrupt while open.
 
 use mirqab_core::proto::{Request, ServerFrame, frame};
 use mirqab_core::root::Root;
@@ -902,6 +906,80 @@ fn a_sample_is_stamped_after_it_got_the_sampler() {
     }
 }
 
+/// A stream that reads only what its subscribers name (`narrows`): each
+/// sample holds the params `wants` handed it, and the first sample waits
+/// until the test opens the gate.
+struct Gated {
+    wanted: Vec<Value>,
+    n: u64,
+    started: std::sync::mpsc::SyncSender<()>,
+    gate: std::sync::mpsc::Receiver<()>,
+}
+impl Sampler for Gated {
+    fn stream(&self) -> &'static str {
+        "gated"
+    }
+    fn probe(&mut self, _root: &Root) -> Result<(), String> {
+        Ok(())
+    }
+    fn wants(&mut self, params: &[Value]) {
+        self.wanted = params.to_vec();
+    }
+    fn narrows(&self) -> bool {
+        true
+    }
+    fn sample(&mut self, _root: &Root, _now: Instant) -> Value {
+        self.n += 1;
+        if self.n == 1 {
+            let _ = self.started.send(());
+            let _ = self.gate.recv_timeout(Duration::from_secs(5));
+        }
+        json!({"read": self.wanted})
+    }
+    fn view(&self) -> Option<mirqab_core::sampler::View> {
+        Some(|data, params| json!({"for": params, "read": data["read"]}))
+    }
+}
+
+#[test]
+fn a_subscriber_that_joins_mid_sample_waits_for_a_sample_read_for_it() {
+    // Audit: a subscriber whose params arrived while a narrowed sample was
+    // being taken got a view cut from a read for other params (`process`
+    // said a live pid was gone).
+    let (started_tx, started) = std::sync::mpsc::sync_channel(1);
+    let (open, gate) = std::sync::mpsc::sync_channel(1);
+    let gated = Gated {
+        wanted: Vec::new(),
+        n: 0,
+        started: started_tx,
+        gate,
+    };
+    let d = start_with("gated", vec![Box::new(gated)], false, None);
+    let mut a = Client::connect(&d);
+    let mut b = Client::connect(&d);
+    a.hello();
+    b.hello();
+    a.call("subscribe", Some("gated"), json!({"k": "a"}))
+        .unwrap();
+    started
+        .recv_timeout(Duration::from_secs(5))
+        .expect("the first sample started");
+    b.call("subscribe", Some("gated"), json!({"k": "b"}))
+        .unwrap();
+    open.send(()).unwrap();
+    let first_a = a.event("gated").unwrap();
+    assert_eq!(first_a["read"], json!([{"k": "a"}]));
+    let first_b = b.event("gated").expect("a sample taken for b");
+    assert_eq!(first_b["for"], json!({"k": "b"}));
+    assert!(
+        first_b["read"]
+            .as_array()
+            .unwrap()
+            .contains(&json!({"k": "b"})),
+        "b's first view came from a read for a: {first_b}"
+    );
+}
+
 /// Subscribers of `stream` in `status`.
 fn subscribers(c: &mut Client, stream: &str) -> Value {
     c.call("status", None, Value::Null).unwrap()["streams"][stream]["subscribers"].clone()
@@ -1207,6 +1285,177 @@ fn the_minute_writer_writes_a_samplers_events() {
 
 /// The gaps between `n` consecutive `stream` events, with `busy` called
 /// between reads from another client.
+#[test]
+fn a_history_query_is_clamped_and_its_series_capped() {
+    // Plan 001, deferred to plan 005.
+    let d = start_with("histclamp", Vec::new(), true, None);
+    let mut c = Client::connect(&d);
+    c.hello();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+    let all = c
+        .call(
+            "history.query",
+            None,
+            json!({"series": ["cpu.total", "cpu.total", "mem.used"], "from": i64::MIN, "to": i64::MAX}),
+        )
+        .unwrap();
+    assert_eq!(all["bucketSec"], 7200);
+    assert!(
+        all["from"].as_i64().unwrap() >= now - 30 * 86_400 - 5,
+        "{all}"
+    );
+    assert!(all["to"].as_i64().unwrap() <= now + 65, "{all}");
+    assert_eq!(all["series"].as_object().unwrap().len(), 2, "{all}");
+    let since_1970 = c
+        .call(
+            "history.query",
+            None,
+            json!({"series": ["cpu.total"], "from": 0, "to": now}),
+        )
+        .unwrap();
+    assert!(since_1970["bucketSec"].as_i64().unwrap() > 60);
+    let many: Vec<String> = (0..65).map(|n| format!("s.{n}")).collect();
+    assert_eq!(
+        c.call(
+            "history.query",
+            None,
+            json!({"series": many, "range": "1h"})
+        ),
+        Err("bad-request".into())
+    );
+    // Repeats count once (50,000 of them stay under the 1 MiB line).
+    let repeated = vec!["cpu.total"; 50_000];
+    assert!(
+        c.call(
+            "history.query",
+            None,
+            json!({"series": repeated, "range": "1h"})
+        )
+        .is_ok()
+    );
+    assert_eq!(
+        c.call(
+            "history.query",
+            None,
+            json!({"series": ["cpu.total"], "from": 0, "to": 1000})
+        ),
+        Err("bad-request".into())
+    );
+    assert!(
+        c.call(
+            "history.events",
+            None,
+            json!({"from": i64::MIN, "to": i64::MAX})
+        )
+        .is_ok()
+    );
+}
+
+#[test]
+fn the_history_file_its_directory_and_the_locks_are_private() {
+    // Plan 001, deferred to the first plan that writes events.
+    use std::os::unix::fs::PermissionsExt;
+    let mode = |p: &std::path::Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+    let dir = PathBuf::from("/tmp").join(format!("mqp-modes-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let socket = dir.join("run/daemon.sock");
+    let history = dir.join("state/mirqab/history.db");
+    let server = server::listen(Options {
+        socket: socket.clone(),
+        root: Root::new(fixture("root-desktop")),
+        config_path: dir.join("config/mirqab/config.json"),
+        samplers: Vec::new(),
+        history: Some(history.clone()),
+        minute_period: None,
+    })
+    .expect("listens");
+    let _d = Daemon {
+        socket: socket.clone(),
+        dir: dir.clone(),
+    };
+    assert_eq!(mode(&dir.join("state/mirqab")), 0o700);
+    assert_eq!(mode(&history), 0o600);
+    assert_eq!(mode(&dir.join("state/mirqab/history.db.lock")), 0o600);
+    assert_eq!(mode(&dir.join("run/daemon.sock.lock")), 0o600);
+    drop(server);
+}
+
+#[test]
+fn the_minute_writer_replaces_a_file_found_corrupt_while_open() {
+    // Audit: damage past what `open` reads left history "enabled" while
+    // every write and query failed.
+    use mirqab_core::history::History;
+    use std::io::{Seek, SeekFrom};
+    let dir = PathBuf::from("/tmp").join(format!("mqp-damaged-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let history = dir.join("history.db");
+    {
+        let mut h = History::open(&history, 1_790_006_400).unwrap();
+        h.write_minute(1_790_006_400, &[("cpu.total", 1)]).unwrap();
+    }
+    // The root page of `sample`, overwritten: the file still opens.
+    let c = rusqlite::Connection::open(&history).unwrap();
+    let root: i64 = c
+        .query_row(
+            "SELECT rootpage FROM sqlite_master WHERE name = 'sample'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let page: i64 = c.query_row("PRAGMA page_size", [], |r| r.get(0)).unwrap();
+    drop(c);
+    let mut f = std::fs::OpenOptions::new()
+        .write(true)
+        .open(&history)
+        .unwrap();
+    f.seek(SeekFrom::Start(((root - 1) * page) as u64)).unwrap();
+    f.write_all(&vec![0xa5; page as usize]).unwrap();
+    drop(f);
+
+    let socket = dir.join("run/daemon.sock");
+    let server = server::listen(Options {
+        socket: socket.clone(),
+        root: Root::new(fixture("root-desktop")),
+        config_path: dir.join("config/mirqab/config.json"),
+        samplers: Vec::new(),
+        history: Some(history.clone()),
+        minute_period: Some(Duration::from_secs(1)),
+    })
+    .expect("listens");
+    std::thread::spawn(move || server.serve());
+    let d = Daemon { socket, dir };
+    let mut c = Client::connect(&d);
+    c.hello();
+    let until = Instant::now() + Duration::from_secs(5);
+    let status = loop {
+        let s = c.call("status", None, Value::Null).unwrap();
+        if !s["history"]["movedAside"].is_null() || Instant::now() > until {
+            break s;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    };
+    let aside = status["history"]["movedAside"]
+        .as_str()
+        .expect("moved aside");
+    assert!(aside.contains("history.db.broken-"), "{status}");
+    assert!(std::path::Path::new(aside).exists());
+    assert_eq!(status["history"]["enabled"], true, "{status}");
+    assert_eq!(status["history"]["error"], Value::Null, "{status}");
+    assert!(
+        c.call(
+            "history.query",
+            None,
+            json!({"series": ["cpu.total"], "range": "1h"})
+        )
+        .is_ok()
+    );
+}
+
 fn gaps(sub: &mut Client, stream: &str, n: usize) -> Vec<Duration> {
     let mut last = None;
     let mut out = Vec::new();

@@ -763,6 +763,96 @@ pub fn status_lines(
     out
 }
 
+// --- The daemon's replies and checks (architecture §5.2) ------------------
+
+pub fn bad_json(why: &str) -> String {
+    format!("bad json: {why}")
+}
+
+pub fn unknown_method(method: &str) -> String {
+    format!("unknown method: {method}")
+}
+
+pub const STREAM_REQUIRED: &str = "stream is required";
+
+pub fn unknown_stream(name: &str) -> String {
+    format!("unknown stream: {name}")
+}
+
+pub const UI_EVENTS_ONLY: &str = "ui has events only";
+pub const KEY_REQUIRED: &str = "key is required";
+pub const NAME_REQUIRED: &str = "name is required";
+
+pub fn unknown_action(name: &str) -> String {
+    format!("unknown action: {name}")
+}
+
+pub const HISTORY_IS_OFF: &str = "history is off";
+pub const SERIES_REQUIRED: &str = "series is required";
+
+pub fn too_many_series(max: usize) -> String {
+    format!("at most {max} series in one query")
+}
+
+pub fn unknown_range(name: &str) -> String {
+    format!("unknown range: {name}")
+}
+
+pub const RANGE_REQUIRED: &str = "range, or from and to, are required";
+pub const SPAN_NOT_KEPT: &str = "from and to lie outside the 30 days history keeps";
+
+pub fn history_schema_newer(found: &str, ours: &str) -> String {
+    format!("history schema {found} is newer than {ours}")
+}
+
+pub fn history_series_full(max: usize) -> String {
+    format!("history holds at most {max} series")
+}
+
+pub fn cannot_start(why: &str) -> String {
+    format!("cannot start: {why}")
+}
+
+pub const TIMED_OUT: &str = "timed out";
+
+// `config.set`'s checks, one per kind of value.
+
+pub fn setting_one_of(key: &str, allowed: &[&str]) -> String {
+    format!("{key} must be one of {}", allowed.join(", "))
+}
+
+pub fn setting_range(key: &str, lo: f64, hi: f64) -> String {
+    format!("{key} must be a number from {lo} to {hi}")
+}
+
+pub fn setting_string_or_null(key: &str) -> String {
+    format!("{key} must be a string or null")
+}
+
+pub fn setting_strings(key: &str) -> String {
+    format!("{key} must be a list of strings")
+}
+
+pub fn setting_bool(key: &str) -> String {
+    format!("{key} must be true or false")
+}
+
+pub fn setting_tab_or_null(key: &str) -> String {
+    format!("{key} must be a tab id or null")
+}
+
+pub fn setting_interval_ms(key: &str, lo: u64, hi: u64) -> String {
+    format!("{key} must be a whole number of milliseconds from {lo} to {hi}")
+}
+
+pub fn setting_bar_combo(key: &str) -> String {
+    format!("{key} must be a list of bar items other than combo (mirqab bar --list)")
+}
+
+pub fn unknown_setting(key: &str) -> String {
+    format!("unknown setting: {key}")
+}
+
 // --- The interface (plan 001 phase D) -------------------------------------
 
 /// The value shown where a number is missing (no sample yet, or none

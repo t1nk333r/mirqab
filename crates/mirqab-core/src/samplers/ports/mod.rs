@@ -582,6 +582,10 @@ impl Sampler for Ports {
         self.measure(root, now, force)
     }
 
+    fn narrows(&self) -> bool {
+        true
+    }
+
     fn view(&self) -> Option<View> {
         Some(view)
     }

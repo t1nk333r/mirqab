@@ -32,7 +32,7 @@ use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::io::{ErrorKind, Read, Write};
 use std::net::Shutdown;
-use std::os::unix::fs::{DirBuilderExt, FileTypeExt, PermissionsExt};
+use std::os::unix::fs::{DirBuilderExt, FileTypeExt, OpenOptionsExt, PermissionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{SyncSender, TrySendError, sync_channel};
@@ -127,6 +127,8 @@ struct Slot {
     view: Option<View>,
     /// The check a subscription's params must pass, copied out likewise.
     accepts: Option<Accepts>,
+    /// `Sampler::narrows`, copied out likewise.
+    narrows: bool,
     wake: Condvar,
 }
 
@@ -329,7 +331,8 @@ fn take_lock(socket: &Path) -> Result<std::fs::File, ListenError> {
 
 /// Takes `<path>.lock` with `File::try_lock`; held means AlreadyRunning.
 /// The directory is made with the default mode: a history lock must not
-/// turn `~/.local/state` private (review of PR #6).
+/// turn `~/.local/state` private (review of PR #6); the caller makes the
+/// leaf private first. The lock file is 0600, as the file it guards.
 fn lock_beside(target: &Path) -> Result<std::fs::File, ListenError> {
     if let Some(dir) = target.parent().filter(|d| !d.as_os_str().is_empty()) {
         std::fs::create_dir_all(dir)
@@ -340,8 +343,12 @@ fn lock_beside(target: &Path) -> Result<std::fs::File, ListenError> {
         .create(true)
         .truncate(false)
         .write(true)
+        .mode(0o600)
         .open(&path)
         .map_err(|e| ListenError::Failed(format!("{}: {e}", path.display())))?;
+    // One made before modes were set is tightened.
+    file.set_permissions(std::fs::Permissions::from_mode(0o600))
+        .map_err(|e| ListenError::Failed(format!("chmod {}: {e}", path.display())))?;
     match file.try_lock() {
         Ok(()) => Ok(file),
         Err(std::fs::TryLockError::WouldBlock) => Err(ListenError::AlreadyRunning),
@@ -357,12 +364,18 @@ pub fn listen(opts: Options) -> Result<Server, ListenError> {
     // (review of phase C, deferred to phase E).
     let history_lock = match &opts.history {
         None => None,
-        Some(h) => Some(lock_beside(h).map_err(|e| match e {
-            ListenError::AlreadyRunning => {
-                ListenError::Failed(strings::history_in_use(&h.display().to_string()))
+        Some(h) => {
+            // Its directory is private before the lock is made in it.
+            if let Some(dir) = h.parent() {
+                history::private_dir(dir).map_err(|e| ListenError::Failed(e.to_string()))?;
             }
-            other => other,
-        })?),
+            Some(lock_beside(h).map_err(|e| match e {
+                ListenError::AlreadyRunning => {
+                    ListenError::Failed(strings::history_in_use(&h.display().to_string()))
+                }
+                other => other,
+            })?)
+        }
     };
     let (listener, activated) = match sys::listen_fd() {
         Some(l) => (l, true),
@@ -406,6 +419,7 @@ pub fn listen(opts: Options) -> Result<Server, ListenError> {
                 default_ms: s.default_interval().as_millis() as u64,
                 view: s.view(),
                 accepts: s.accepts(),
+                narrows: s.narrows(),
                 sampler: Mutex::new(s),
                 wake: Condvar::new(),
             }),
@@ -553,35 +567,63 @@ fn history_loop(inner: Arc<Inner>) {
         }
         let Some(h) = &inner.history else { return };
         let mut h = lock(h);
-        // Woken just after a boundary, the values cover the minute that just
-        // ended: label them with it (30 s back lands inside it, and a wake a
-        // little early or late lands in the same minute). The minute running
-        // now is then never half-written in a query (review of phase C).
-        if let Err(e) = h.write_minute(ts - 30, &values) {
-            log(&format!("history write failed: {e}"));
-        }
-        for (kind, data) in &events {
-            if let Err(e) = h.add_event(ts - 30, kind, data) {
-                log(&format!("history: the {kind} event was not written: {e}"));
+        // A file found corrupt while open is replaced (audit: history stayed
+        // on while every write failed); one that could not be is retried
+        // each minute, and nothing is written to it meanwhile.
+        let mut corrupt = false;
+        let mut failed = |what: String, e: history::HistoryError| {
+            corrupt |= e.1;
+            log(&format!("{what}: {e}"));
+        };
+        if h.broken.is_none() {
+            // Woken just after a boundary, the values cover the minute that
+            // just ended: label them with it (30 s back lands inside it, and
+            // a wake a little early or late lands in the same minute). The
+            // minute running now is then never half-written in a query
+            // (review of phase C).
+            if let Err(e) = h.write_minute(ts - 30, &values) {
+                failed("history write failed".into(), e);
             }
-        }
-        if ts - last_prune >= 3600 {
-            if let Err(e) = h.prune(ts) {
-                log(&format!("history prune failed: {e}"));
-            }
-            last_prune = ts;
-        }
-        // Once a day, pack the pages the minute writes split. The time of the
-        // last compaction is kept in the file, so a machine that is shut down
-        // every night still compacts (review of phase C).
-        match h.compaction_due(ts) {
-            Ok(true) => {
-                if let Err(e) = h.compact(ts) {
-                    log(&format!("history compaction failed: {e}"));
+            for (kind, data) in &events {
+                if let Err(e) = h.add_event(ts - 30, kind, data) {
+                    failed(format!("history: the {kind} event was not written"), e);
                 }
             }
-            Ok(false) => {}
-            Err(e) => log(&format!("history compaction check failed: {e}")),
+            if ts - last_prune >= 3600 {
+                if let Err(e) = h.prune(ts) {
+                    failed("history prune failed".into(), e);
+                }
+                last_prune = ts;
+            }
+            // Once a day, pack the pages the minute writes split. The time
+            // of the last compaction is kept in the file, so a machine that
+            // is shut down every night still compacts (review of phase C).
+            match h.compaction_due(ts) {
+                Ok(true) => {
+                    if let Err(e) = h.compact(ts) {
+                        failed("history compaction failed".into(), e);
+                    }
+                }
+                Ok(false) => {}
+                Err(e) => failed("history compaction check failed".into(), e),
+            }
+        }
+        if corrupt || h.broken.is_some() {
+            let before = h.broken.clone();
+            match h.recover(ts) {
+                Ok(()) => log(&format!(
+                    "history was damaged; moved it to {}",
+                    h.moved_aside
+                        .as_ref()
+                        .map(|p| p.display().to_string())
+                        .unwrap_or_default()
+                )),
+                // Said once, not every minute it stays so.
+                Err(e) if before.as_deref() != Some(e.0.as_str()) => {
+                    log(&format!("history is off: {e}"));
+                }
+                Err(_) => {}
+            }
         }
     }
 }
@@ -660,7 +702,9 @@ fn sampler_loop(inner: Arc<Inner>, name: String, slot: Arc<Slot>) {
         };
         // Without a view every subscriber gets one line; with one, a line
         // per distinct params, and the sample is kept for a subscriber
-        // whose params changed while it was taken.
+        // whose params changed while it was taken. A sampler that read
+        // only what `wanted` named cannot serve that subscriber: it is
+        // skipped, and its subscribe already asked for a sample at once.
         let (plain, views, kept) = match slot.view {
             None => (event(data), Vec::new(), None),
             Some(view) => {
@@ -683,6 +727,7 @@ fn sampler_loop(inner: Arc<Inner>, name: String, slot: Arc<Slot>) {
                 None => c.send(&plain),
                 Some((view, data)) => match views.iter().find(|(p, _)| *p == sub.params) {
                     Some((_, line)) => c.send(line),
+                    None if slot.narrows => {}
                     None => c.send(&event(view(data, &sub.params))),
                 },
             }
@@ -806,7 +851,7 @@ impl Inner {
                 Ok(req) => self.dispatch(id, req),
                 Err(e) => self.reply(
                     id,
-                    Reply::err(0, Code::BadRequest, format!("bad json: {e}")),
+                    Reply::err(0, Code::BadRequest, strings::bad_json(&e.to_string())),
                 ),
             }
         });
@@ -884,7 +929,7 @@ impl Inner {
                 }
                 std::process::exit(0);
             }
-            other => Reply::err(rid, Code::UnknownMethod, format!("unknown method: {other}")),
+            other => Reply::err(rid, Code::UnknownMethod, strings::unknown_method(other)),
         };
         self.reply(id, reply);
     }
@@ -893,7 +938,7 @@ impl Inner {
         req.stream
             .as_deref()
             .or_else(|| req.param("stream").and_then(Value::as_str))
-            .ok_or_else(|| Reply::err(req.id, Code::BadRequest, "stream is required"))
+            .ok_or_else(|| Reply::err(req.id, Code::BadRequest, strings::STREAM_REQUIRED))
     }
 
     fn check_stream(&self, req: &Request, name: &str) -> Option<Reply> {
@@ -904,7 +949,7 @@ impl Inner {
             return Some(Reply::err(
                 req.id,
                 Code::UnknownStream,
-                format!("unknown stream: {name}"),
+                strings::unknown_stream(name),
             ));
         }
         None
@@ -1042,7 +1087,7 @@ impl Inner {
             Err(r) => return r,
         };
         if name == stream::UI {
-            return Reply::err(req.id, Code::BadRequest, "ui has events only");
+            return Reply::err(req.id, Code::BadRequest, strings::UI_EVENTS_ONLY);
         }
         // `apps.inspect`: a query under the `apps` stream (plan 006). A
         // stream's own name never holds a dot, so the split is unambiguous.
@@ -1057,11 +1102,7 @@ impl Inner {
             return match answer.map(Answer::finish) {
                 Some(Ok(v)) => Reply::ok(req.id, v),
                 Some(Err((code, message))) => Reply::err(req.id, code, message),
-                None => Reply::err(
-                    req.id,
-                    Code::UnknownStream,
-                    format!("unknown stream: {name}"),
-                ),
+                None => Reply::err(req.id, Code::UnknownStream, strings::unknown_stream(name)),
             };
         }
         if let Some(r) = self.check_stream(req, name) {
@@ -1182,7 +1223,7 @@ impl Inner {
 
     fn config_set(&self, req: &Request) -> Reply {
         let Some(key) = req.param("key").and_then(Value::as_str) else {
-            return Reply::err(req.id, Code::BadRequest, "key is required");
+            return Reply::err(req.id, Code::BadRequest, strings::KEY_REQUIRED);
         };
         let value = req.param("value").cloned().unwrap_or(Value::Null);
         let dry_run = match dry_run_param(req) {
@@ -1238,7 +1279,8 @@ impl Inner {
             Some(h) => {
                 let h = lock(h);
                 json!({
-                    "enabled": true,
+                    "enabled": h.broken.is_none(),
+                    "error": h.broken,
                     "path": h.path().display().to_string(),
                     "sizeBytes": h.size_bytes(),
                     "movedAside": h.moved_aside.as_ref().map(|p| p.display().to_string()),
@@ -1256,55 +1298,75 @@ impl Inner {
             let why = self
                 .history_error
                 .clone()
-                .unwrap_or_else(|| "history is off".into());
+                .unwrap_or_else(|| strings::HISTORY_IS_OFF.into());
             return Reply::err(req.id, Code::Unavailable, why);
         };
-        match f(&lock(h)) {
+        let h = lock(h);
+        if let Some(why) = &h.broken {
+            return Reply::err(req.id, Code::Unavailable, why.clone());
+        }
+        match f(&h) {
             Ok(v) => Reply::ok(req.id, v),
             Err(e) => Reply::err(req.id, Code::Failed, e.to_string()),
         }
     }
 
     /// `history.query`: `series[]` with `range` (1h, 24h, 7d, 30d) or
-    /// `from`/`to` in unix seconds (then 1-minute buckets).
+    /// `from`/`to` in unix seconds, clamped to what is kept and bucketed so
+    /// a series has at most `history::MAX_POINTS` points (`history::span`).
+    /// A series named twice is answered once, and no more series than
+    /// history holds are taken: each is one scan under the history lock,
+    /// which the minute writer waits for (plan 001, deferred to plan 005).
     fn history_query(&self, req: &Request) -> Reply {
-        let series: Vec<&str> = match req.param("series").and_then(Value::as_array) {
+        let mut series: Vec<&str> = match req.param("series").and_then(Value::as_array) {
             Some(a) => a.iter().filter_map(Value::as_str).collect(),
-            None => return Reply::err(req.id, Code::BadRequest, "series is required"),
+            None => return Reply::err(req.id, Code::BadRequest, strings::SERIES_REQUIRED),
         };
+        series.sort_unstable();
+        series.dedup();
+        if series.len() > history::MAX_SERIES {
+            return Reply::err(
+                req.id,
+                Code::BadRequest,
+                strings::too_many_series(history::MAX_SERIES),
+            );
+        }
         let now = unix_now();
         let (from, to, bucket) = match req.param("range").and_then(Value::as_str) {
             Some(name) => match history::range(name) {
                 Some((span, bucket)) => (now - span, now + 1, bucket),
                 None => {
-                    return Reply::err(req.id, Code::BadRequest, format!("unknown range: {name}"));
+                    return Reply::err(req.id, Code::BadRequest, strings::unknown_range(name));
                 }
             },
             None => match (
                 req.param("from").and_then(Value::as_i64),
                 req.param("to").and_then(Value::as_i64),
             ) {
-                (Some(f), Some(t)) if f < t => (f, t, 60),
-                _ => {
-                    return Reply::err(
-                        req.id,
-                        Code::BadRequest,
-                        "range, or from and to, are required",
-                    );
-                }
+                (Some(f), Some(t)) if f < t => match history::span(f, t, now) {
+                    Some(s) => s,
+                    None => return Reply::err(req.id, Code::BadRequest, strings::SPAN_NOT_KEPT),
+                },
+                _ => return Reply::err(req.id, Code::BadRequest, strings::RANGE_REQUIRED),
             },
         };
         self.with_history(req, |h| h.query(&series, from, to, bucket))
     }
 
+    /// `history.events`: `kind` and `from`/`to`, clamped to what is kept.
     fn history_events(&self, req: &Request) -> Reply {
         let kind = req.param("kind").and_then(Value::as_str);
         let now = unix_now();
         let from = req
             .param("from")
             .and_then(Value::as_i64)
-            .unwrap_or(now - history::KEEP_SECS);
-        let to = req.param("to").and_then(Value::as_i64).unwrap_or(now + 1);
+            .unwrap_or(i64::MIN)
+            .max(now - history::KEEP_SECS);
+        let to = req
+            .param("to")
+            .and_then(Value::as_i64)
+            .unwrap_or(now + 1)
+            .min(now + 60);
         self.with_history(req, |h| h.events(kind, from, to))
     }
 
@@ -1327,7 +1389,7 @@ impl Inner {
     /// and `apps.kill` (plan 006), which need `confirm`.
     fn action(&self, client: u64, req: &Request) -> Reply {
         let Some(name) = req.param("name").and_then(Value::as_str) else {
-            return Reply::err(req.id, Code::BadRequest, "name is required");
+            return Reply::err(req.id, Code::BadRequest, strings::NAME_REQUIRED);
         };
         if let Some(action) = Action::from_name(name) {
             return self.apps_action(client, action, req);
@@ -1346,7 +1408,7 @@ impl Inner {
             "ui.toggle" => UiEvent::Toggle { tab },
             "ui.hide" => UiEvent::Hide,
             other => {
-                return Reply::err(req.id, Code::BadRequest, format!("unknown action: {other}"));
+                return Reply::err(req.id, Code::BadRequest, strings::unknown_action(other));
             }
         };
         let entry = serde_json::to_value(&event).unwrap_or(Value::Null);
@@ -1520,7 +1582,7 @@ fn dry_run_param(req: &Request) -> Result<bool, Reply> {
         Some(_) => Err(Reply::err(
             req.id,
             Code::BadRequest,
-            "dryRun must be true or false",
+            strings::ACT_DRY_RUN_BOOL,
         )),
     }
 }

@@ -2,6 +2,9 @@
 //! differences between two fixture moments, gaps, the ranges' bucket counts,
 //! pruning, a broken file moved aside, and 30 days × 64 series under 40 MB,
 //! with a `top-apps` event every minute (plan 006, part 4: the worst case).
+//! Audit fixes: the file and its directory are private (0600, 0700), a
+//! `from`/`to` span is clamped and bucketed, and a file found corrupt while
+//! open is moved aside and replaced.
 
 use mirqab_core::history::{self, History};
 use mirqab_core::root::Root;
@@ -175,6 +178,30 @@ fn each_range_returns_its_bucket_count() {
 }
 
 #[test]
+fn a_from_to_span_is_clamped_to_what_is_kept_and_bucketed_to_360_points() {
+    // Plan 001, deferred to plan 005: an unclamped span at 1-minute
+    // buckets built hundreds of MB, and i64::MIN panicked a debug build.
+    assert_eq!(history::minute(i64::MIN), i64::MIN.div_euclid(60));
+    let (from, to, bucket) = history::span(i64::MIN, i64::MAX, NOW).unwrap();
+    assert_eq!(
+        (from, to, bucket),
+        (NOW - history::KEEP_SECS, NOW + 60, 7200)
+    );
+    assert_eq!(history::span(0, NOW, NOW).unwrap().2, 7200);
+    // Each range's own span gets its own bucket.
+    for (_, span, bucket) in history::RANGES {
+        assert_eq!(history::span(NOW - span, NOW, NOW).unwrap().2, *bucket);
+    }
+    assert_eq!(
+        history::span(NOW - 600, NOW, NOW),
+        Some((NOW - 600, NOW, 60))
+    );
+    // Wholly outside the kept window: nothing.
+    assert_eq!(history::span(0, NOW - history::KEEP_SECS, NOW), None);
+    assert_eq!(history::span(NOW + 120, NOW + 600, NOW), None);
+}
+
+#[test]
 fn the_minute_just_written_is_in_a_range_that_ends_now() {
     let d = scratch("newest");
     let mut h = History::open(&d.0.join("history.db"), NOW).unwrap();
@@ -282,6 +309,146 @@ fn a_broken_file_is_moved_aside() {
     assert!(aside.ends_with(format!("history.db.broken-{NOW}")));
     assert!(aside.exists());
     assert_eq!(h.list().as_array().unwrap().len(), history::SERIES.len());
+}
+
+fn mode(p: &std::path::Path) -> u32 {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(p).unwrap().permissions().mode() & 0o777
+}
+
+/// The process's umask, from `proc/self/status` (no syscall needed).
+fn umask() -> u32 {
+    let status = std::fs::read_to_string("/proc/self/status").unwrap();
+    let line = status.lines().find(|l| l.starts_with("Umask:")).unwrap();
+    u32::from_str_radix(line["Umask:".len()..].trim(), 8).unwrap()
+}
+
+#[test]
+fn the_file_and_its_directory_are_private() {
+    // Plan 001, deferred to the first plan that writes events: the rows say
+    // which apps the owner ran and stopped.
+    use std::os::unix::fs::PermissionsExt;
+    let d = scratch("modes");
+    let state = d.0.join("state");
+    let path = state.join("mirqab/history.db");
+    let h = History::open(&path, NOW).unwrap();
+    assert_eq!(mode(&state.join("mirqab")), 0o700);
+    for f in ["history.db", "history.db-wal", "history.db-shm"] {
+        assert_eq!(mode(&state.join("mirqab").join(f)), 0o600, "{f}");
+    }
+    // The parent it had to make keeps the default mode (review of PR #6).
+    assert_eq!(mode(&state), 0o777 & !umask());
+    drop(h);
+
+    // Made before modes were set: tightened at open.
+    let set = |p: &std::path::Path, m: u32| {
+        std::fs::set_permissions(p, std::fs::Permissions::from_mode(m)).unwrap()
+    };
+    set(&state.join("mirqab"), 0o755);
+    set(&path, 0o644);
+    let _h = History::open(&path, NOW).unwrap();
+    assert_eq!(mode(&state.join("mirqab")), 0o700);
+    assert_eq!(mode(&path), 0o600);
+
+    // A directory given by path, not named mirqab, may be the user's: only
+    // the files are made private in it.
+    let own = d.0.join("elsewhere");
+    std::fs::create_dir_all(&own).unwrap();
+    set(&own, 0o755);
+    let _h = History::open(&own.join("h.db"), NOW).unwrap();
+    assert_eq!(mode(&own), 0o755);
+    assert_eq!(mode(&own.join("h.db")), 0o600);
+
+    // A broken file moved aside is private, as is the new one.
+    let broken = d.0.join("broken");
+    std::fs::create_dir_all(&broken).unwrap();
+    let bad = broken.join("history.db");
+    std::fs::write(
+        &bad,
+        b"this is not a database, it is a sentence long enough",
+    )
+    .unwrap();
+    set(&bad, 0o644);
+    let h = History::open(&bad, NOW).unwrap();
+    assert_eq!(mode(h.moved_aside.as_ref().unwrap()), 0o600);
+    assert_eq!(mode(&bad), 0o600);
+}
+
+/// Overwrites the root page of `sample` with garbage: the schema, `meta`
+/// and `series` still read, so the file opens, and the first use of
+/// `sample` finds it corrupt.
+fn damage_sample(path: &std::path::Path) {
+    use std::io::{Seek, SeekFrom, Write};
+    let (root, page): (i64, i64) = {
+        let c = rusqlite::Connection::open(path).unwrap();
+        let root = c
+            .query_row(
+                "SELECT rootpage FROM sqlite_master WHERE name = 'sample'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        (
+            root,
+            c.query_row("PRAGMA page_size", [], |r| r.get(0)).unwrap(),
+        )
+    };
+    let mut f = std::fs::OpenOptions::new().write(true).open(path).unwrap();
+    f.seek(SeekFrom::Start(((root - 1) * page) as u64)).unwrap();
+    f.write_all(&vec![0xa5; page as usize]).unwrap();
+}
+
+#[test]
+fn a_file_found_corrupt_while_open_is_moved_aside_and_replaced() {
+    // Audit: `open` reads only the schema, `meta` and `series`, so damage
+    // in `sample` opened without complaint and every write failed after.
+    let d = scratch("damaged");
+    let path = d.0.join("history.db");
+    {
+        let h = History::open(&path, NOW).unwrap();
+        fill(&h, &[1, 2], 1440);
+        h.compact(NOW).unwrap();
+    }
+    damage_sample(&path);
+    let mut h = History::open(&path, NOW).expect("the damage is past what open reads");
+    assert!(h.moved_aside.is_none());
+    let err = h.write_minute(NOW, &[("cpu.total", 1)]).unwrap_err();
+    assert!(err.1, "corrupt: {}", err.0);
+    h.recover(NOW + 60).unwrap();
+    let aside = h.moved_aside.clone().expect("moved aside");
+    assert!(aside.ends_with(format!("history.db.broken-{}", NOW + 60)));
+    assert!(aside.exists());
+    assert!(h.broken.is_none());
+    h.write_minute(NOW + 60, &[("cpu.total", 1)]).unwrap();
+    let v = h.query(&["cpu.total"], NOW, NOW + 120, 60).unwrap();
+    assert_eq!(
+        v["series"]["cpu.total"]["points"].as_array().unwrap().len(),
+        1
+    );
+    assert_eq!(h.list().as_array().unwrap().len(), history::SERIES.len());
+
+    // A file that cannot be moved aside leaves history off with the reason,
+    // and the next call, once it can, finishes the job.
+    use std::os::unix::fs::PermissionsExt;
+    let ro = d.0.join("ro");
+    std::fs::create_dir_all(&ro).unwrap();
+    let path = ro.join("history.db");
+    History::open(&path, NOW).unwrap();
+    damage_sample(&path);
+    let mut h = History::open(&path, NOW).unwrap();
+    assert!(h.write_minute(NOW, &[("cpu.total", 1)]).unwrap_err().1);
+    std::fs::set_permissions(&ro, std::fs::Permissions::from_mode(0o500)).unwrap();
+    let refused = h.recover(NOW + 60);
+    std::fs::set_permissions(&ro, std::fs::Permissions::from_mode(0o700)).unwrap();
+    if refused.is_ok() {
+        // Running as root: the directory's mode is no obstacle.
+        return;
+    }
+    assert!(h.broken.is_some());
+    h.recover(NOW + 120).unwrap();
+    assert!(h.broken.is_none());
+    assert!(h.moved_aside.as_ref().unwrap().exists());
+    h.write_minute(NOW + 120, &[("cpu.total", 1)]).unwrap();
 }
 
 #[test]
