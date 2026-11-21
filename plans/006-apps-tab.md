@@ -1413,9 +1413,13 @@ with where it lives:
   (`crates/mirqab-core/src/guard.rs:37`) returns `WalkError::Unreadable`,
   `Loop` or `TooDeep`; the old quiet `ancestry` had no caller and is gone.
 - **Plans** (`crates/mirqab-core/src/plan.rs`): `make` and `redeem`
-  (`:98`, `:140`) take the boot-time clock, read once per request by
+  (`:98`, `:140`) take the boot-time clock, read first in each request by
   `Actions` (`actions::Clock`; an unreadable clock fails the request with
-  `strings::ACT_NO_CLOCK` before anything is planned or redeemed); at most `MAX_PLANS` = 64,
+  `strings::ACT_NO_CLOCK` before anything is planned or redeemed), and
+  read again for a confirmation once its targets are resolved, so the
+  walk and `systemctl show` count toward the plan's 120 s (audit
+  2026-11-21, L15; test
+  `a_plan_expires_when_the_confirmation_reaches_it_not_when_it_arrived`); at most `MAX_PLANS` = 64,
   the oldest dropped; targets are `act::Target`; `redeem` returns the
   planned targets still there (`kept`) and the rest (`gone`).
 - **Resolution** (`resolve`, `actions.rs:491`). A pid: its `Tgid:` first

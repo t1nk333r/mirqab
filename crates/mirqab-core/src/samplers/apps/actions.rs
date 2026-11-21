@@ -812,8 +812,9 @@ impl Actions {
     /// Answers one parsed request: the `wouldDo` of a dry run, a
     /// `needs-confirm` failure with a new plan, or what was done. Each
     /// redeemed plan is written to `history` as one `action` event, and the
-    /// reply's `recorded` says whether it was. The clock is read once,
-    /// first: without it nothing is planned or redeemed (review of PR #17).
+    /// reply's `recorded` says whether it was. The clock is read first:
+    /// without it nothing is planned or redeemed (review of PR #17); a
+    /// confirmation reads it again once its targets are resolved.
     pub fn handle(
         &self,
         root: &Root,
@@ -869,6 +870,10 @@ impl Actions {
                 })),
             });
         };
+        // Resolving walked every process and may have waited on
+        // `systemctl show`: the plan's age is told when it is redeemed, not
+        // when the request came (audit 2026-11-21, L15).
+        let now = (self.clock)().map_err(|_| Failure::new(Code::Failed, strings::ACT_NO_CLOCK))?;
         self.redeem(root, ask, id, res, history, now)
     }
 

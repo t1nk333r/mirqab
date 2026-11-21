@@ -1228,3 +1228,37 @@ fn a_confirmation_does_not_stop_a_unit_the_plan_did_not_show() {
     );
     assert_eq!(events(&history), 1);
 }
+
+#[test]
+fn a_plan_expires_when_the_confirmation_reaches_it_not_when_it_arrived() {
+    // Audit 2026-11-21, L15: resolving the targets walks every process and
+    // may wait on `systemctl show` twice, so the clock is read again when
+    // the plan is redeemed. A confirmation that arrives at 119 s and is
+    // resolved by 121 s is past the 120 s a plan lives.
+    let root = fixture("root-desktop");
+    let ticks = Arc::new(Mutex::new(vec![1000u64, 1119, 1121]));
+    let clock: actions::Clock = {
+        let ticks = Arc::clone(&ticks);
+        Arc::new(move || {
+            let mut t = ticks.lock().unwrap();
+            let s = if t.len() > 1 { t.remove(0) } else { t[0] };
+            Ok(Duration::from_secs(s))
+        })
+    };
+    let rec = Arc::new(Recording::default());
+    let a = Actions::with_clock(rec.clone(), clock);
+    let data = plan(&a, &root, Action::Quit, pid(7100));
+    let f = confirm(
+        &a,
+        &root,
+        Action::Quit,
+        pid(7100),
+        data["plan"].as_str().unwrap(),
+        None,
+    )
+    .unwrap_err();
+    assert_eq!(f.code, Code::BadRequest);
+    assert_eq!(f.message, mirqab_core::proto::strings::PLAN_EXPIRED);
+    assert!(rec.lines().is_empty(), "nothing sent");
+    assert_eq!(a.live_plans(), 0, "the plan is spent");
+}
