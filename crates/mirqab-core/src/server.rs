@@ -366,9 +366,7 @@ pub fn listen(opts: Options) -> Result<Server, ListenError> {
         None => None,
         Some(h) => {
             // Its directory is private before the lock is made in it.
-            if let Some(dir) = h.parent() {
-                history::private_dir(dir).map_err(|e| ListenError::Failed(e.to_string()))?;
-            }
+            history::private_dir_of(h).map_err(|e| ListenError::Failed(e.to_string()))?;
             Some(lock_beside(h).map_err(|e| match e {
                 ListenError::AlreadyRunning => {
                     ListenError::Failed(strings::history_in_use(&h.display().to_string()))
@@ -609,22 +607,28 @@ fn history_loop(inner: Arc<Inner>) {
             }
         }
         if corrupt || h.broken.is_some() {
-            let before = h.broken.clone();
-            match h.recover(ts) {
-                Ok(()) => log(&format!(
-                    "history was damaged; moved it to {}",
-                    h.moved_aside
-                        .as_ref()
-                        .map(|p| p.display().to_string())
-                        .unwrap_or_default()
-                )),
-                // Said once, not every minute it stays so.
-                Err(e) if before.as_deref() != Some(e.0.as_str()) => {
-                    log(&format!("history is off: {e}"));
-                }
-                Err(_) => {}
-            }
+            recover_history(&mut h, ts);
         }
+    }
+}
+
+/// Replaces a history file SQLite found corrupt while open, from the minute
+/// writer or a query that met the damage (review of PR #26), and says what
+/// happened: a failure once, not every minute it stays so.
+fn recover_history(h: &mut History, ts: i64) {
+    let before = h.broken.clone();
+    match h.recover(ts) {
+        Ok(()) => log(&format!(
+            "history was damaged; moved it to {}",
+            h.moved_aside
+                .as_ref()
+                .map(|p| p.display().to_string())
+                .unwrap_or_default()
+        )),
+        Err(e) if before.as_deref() != Some(e.0.as_str()) => {
+            log(&format!("history is off: {e}"));
+        }
+        Err(_) => {}
     }
 }
 
@@ -1301,13 +1305,20 @@ impl Inner {
                 .unwrap_or_else(|| strings::HISTORY_IS_OFF.into());
             return Reply::err(req.id, Code::Unavailable, why);
         };
-        let h = lock(h);
+        let mut h = lock(h);
         if let Some(why) = &h.broken {
             return Reply::err(req.id, Code::Unavailable, why.clone());
         }
         match f(&h) {
             Ok(v) => Reply::ok(req.id, v),
-            Err(e) => Reply::err(req.id, Code::Failed, e.to_string()),
+            Err(e) => {
+                // A query that met damage the writer has not: replaced now,
+                // not at the next minute or never.
+                if e.1 {
+                    recover_history(&mut h, unix_now());
+                }
+                Reply::err(req.id, Code::Failed, e.to_string())
+            }
         }
     }
 
@@ -1345,6 +1356,9 @@ impl Inner {
             ) {
                 (Some(f), Some(t)) if f < t => match history::span(f, t, now) {
                     Some(s) => s,
+                    None if f > now => {
+                        return Reply::err(req.id, Code::BadRequest, strings::SPAN_IN_FUTURE);
+                    }
                     None => return Reply::err(req.id, Code::BadRequest, strings::SPAN_NOT_KEPT),
                 },
                 _ => return Reply::err(req.id, Code::BadRequest, strings::RANGE_REQUIRED),

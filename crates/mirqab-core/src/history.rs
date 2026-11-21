@@ -7,7 +7,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::io::ErrorKind;
-use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
+use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
 pub const SCHEMA: &str = "1";
@@ -88,9 +88,12 @@ pub const MAX_POINTS: i64 = 360;
 
 /// A `from`/`to` query's span at `now`: clamped to what is kept, from 30
 /// days back to a minute ahead, with the smallest range bucket that keeps
-/// it within MAX_POINTS (2 hours past 30 days). None when nothing of it is
-/// kept. Unclamped, one query over years at 1-minute buckets built
-/// hundreds of MB of points (plan 001, deferred to plan 005).
+/// it within MAX_POINTS (2 hours past 30 days). Buckets align to the
+/// epoch, so a span is then trimmed at its oldest end to the MAX_POINTS
+/// buckets that end it (a whole 30 days at 2 hours otherwise touches 361
+/// or 362; review of PR #26). None when nothing of it is kept. Unclamped,
+/// one query over years at 1-minute buckets built hundreds of MB of
+/// points (plan 001, deferred to plan 005).
 pub fn span(from: i64, to: i64, now: i64) -> Option<(i64, i64, i64)> {
     let from = from.max(now - KEEP_SECS);
     let to = to.min(now + 60);
@@ -103,6 +106,11 @@ pub fn span(from: i64, to: i64, now: i64) -> Option<(i64, i64, i64)> {
         .map(|r| r.2)
         .find(|b| (width + b - 1) / b <= MAX_POINTS)
         .unwrap_or(RANGES[RANGES.len() - 1].2);
+    // The bucket holding the last minute before `to`, and the start of the
+    // one MAX_POINTS - 1 before it, in the query's own floor arithmetic.
+    let per = bucket / 60;
+    let last = (minute(to) - 1).div_euclid(per);
+    let from = from.max(unix((last - (MAX_POINTS - 1)) * per));
     Some((from, to, bucket))
 }
 
@@ -129,6 +137,8 @@ pub struct History {
     pub broken: Option<String>,
     /// The file at `path` was found corrupt and is not moved aside yet.
     corrupt_in_place: bool,
+    /// When a file was last moved aside, for `RECOVER_BACKOFF_SECS`.
+    last_replaced: Option<i64>,
 }
 
 #[derive(Debug)]
@@ -159,17 +169,17 @@ impl From<rusqlite::Error> for HistoryError {
     }
 }
 
-/// The directory `default_path` keeps history in, which mirqab owns.
-const OWN_DIR: &str = "mirqab";
-
 /// Makes the directory history lives in private (plan 001, deferred to the
 /// first plan that writes events; the `top-apps` and `action` rows say what
 /// the owner ran and stopped). A missing one is made 0700, and parents it
 /// has to make (a fresh `~/.local/state`) keep the default mode (review of
-/// PR #6). An existing one is tightened to 0700 only when it is mirqab's own
-/// (`mirqab`, as `default_path` names it): a directory of another name was
-/// given by path and may be the user's. The files are private either way.
-pub fn private_dir(dir: &Path) -> Result<(), HistoryError> {
+/// PR #6). An existing one is tightened to 0700 only when the caller says
+/// mirqab owns it (`own`), and only when it is a directory of this user's,
+/// not a symlink: one reached through a path the user chose (`mirqab daemon
+/// --root` keeps history beside a chosen socket) may be theirs, and someone
+/// else's is never touched (review of PR #26). The files are private
+/// either way.
+pub fn private_dir(dir: &Path, own: bool) -> Result<(), HistoryError> {
     if dir.as_os_str().is_empty() {
         return Ok(());
     }
@@ -181,7 +191,9 @@ pub fn private_dir(dir: &Path) -> Result<(), HistoryError> {
     match std::fs::DirBuilder::new().mode(0o700).create(dir) {
         Ok(()) => Ok(()),
         Err(e) if e.kind() == ErrorKind::AlreadyExists => {
-            if dir.file_name().is_some_and(|n| n == OWN_DIR) {
+            let ours = std::fs::symlink_metadata(dir)
+                .is_ok_and(|m| m.is_dir() && m.uid() == crate::sys::uid());
+            if own && ours {
                 std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
                     .map_err(failed)?;
             }
@@ -190,6 +202,21 @@ pub fn private_dir(dir: &Path) -> Result<(), HistoryError> {
         Err(e) => Err(failed(e)),
     }
 }
+
+/// `private_dir` for the directory of the history file at `path`, which
+/// mirqab owns only when it is the default one (`History::default_path`).
+pub fn private_dir_of(path: &Path) -> Result<(), HistoryError> {
+    match path.parent() {
+        Some(dir) => private_dir(dir, History::default_path().parent() == Some(dir)),
+        None => Ok(()),
+    }
+}
+
+/// After `recover` replaced a file, damage found again within this long is
+/// left in place and history is off (`broken`) until it has passed:
+/// failing storage then adds a `.broken-*` file at most every six hours,
+/// not every minute (review of PR #26).
+pub const RECOVER_BACKOFF_SECS: i64 = 6 * 3600;
 
 /// Makes `path` 0600: created so when missing, before SQLite opens it (its
 /// log and shared memory then take the same mode), and tightened when it
@@ -264,21 +291,52 @@ fn open_conn(path: &Path) -> Result<Connection, HistoryError> {
     Ok(conn)
 }
 
+/// `path` with `suffix` added to its file name (`-wal`, `-shm`).
+fn beside(path: &Path, suffix: &str) -> PathBuf {
+    PathBuf::from(format!("{}{suffix}", path.display()))
+}
+
 /// Renames a file SQLite called corrupt, with its log and shared memory,
-/// to `<name>.broken-<now>`, and returns the new name.
+/// to `<name>.broken-<now>`, or `.broken-<now>.1` and on when that or its
+/// log is there already: an earlier one is never overwritten. Returns the
+/// new name. A log or shared memory that cannot be moved puts back what
+/// moved and fails: left beside a new file, an old log would be replayed
+/// into it (review of PR #26).
 fn move_aside(path: &Path, now_unix: i64) -> std::io::Result<PathBuf> {
-    let aside = path.with_file_name(format!(
-        "{}.broken-{now_unix}",
-        path.file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_default()
-    ));
+    const SIDES: [&str; 2] = ["-wal", "-shm"];
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let taken = |p: &Path| {
+        ["", SIDES[0], SIDES[1]]
+            .iter()
+            .any(|s| std::fs::symlink_metadata(beside(p, s)).is_ok())
+    };
+    let aside = (0..1000)
+        .map(|n| match n {
+            0 => path.with_file_name(format!("{name}.broken-{now_unix}")),
+            n => path.with_file_name(format!("{name}.broken-{now_unix}.{n}")),
+        })
+        .find(|p| !taken(p))
+        .ok_or_else(|| {
+            std::io::Error::new(ErrorKind::AlreadyExists, strings::HISTORY_ASIDE_TAKEN)
+        })?;
     std::fs::rename(path, &aside)?;
-    for suffix in ["-wal", "-shm"] {
-        let side = PathBuf::from(format!("{}{suffix}", path.display()));
-        if side.exists() {
-            let _ = std::fs::rename(&side, PathBuf::from(format!("{}{suffix}", aside.display())));
+    let mut moved: Vec<&str> = Vec::new();
+    for s in SIDES {
+        let side = beside(path, s);
+        if std::fs::symlink_metadata(&side).is_err() {
+            continue;
         }
+        if let Err(e) = std::fs::rename(&side, beside(&aside, s)) {
+            for m in moved.iter().rev() {
+                let _ = std::fs::rename(beside(&aside, m), beside(path, m));
+            }
+            let _ = std::fs::rename(&aside, path);
+            return Err(e);
+        }
+        moved.push(s);
     }
     Ok(aside)
 }
@@ -298,9 +356,7 @@ impl History {
     /// `history.db.broken-<unix time>` and a new one is made; `moved_aside`
     /// says so for `status`.
     pub fn open(path: &Path, now_unix: i64) -> Result<History, HistoryError> {
-        if let Some(dir) = path.parent() {
-            private_dir(dir)?;
-        }
+        private_dir_of(path)?;
         let (conn, moved_aside) = match open_private(path) {
             Ok(c) => (c, None),
             // Only a file SQLite calls not a database, or corrupt, is moved
@@ -319,6 +375,7 @@ impl History {
             conn,
             path: path.to_path_buf(),
             ids: BTreeMap::new(),
+            last_replaced: moved_aside.as_ref().map(|_| now_unix),
             moved_aside,
             broken: None,
             corrupt_in_place: false,
@@ -350,7 +407,8 @@ impl History {
     /// closed, the file moved aside as at open (`moved_aside` says where)
     /// and a new one made. On failure `broken` says why, and the next call
     /// tries again from where this one stopped (audit: history stayed on
-    /// while every write and query failed).
+    /// while every write and query failed). Within `RECOVER_BACKOFF_SECS`
+    /// of the last replacement the file is left in place and `broken`.
     pub fn recover(&mut self, now_unix: i64) -> Result<(), HistoryError> {
         if self.broken.is_none() {
             self.corrupt_in_place = true;
@@ -370,14 +428,24 @@ impl History {
             Connection::open_in_memory()?,
         ));
         if self.corrupt_in_place {
+            // A clock set back counts as past the backoff.
+            if let Some(t) = self.last_replaced
+                && (0..RECOVER_BACKOFF_SECS).contains(&(now_unix - t))
+            {
+                return Err(HistoryError::msg(strings::history_damaged_again(
+                    RECOVER_BACKOFF_SECS / 3600,
+                )));
+            }
             let aside = move_aside(&self.path, now_unix)
                 .map_err(|e| HistoryError::msg(format!("{}: {e}", self.path.display())))?;
             self.corrupt_in_place = false;
             self.moved_aside = Some(aside);
+            self.last_replaced = Some(now_unix);
         }
         let fresh = History::open(&self.path, now_unix)?;
         *self = History {
             moved_aside: fresh.moved_aside.clone().or(self.moved_aside.take()),
+            last_replaced: fresh.last_replaced.or(self.last_replaced),
             ..fresh
         };
         Ok(())
@@ -606,5 +674,42 @@ impl History {
 
     pub fn conn(&self) -> &Connection {
         &self.conn
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_file_moves_aside_with_its_log_to_a_name_not_taken() {
+        let dir = std::env::temp_dir().join(format!("mirqab-aside-{}", std::process::id()));
+        let _ = crate::act::remove_path(&dir, false);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("history.db");
+        for (name, body) in [
+            ("history.db", "db"),
+            ("history.db-wal", "wal"),
+            ("history.db-shm", "shm"),
+            ("history.db.broken-100", "first"),
+            ("history.db.broken-100.1-shm", "second's shm"),
+        ] {
+            std::fs::write(dir.join(name), body).unwrap();
+        }
+        let aside = move_aside(&path, 100).unwrap();
+        let read = |n: &str| std::fs::read_to_string(dir.join(n)).ok();
+        assert_eq!(aside, dir.join("history.db.broken-100.2"));
+        assert_eq!(read("history.db.broken-100.2").as_deref(), Some("db"));
+        assert_eq!(read("history.db.broken-100.2-wal").as_deref(), Some("wal"));
+        assert_eq!(read("history.db.broken-100.2-shm").as_deref(), Some("shm"));
+        assert_eq!(read("history.db.broken-100").as_deref(), Some("first"));
+        assert_eq!(
+            read("history.db.broken-100.1-shm").as_deref(),
+            Some("second's shm")
+        );
+        for gone in ["history.db", "history.db-wal", "history.db-shm"] {
+            assert!(read(gone).is_none(), "{gone}");
+        }
+        let _ = crate::act::remove_path(&dir, false);
     }
 }

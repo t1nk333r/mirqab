@@ -322,14 +322,20 @@ impl Sampler for Process {
     /// missing pid answers at once). A baseline that serves is queued as
     /// this get's reading too: a tick between the get's two locked steps
     /// replaces it, and `snapshot` must not then wait holding the lock
-    /// (audit).
+    /// (audit). Only one young enough to still serve half a second later
+    /// is; an older one gets a fresh reading and the wait, as it would
+    /// expire before `snapshot` and leave it to wait under the lock
+    /// (review of PR #26).
     fn prime(&mut self, root: &Root, now: Instant) -> Option<Duration> {
         let first = self.read_all(root);
         if first.is_empty() {
             return None;
         }
         let (base, gap) = match self.base.as_ref() {
-            Some(b) if usable(Some(b), &first, now) => {
+            Some(b)
+                if usable(Some(b), &first, now)
+                    && now.saturating_duration_since(b.at) <= LIVE_STALE - SNAPSHOT_GAP =>
+            {
                 let ticks = first
                     .iter()
                     .filter_map(|(pid, r)| {

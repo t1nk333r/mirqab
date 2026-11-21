@@ -800,6 +800,14 @@ pub fn unknown_range(name: &str) -> String {
 
 pub const RANGE_REQUIRED: &str = "range, or from and to, are required";
 pub const SPAN_NOT_KEPT: &str = "from and to lie outside the 30 days history keeps";
+pub const SPAN_IN_FUTURE: &str = "from and to lie in the future, where history has nothing yet";
+pub const HISTORY_ASIDE_TAKEN: &str = "every name to move the damaged history file to is taken";
+
+pub fn history_damaged_again(hours: i64) -> String {
+    format!(
+        "history was damaged again within {hours} hours of being replaced; it is off and the file is left in place until then"
+    )
+}
 
 pub fn history_schema_newer(found: &str, ours: &str) -> String {
     format!("history schema {found} is newer than {ours}")

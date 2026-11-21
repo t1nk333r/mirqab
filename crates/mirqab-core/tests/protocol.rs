@@ -1384,6 +1384,83 @@ fn the_history_file_its_directory_and_the_locks_are_private() {
     drop(server);
 }
 
+/// A history file at `path` whose `sample` root page is overwritten: it
+/// still opens, and the first use of `sample` finds it corrupt.
+fn damaged_history(path: &std::path::Path) {
+    use mirqab_core::history::History;
+    use std::io::{Seek, SeekFrom};
+    {
+        let mut h = History::open(path, 1_790_006_400).unwrap();
+        h.write_minute(1_790_006_400, &[("cpu.total", 1)]).unwrap();
+    }
+    let c = rusqlite::Connection::open(path).unwrap();
+    let root: i64 = c
+        .query_row(
+            "SELECT rootpage FROM sqlite_master WHERE name = 'sample'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let page: i64 = c.query_row("PRAGMA page_size", [], |r| r.get(0)).unwrap();
+    drop(c);
+    let mut f = std::fs::OpenOptions::new().write(true).open(path).unwrap();
+    f.seek(SeekFrom::Start(((root - 1) * page) as u64)).unwrap();
+    f.write_all(&vec![0xa5; page as usize]).unwrap();
+}
+
+#[test]
+fn a_query_that_meets_damage_replaces_the_file_at_once() {
+    // Review of PR #26: a query found the damage, answered `failed`, and
+    // nothing replaced the file.
+    let dir = PathBuf::from("/tmp").join(format!("mqp-qdamaged-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let history = dir.join("history.db");
+    damaged_history(&history);
+    let socket = dir.join("run/daemon.sock");
+    let server = server::listen(Options {
+        socket: socket.clone(),
+        root: Root::new(fixture("root-desktop")),
+        config_path: dir.join("config/mirqab/config.json"),
+        samplers: Vec::new(),
+        history: Some(history.clone()),
+        // The minute writer stays asleep: only the query can find it.
+        minute_period: Some(Duration::from_secs(86_400)),
+    })
+    .expect("listens");
+    std::thread::spawn(move || server.serve());
+    let d = Daemon { socket, dir };
+    let mut c = Client::connect(&d);
+    c.hello();
+    let ask = json!({"series": ["cpu.total"], "range": "1h"});
+    assert_eq!(
+        c.call("history.query", None, ask.clone()),
+        Err("failed".into())
+    );
+    let status = c.call("status", None, Value::Null).unwrap();
+    assert!(
+        status["history"]["movedAside"]
+            .as_str()
+            .is_some_and(|p| p.contains("history.db.broken-")),
+        "{status}"
+    );
+    assert!(c.call("history.query", None, ask).is_ok());
+    // A span wholly in the future says so.
+    let soon = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64
+        + 3600;
+    assert_eq!(
+        c.call(
+            "history.query",
+            None,
+            json!({"series": ["cpu.total"], "from": soon, "to": soon + 60})
+        ),
+        Err("bad-request".into())
+    );
+}
+
 #[test]
 fn the_minute_writer_replaces_a_file_found_corrupt_while_open() {
     // Audit: damage past what `open` reads left history "enabled" while

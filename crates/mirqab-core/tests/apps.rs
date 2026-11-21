@@ -1450,6 +1450,29 @@ fn a_primed_reading_left_by_one_get_never_answers_another_pid() {
 }
 
 #[test]
+fn a_baseline_about_to_go_stale_is_not_queued_for_a_get() {
+    // Review of PR #26: a baseline 9.7 s old was queued, went stale before
+    // `snapshot`, which then waited half a second under the lock.
+    let t0 = fixture("root-desktop");
+    let ask = [json!({"pid": 2001})];
+    let mut p = process_probed();
+    p.wants(&ask);
+    p.sample(&t0, Instant::now() - Duration::from_millis(9700));
+    p.wants(&ask);
+    assert_eq!(
+        p.prime(&t0, Instant::now()),
+        Some(Duration::from_millis(500)),
+        "a fresh reading and the wait"
+    );
+    // One 9 s old still serves at once.
+    let mut p = process_probed();
+    p.wants(&ask);
+    p.sample(&t0, Instant::now() - Duration::from_secs(9));
+    p.wants(&ask);
+    assert_eq!(p.prime(&t0, Instant::now()), None);
+}
+
+#[test]
 fn a_get_whose_baseline_a_tick_replaced_does_not_wait_under_the_lock() {
     // Audit: `prime` found the subscribers' baseline usable and queued
     // nothing; a tick between the get's two locked steps replaced it with
