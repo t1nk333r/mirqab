@@ -259,6 +259,10 @@ If it reports that it could not start `mirqab-ui.service`, the unit is
 missing or broken: check that it is in `~/.config/systemd/user`, and run
 `systemctl --user daemon-reload` after copying it.
 
+A daemon started on another socket (`mirqab --socket PATH daemon`) does
+not start the unit, which reaches only the default socket; start the
+window yourself with `mirqab-ui --socket PATH`.
+
 Stored history is read with `mirqab history`. This prints the last hour of
 `cpu.total`, one bucket a minute:
 

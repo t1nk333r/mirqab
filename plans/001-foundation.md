@@ -867,6 +867,15 @@ above:
   the display failure comes after exec. Tested in
   `crates/mirqab/tests/cli.rs`, `open_without_an_interface_fails_cleanly`
   and `a_unit_that_fails_to_start_is_reported`.)
+  A daemon on a socket other than the default (`--socket`, or
+  `$MIRQAB_SOCKET` other than its own) starts no unit: the shared
+  `mirqab-ui.service` runs `mirqab-ui` without `--socket`, so it would
+  dial the default socket, wait out the 5 s and fail, or attach to
+  another daemon. The open is `failed` with `mirqab-ui --socket <path>`
+  as the hint; an interface started that way gets the events as usual
+  (audit 2026-11-21, L61;
+  `open_on_another_socket_names_the_command_and_starts_no_unit` in
+  `crates/mirqab/tests/cli.rs`).
   `ui.hide` with no interface is done. The fallback that spawns
   `mirqab-ui` with the caller's environment (Unverified, below) moves to
   plan 020, which owns the session setup.

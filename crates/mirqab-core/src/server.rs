@@ -1473,6 +1473,16 @@ impl Inner {
             }
             return Ok(());
         }
+        // The shared unit runs `mirqab-ui` with no `--socket`, so it dials
+        // the default socket: for a daemon on another one it would wait out
+        // the start and fail, or attach to another daemon (audit
+        // 2026-11-21). Name the command that reaches this one instead.
+        if default_socket().as_deref() != Some(self.socket.as_path()) {
+            return Err((
+                Code::Failed,
+                strings::interface_other_socket(&self.socket.display().to_string()),
+            ));
+        }
         let timeout = ui_start_timeout();
         let (id, deadline, starter) = match &mut state.starting_ui {
             Some(s) => {

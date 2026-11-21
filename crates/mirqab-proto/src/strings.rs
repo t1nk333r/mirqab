@@ -756,6 +756,14 @@ pub fn interface_start_failed(why: &str) -> String {
     )
 }
 
+/// An open asked of a daemon on a socket other than the default: the
+/// shared mirqab-ui unit would dial the default one, so it is not started.
+pub fn interface_other_socket(socket: &str) -> String {
+    format!(
+        "this daemon listens on {socket}, not the default socket that mirqab-ui.service dials; start the window with: mirqab-ui --socket {socket}"
+    )
+}
+
 /// The unit started and nothing attached: most often it cannot see the
 /// display, since GTK opens it after systemd reported the start.
 pub fn interface_did_not_attach() -> &'static str {
