@@ -260,7 +260,12 @@ does not change any other interval.
   showing a `wouldDo` list), `empty_state.rs` (an `adw::StatusPage`),
   `icon.rs` (the glyph label), `sidebar.rs`, `footer.rs`. Switches and
   buttons are GTK's own (`gtk::Switch`, `gtk::Button` with the `flat`
-  class); no wrapper.
+  class); no wrapper. A tile's badge count is the tile's accessible
+  description, in words from `strings::tile_badge` ("3 ports listening",
+  "1 session needs you"), since the tile's label is the tab's name
+  (audit 2026-11-21, L54; `a_tile_badge_is_the_tiles_accessible_description`
+  in `crates/mirqab-ui/tests/widgets.rs`, `a_tile_badge_says_what_it_counts`
+  in `strings.rs`).
 - `tabs/settings/page.rs`: window mode and anchor, units, colour scheme,
   theme follow path, live interval, hidden tabs, and a "Daemon" section
   (version, socket, history size, helper status). Built from

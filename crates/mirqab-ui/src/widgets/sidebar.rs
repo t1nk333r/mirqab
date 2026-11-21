@@ -95,15 +95,16 @@ impl Sidebar {
         }
     }
 
-    /// The count on `id`'s tile, hidden at zero. It is the tile's
-    /// accessible description too: the tile's own label is the tab's name,
-    /// which hides the badge's text from a screen reader (audit 2026-11-21,
-    /// L54).
+    /// The count on `id`'s tile, hidden at zero. The count in words
+    /// (`strings::tile_badge`) is the tile's accessible description too:
+    /// the tile's own label is the tab's name, which hides the badge's text
+    /// from a screen reader (audit 2026-11-21, L54).
     pub fn set_badge(&self, id: &str, n: u32) {
         if let Some((_, b, count)) = self.tiles.borrow().iter().find(|(t, _, _)| *t == id) {
             badge::set_count(count, n);
             if n > 0 {
-                b.update_property(&[gtk::accessible::Property::Description(&n.to_string())]);
+                let words = strings::tile_badge(id, n);
+                b.update_property(&[gtk::accessible::Property::Description(&words)]);
             } else {
                 b.reset_property(gtk::AccessibleProperty::Description);
             }

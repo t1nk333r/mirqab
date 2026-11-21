@@ -766,8 +766,8 @@ own tokens, icons and words:
   Network, Devices, Battery, Volume, Ports, Agents, Awake, Time, Weather;
   then, pushed to the bottom, Trends and Support. A tile can carry a count
   badge (Ports: listeners; Agents: sessions that need the user), which is
-  also the tile's accessible description, since its label is the tab's
-  name. Tabs the
+  also the tile's accessible description in words ("3 ports listening"),
+  since its label is the tab's name. Tabs the
   machine cannot serve are hidden (Battery, Fans without sensors).
 - **Page**, right: a scrolling column of cards with rounded corners. A card
   has a title, an optional range picker (2m, 1h, 24h, 7d, 30d) and a
