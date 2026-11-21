@@ -1451,13 +1451,23 @@ fn a_query_that_meets_damage_replaces_the_file_at_once() {
         .unwrap()
         .as_secs() as i64
         + 3600;
+    let id = c.send(
+        "history.query",
+        None,
+        json!({"series": ["cpu.total"], "from": soon, "to": soon + 60}),
+    );
+    let error = loop {
+        match c.frame() {
+            Some(ServerFrame::Reply(r)) if r.id == id => break r.error.expect("an error"),
+            Some(_) => continue,
+            None => panic!("connection closed"),
+        }
+    };
+    assert_eq!(error.code.as_str(), "bad-request");
     assert_eq!(
-        c.call(
-            "history.query",
-            None,
-            json!({"series": ["cpu.total"], "from": soon, "to": soon + 60})
-        ),
-        Err("bad-request".into())
+        error.message,
+        mirqab_core::proto::strings::SPAN_IN_FUTURE,
+        "not the message for a span past the kept window"
     );
 }
 

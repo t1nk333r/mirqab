@@ -583,6 +583,49 @@ fn a_file_moved_aside_never_overwrites_an_earlier_one() {
     );
 }
 
+/// Set in the child process `the_default_directory_is_tightened` starts.
+const DEFAULT_DIR_CHILD: &str = "MIRQAB_TEST_DEFAULT_DIR_CHILD";
+
+#[test]
+fn the_default_directory_is_tightened() {
+    // Review of PR #26: `private_dir_of`'s own branch, for the real default
+    // path. `XDG_STATE_HOME` is the process's, so the check runs in a child
+    // of this test binary that runs this test alone with it set: no other
+    // test sees the variable, and none is set with `unsafe`.
+    use std::os::unix::fs::PermissionsExt;
+    if std::env::var_os(DEFAULT_DIR_CHILD).is_some() {
+        let path = History::default_path();
+        let dir = path.parent().unwrap();
+        std::fs::create_dir_all(dir).unwrap();
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let _h = History::open(&path, NOW).unwrap();
+        assert_eq!(mode(dir), 0o700);
+        return;
+    }
+    let d = scratch("default");
+    let out = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "the_default_directory_is_tightened",
+            "--exact",
+            "--nocapture",
+        ])
+        .env(DEFAULT_DIR_CHILD, "1")
+        .env("XDG_STATE_HOME", &d.0)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("1 passed"),
+        "the child ran the test"
+    );
+    assert_eq!(mode(&d.0.join("mirqab")), 0o700);
+}
+
 #[test]
 fn a_newer_schema_is_left_alone_and_refused() {
     let d = scratch("newer");

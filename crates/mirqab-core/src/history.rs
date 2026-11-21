@@ -356,6 +356,13 @@ impl History {
     /// `history.db.broken-<unix time>` and a new one is made; `moved_aside`
     /// says so for `status`.
     pub fn open(path: &Path, now_unix: i64) -> Result<History, HistoryError> {
+        History::open_with(path, now_unix, true)
+    }
+
+    /// `open`; with `may_move` false a file SQLite calls corrupt is left in
+    /// place and its error returned, for `replace` to move under its
+    /// backoff.
+    fn open_with(path: &Path, now_unix: i64, may_move: bool) -> Result<History, HistoryError> {
         private_dir_of(path)?;
         let (conn, moved_aside) = match open_private(path) {
             Ok(c) => (c, None),
@@ -363,7 +370,7 @@ impl History {
             // aside. A newer schema, a permission error, a full disk or a
             // lock leaves the file alone and history off (review of phase C:
             // each of those hid thirty days of data).
-            Err(first) if first.1 => {
+            Err(first) if first.1 && may_move => {
                 let aside = move_aside(path, now_unix).map_err(|e| {
                     HistoryError::msg(format!("{first}; and moving it aside failed: {e}"))
                 })?;
@@ -442,10 +449,19 @@ impl History {
             self.moved_aside = Some(aside);
             self.last_replaced = Some(now_unix);
         }
-        let fresh = History::open(&self.path, now_unix)?;
+        // Every move goes through the backoff above: a new file that is
+        // corrupt at once is left for the next try, not moved by `open`
+        // every minute (review of PR #26).
+        let fresh = match History::open_with(&self.path, now_unix, false) {
+            Ok(f) => f,
+            Err(e) => {
+                self.corrupt_in_place |= e.1;
+                return Err(e);
+            }
+        };
         *self = History {
-            moved_aside: fresh.moved_aside.clone().or(self.moved_aside.take()),
-            last_replaced: fresh.last_replaced.or(self.last_replaced),
+            moved_aside: self.moved_aside.take(),
+            last_replaced: self.last_replaced,
             ..fresh
         };
         Ok(())
@@ -680,6 +696,54 @@ impl History {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_new_file_corrupt_at_once_is_moved_aside_only_after_the_backoff() {
+        // Review of PR #26: `open`'s own move skipped the backoff, so a file
+        // corrupt as soon as it was made went aside every minute.
+        let dir = std::env::temp_dir().join(format!("mirqab-again-{}", std::process::id()));
+        let _ = crate::act::remove_path(&dir, false);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("history.db");
+        let broken = || {
+            std::fs::read_dir(&dir)
+                .unwrap()
+                .filter(|e| {
+                    e.as_ref()
+                        .unwrap()
+                        .file_name()
+                        .to_string_lossy()
+                        .contains(".broken-")
+                })
+                .count()
+        };
+        let t = 1_790_006_400;
+        let mut h = History::open(&path, t).unwrap();
+        // As after a replacement at `t` whose new file the storage spoiled:
+        // the move done, the open failed, the file unreadable.
+        h.conn = Connection::open_in_memory().unwrap();
+        for side in ["-wal", "-shm"] {
+            let _ = crate::act::remove_path(&beside(&path, side), false);
+        }
+        std::fs::write(
+            &path,
+            b"this is not a database, it is a sentence long enough",
+        )
+        .unwrap();
+        h.last_replaced = Some(t);
+        h.broken = Some("open failed".into());
+        let err = h.recover(t + 60).unwrap_err();
+        assert!(err.1, "{}", err.0);
+        assert_eq!(broken(), 0, "left in place within the backoff");
+        assert!(h.recover(t + 120).unwrap_err().0.contains("again"));
+        assert_eq!(broken(), 0);
+        h.recover(t + RECOVER_BACKOFF_SECS).unwrap();
+        assert_eq!(broken(), 1);
+        assert!(h.broken.is_none());
+        h.write_minute(t + RECOVER_BACKOFF_SECS, &[("cpu.total", 1)])
+            .unwrap();
+        let _ = crate::act::remove_path(&dir, false);
+    }
 
     #[test]
     fn a_file_moves_aside_with_its_log_to_a_name_not_taken() {
