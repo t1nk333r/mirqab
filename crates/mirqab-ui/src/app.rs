@@ -4,6 +4,7 @@
 //! the process quits (architecture §4).
 
 use crate::client::{Client, Subscription};
+use crate::listeners::Listeners;
 use crate::style::Style;
 use crate::window::Window;
 use adw::prelude::*;
@@ -102,7 +103,7 @@ pub struct Ctx {
     /// A show asked for before the first config arrived (a hand-run
     /// `mirqab-ui`), run once it has, or on the first failed connection.
     parked: RefCell<Option<(Option<String>, Option<Mode>)>>,
-    config_listeners: RefCell<Vec<Box<dyn Fn() -> bool>>>,
+    config_listeners: Listeners,
     /// Pages that have shown their first data since the window appeared,
     /// and what waits for one (the selftest).
     ready: RefCell<std::collections::HashSet<String>>,
@@ -137,7 +138,7 @@ impl Ctx {
             hold: RefCell::new(Some(app.hold())),
             ui_sub: RefCell::new(None),
             parked: RefCell::new(None),
-            config_listeners: RefCell::new(Vec::new()),
+            config_listeners: Listeners::new(),
             ready: RefCell::new(Default::default()),
             ready_waiters: RefCell::new(Vec::new()),
         });
@@ -375,19 +376,20 @@ impl Ctx {
         }
     }
 
-    /// Runs `f` after every config or status change (Settings re-reads its
-    /// rows) until it returns false (its page is gone).
-    pub fn on_config(&self, f: impl Fn() -> bool + 'static) {
-        self.config_listeners.borrow_mut().push(Box::new(f));
+    /// Runs `f` with `owner` after every config or status change (Settings
+    /// re-reads its rows) while `owner` lives.
+    pub fn on_config<W: IsA<glib::Object>>(&self, owner: &W, f: impl Fn(&W) + 'static) {
+        self.config_listeners.add(owner, f);
+    }
+
+    /// Config listeners held (tests).
+    #[doc(hidden)]
+    pub fn config_listener_count(&self) -> usize {
+        self.config_listeners.len()
     }
 
     fn config_changed(&self) {
-        let listeners = std::mem::take(&mut *self.config_listeners.borrow_mut());
-        let kept: Vec<_> = listeners.into_iter().filter(|f| f()).collect();
-        let mut current = self.config_listeners.borrow_mut();
-        let added = std::mem::take(&mut *current);
-        *current = kept;
-        current.extend(added);
+        self.config_listeners.run();
     }
 
     pub fn refresh_config(self: &Rc<Self>) {

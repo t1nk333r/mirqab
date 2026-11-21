@@ -1416,3 +1416,50 @@ fn a_tile_badge_is_the_tiles_accessible_description() {
     sidebar.set_badge("ports", 0);
     assert!(!described(), "a hidden badge is not");
 }
+
+/// Audit 2026-11-21, L52: every meter and graph registered a theme
+/// listener that was dropped only by the next theme change, so building
+/// and dropping pages grew the list without bound. A listener goes with
+/// the widget that owns it, at the next registration.
+#[gtk::test]
+#[ignore = "needs a display: run tests/test-ui-widgets.sh"]
+fn theme_listeners_go_with_their_widgets() {
+    let before = mirqab_ui::style::listener_count();
+    for _ in 0..50 {
+        drop(Meter::new());
+        drop(Graph::new());
+    }
+    let kept = Meter::new();
+    assert!(
+        mirqab_ui::style::listener_count() <= before + 2,
+        "{} theme listeners after dropping 100 widgets (from {before})",
+        mirqab_ui::style::listener_count()
+    );
+    drop(kept);
+}
+
+/// Audit 2026-11-21, L58: the same for config listeners, which a pin
+/// button and every Home and Settings page register.
+#[gtk::test]
+#[ignore = "needs a display: run tests/test-ui-widgets.sh"]
+fn config_listeners_go_with_their_widgets() {
+    adw::init().unwrap();
+    let app = adw::Application::builder()
+        .application_id("io.github.t1nk333r.mirqab.test")
+        .flags(gtk::gio::ApplicationFlags::NON_UNIQUE)
+        .build();
+    let dir = std::env::temp_dir().join(format!("mirqab-widgets-{}", std::process::id()));
+    let ctx = mirqab_ui::app::Ctx::new(&app, dir.join("none.sock"));
+    let before = ctx.config_listener_count();
+    for _ in 0..50 {
+        drop(mirqab_ui::tabs::pin_button(&ctx, "system.cpu"));
+    }
+    let kept = mirqab_ui::tabs::pin_button(&ctx, "system.cpu");
+    assert!(
+        ctx.config_listener_count() <= before + 1,
+        "{} config listeners after dropping 50 buttons (from {before})",
+        ctx.config_listener_count()
+    );
+    drop(kept);
+    ctx.client.close();
+}

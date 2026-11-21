@@ -231,14 +231,7 @@ impl Default for Graph {
 impl Graph {
     pub fn new() -> Graph {
         let g: Graph = glib::Object::new();
-        let weak = g.downgrade();
-        style::on_change(move || {
-            let Some(g) = weak.upgrade() else {
-                return false;
-            };
-            g.queue_draw();
-            true
-        });
+        style::on_change(&g, Graph::queue_draw);
         g
     }
 

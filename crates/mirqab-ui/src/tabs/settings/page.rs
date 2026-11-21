@@ -211,9 +211,9 @@ pub fn build(ctx: &Rc<Ctx>) -> gtk::Widget {
     let refresh = {
         let page = page.downgrade();
         let ctx = Rc::downgrade(ctx);
-        move || -> bool {
+        move || {
             let (Some(_page), Some(ctx)) = (page.upgrade(), ctx.upgrade()) else {
-                return false;
+                return;
             };
             let cfg: UiConfig = ctx.config.borrow().clone();
             quiet.set(true);
@@ -263,11 +263,10 @@ pub fn build(ctx: &Rc<Ctx>) -> gtk::Widget {
                 Some(n) if st["history"]["enabled"] == json!(true) => format::bytes(n),
                 _ => strings::HISTORY_OFF.to_string(),
             });
-            true
         }
     };
     refresh();
-    ctx.on_config(refresh);
+    ctx.on_config(&page, move |_| refresh());
     ctx.refresh_status();
     page.upcast()
 }

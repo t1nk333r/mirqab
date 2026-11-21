@@ -231,6 +231,10 @@ does not change any other interval.
   into a second `gtk::CssProvider` at
   `STYLE_PROVIDER_PRIORITY_APPLICATION + 1`, and watches both files with
   `gio::FileMonitor`.
+- `listeners.rs`: the theme's and the config's callbacks, each kept with
+  a weak reference to the widget that owns it and dropped with it at the
+  next registration or run, so pages built and dropped between two
+  changes do not pile them up (audit 2026-11-21, L52 and L58).
 - `selftest.rs`: `--selftest <tab>` (architecture §7.5): window mode,
   build the page, wait for its first event or 5 s, print the widget tree
   as JSON on stdout, exit 0; exit 1 with the reason on stderr otherwise.

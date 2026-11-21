@@ -210,13 +210,12 @@ pub fn build(ctx: &Rc<Ctx>) -> gtk::Widget {
     });
     page.rebuild();
 
+    // Owned by the root, which holds the page through its map handlers.
     let weak = Rc::downgrade(&page);
-    ctx.on_config(move || match weak.upgrade() {
-        Some(p) => {
+    ctx.on_config(&root, move |_| {
+        if let Some(p) = weak.upgrade() {
             p.rebuild();
-            true
         }
-        None => false,
     });
     let p = Rc::clone(&page);
     root.connect_map(move |_| {
