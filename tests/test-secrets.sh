@@ -117,3 +117,46 @@ status_is "an allowed commit is skipped" 0 "$STATUS"
 printf 'host %s\n' "$private_host" >"$repo/sample.txt"
 capture "$repo/tools/secrets.sh"
 status_is "the same text in the working tree is still found" 1 "$STATUS"
+
+# Commit messages are scanned too: a squash merge copies a branch's messages
+# into main's (audit of the gates). The diff of these commits is clean.
+rm -rf "$repo/.git"
+git -C "$repo" init -q -b main
+printf '%s\n' 'checked on a machine' '' "host $private_host" "mac $mac" >"$SANDBOX/msg"
+printf '# none\n' >"$repo/tools/secrets-allow.txt"
+printf 'clean\n' >"$repo/sample.txt"
+git -C "$repo" add -A
+git -C "$repo" -c user.name=t -c user.email=t@example.invalid commit -q -F "$SANDBOX/msg"
+capture "$repo/tools/secrets.sh"
+status_is "an address and a MAC in a commit message are found" 1 "$STATUS"
+like "and the address is named" "$OUTPUT" "IPv4 address outside the documentation ranges"
+like "and the MAC" "$OUTPUT" "MAC address"
+printf 'lunabox' >"$SANDBOX/deny"
+export MIRQAB_SECRETS_DENY="$SANDBOX/deny"
+git -C "$repo" -c user.name=t -c user.email=t@example.invalid commit -q --allow-empty -m 'seen on lunabox'
+capture "$repo/tools/secrets.sh"
+like "a denied string in a commit message is found" "$OUTPUT" "denied string"
+unset MIRQAB_SECRETS_DENY
+# The commit is allowed: its message is skipped like its diff.
+msg_leak="$(git -C "$repo" rev-parse HEAD~1)"
+git -C "$repo" reset -q --hard "$msg_leak"
+printf '%s  # synthetic, reviewed\n' "$msg_leak" >"$repo/tools/secrets-allow.txt"
+git -C "$repo" -c user.name=t -c user.email=t@example.invalid commit -qam allow
+capture "$repo/tools/secrets.sh"
+status_is "an allowed commit's message is skipped" 0 "$STATUS"
+# An identity trailer names a committer's own address, which the commit's
+# metadata publishes anyway: it passes, and the rest of its message is read.
+rm -rf "$repo/.git"
+git -C "$repo" init -q -b main
+printf '# none\n' >"$repo/tools/secrets-allow.txt"
+git -C "$repo" add -A
+gm=gmail
+git -C "$repo" -c user.name=t -c user.email=t@example.invalid commit -q -m 'squash' \
+    -m "Co-authored-by: someone <someone@$gm.com>" -m "Signed-off-by: someone <someone@$gm.com>"
+capture "$repo/tools/secrets.sh"
+status_is "identity trailers in a message pass" 0 "$STATUS"
+git -C "$repo" -c user.name=t -c user.email=t@example.invalid commit -q --allow-empty -m 'squash' \
+    -m "write to someone@$gm.com" -m "Co-authored-by: someone <someone@$gm.com>"
+capture "$repo/tools/secrets.sh"
+status_is "an address in the body beside a trailer is found" 1 "$STATUS"
+like "and named" "$OUTPUT" "personal e-mail address"

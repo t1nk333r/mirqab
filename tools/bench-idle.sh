@@ -64,7 +64,9 @@ fi
 
 if [[ -z $bin ]]; then
     cargo build --release --locked --quiet -p mirqab --bin mirqab
-    bin=target/release
+    # Where cargo just built it: with CARGO_TARGET_DIR set, ./target holds
+    # at best a stale binary, and measuring that would quote old code.
+    bin="${CARGO_TARGET_DIR:-$PWD/target}/release"
 fi
 watcher_bin=""
 if ((tray)); then

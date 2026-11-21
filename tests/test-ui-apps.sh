@@ -23,7 +23,8 @@
 # mirqab:covers crates/mirqab-ui/src/tabs/apps/** crates/mirqab-view/src/tabs/apps.rs
 # mirqab:covers crates/mirqab-ui/src/selftest.rs crates/mirqab-ui/src/client.rs
 # mirqab:covers crates/mirqab-ui/src/widgets/confirm_dialog.rs
-# mirqab:covers crates/mirqab-core/src/samplers/process.rs
+# mirqab:covers crates/mirqab-core/src/samplers/process.rs crates/mirqab-core/src/samplers/apps/**
+# mirqab:covers tests/fixtures/root-desktop/**
 # mirqab:covers-shared
 
 sandbox

@@ -4,6 +4,8 @@
 # reaching an interface are tested in crates/mirqab/tests/cli.rs.
 # mirqab:covers crates/mirqab/src/{main,cli,daemon,out,apps,quit,ports}.rs crates/mirqab-proto/src/strings.rs docs/cli.md
 # mirqab:covers tests/fixtures/root-desktop/** tests/fixtures/bin/pacman
+# mirqab:covers crates/mirqab-core/src/samplers/ports/** crates/mirqab-core/src/samplers/apps/**
+# mirqab:covers-shared
 
 sandbox
 build_bins
