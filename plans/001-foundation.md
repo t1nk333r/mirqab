@@ -241,6 +241,10 @@ does not change any other interval.
 - `selftest.rs`: `--selftest <tab>` (architecture §7.5): window mode,
   build the page, wait for its first event or 5 s, print the widget tree
   as JSON on stdout, exit 0; exit 1 with the reason on stderr otherwise.
+  A tab the window cannot open (`mirqab_view::shell::opens`) is refused
+  at once with exit 64, like any other bad argument: `show` would have
+  opened another tab than the one the selftest waits on (audit
+  2026-11-21, L57).
 - `widgets/`: `card.rs`, `graph.rs`, `range_picker.rs`, `stat.rs` (label
   and value), `pill.rs` (a coloured status word), `meter.rs` (a
   horizontal bar), `badge.rs`, `confirm_dialog.rs` (an `adw::AlertDialog`

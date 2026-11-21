@@ -63,13 +63,17 @@ impl Opts {
     /// S1): `--do` outside a test run, and `--selftest` reaching an
     /// interface that is already running (`first` false: the arguments
     /// came over the session bus from a second `mirqab-ui`), which would
-    /// otherwise drive the running window and exit it. Checked where the
-    /// process starts and again where forwarded arguments arrive.
+    /// otherwise drive the running window and exit it. And a `--selftest`
+    /// of a tab the window cannot open: `show` would fall back to a tab
+    /// the selftest does not wait on (audit 2026-11-21, L57). Checked where
+    /// the process starts and again where forwarded arguments arrive.
     pub fn refusal(&self, first: bool, test_env: bool) -> Option<&'static str> {
         if self.steps.is_some() && !test_env {
             Some(strings::UI_DO_TEST_ONLY)
         } else if self.selftest.is_some() && !first {
             Some(strings::UI_SELFTEST_NOT_FORWARDED)
+        } else if self.selftest.as_deref().is_some_and(|t| !shell::opens(t)) {
+            Some(strings::UI_SELFTEST_UNKNOWN_TAB)
         } else {
             None
         }
@@ -255,7 +259,7 @@ impl Ctx {
         let mode = mode
             .or_else(|| self.window().filter(|w| w.is_visible()).map(|w| w.mode))
             .unwrap_or(self.config.borrow().mode);
-        let valid = |t: &&str| *t == "settings" || shell::find(t).is_some();
+        let valid = |t: &&str| shell::opens(t);
         // No tab: an open window stays where it is; otherwise Home, or the
         // last tab with `window.rememberTab` (plan 003).
         let tab = tab.filter(valid).map(str::to_string).unwrap_or_else(|| {
@@ -511,5 +515,17 @@ mod tests {
         );
         assert_eq!(opts(&["--tab", "apps"]).refusal(false, false), None);
         assert_eq!(opts(&["--selftest", "apps"]).refusal(true, false), None);
+        assert_eq!(opts(&["--selftest", "settings"]).refusal(true, false), None);
+    }
+
+    /// Audit 2026-11-21, L57: the selftest waited on Home for an unknown
+    /// tab while `show` opened the remembered one, and exited 1 after 5 s.
+    /// It is refused at once instead.
+    #[test]
+    fn a_selftest_of_an_unknown_tab_is_refused() {
+        assert_eq!(
+            opts(&["--selftest", "nonsense"]).refusal(true, true),
+            Some(strings::UI_SELFTEST_UNKNOWN_TAB)
+        );
     }
 }

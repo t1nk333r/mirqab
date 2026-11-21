@@ -939,7 +939,8 @@ Three layers, cheapest first:
 3. **Each page once, against a real daemon.** `mirqab-ui --selftest <tab>`
    builds that page in window mode against the socket of a daemon serving
    a fixture root, waits for the first event, prints the widget tree as
-   JSON (type, style classes, text, accessible label) and exits.
+   JSON (type, style classes, text, accessible label) and exits. A tab
+   id the window cannot open is refused at once (exit 64).
    `tests/test-ui-<tab>.sh` asserts on that JSON with `jq`.
    With `--do STEPS` (accepted only with `MIRQAB_TEST=1`, also when the
    arguments reach a running interface over the session bus, which never

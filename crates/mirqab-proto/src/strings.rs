@@ -2132,6 +2132,9 @@ pub fn apps_outcome(name: &str, text: &str) -> String {
 pub const UI_SELFTEST_NOT_FORWARDED: &str =
     "mirqab-ui: --selftest is not passed to a running interface";
 
+/// `--selftest` with a tab id that names no tab (audit 2026-11-21, L57).
+pub const UI_SELFTEST_UNKNOWN_TAB: &str = "mirqab-ui: --selftest takes a tab id";
+
 /// A warning the daemon gave with the plan (the sound server, a portal).
 pub fn apps_warning(text: &str) -> String {
     format!("Warning: {}", plain(text))

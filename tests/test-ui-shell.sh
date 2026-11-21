@@ -33,8 +33,14 @@ is "the default opens a window, not a popover" 0 "$(jq --arg n "$notice" '[.. | 
 is "the window has the desktop's buttons on both sides" 2 "$(q '[.. | objects | select(.type == "GtkWindowControls")] | length')"
 is "its header row drags it" 1 "$(q '[.. | objects | select(.type == "GtkWindowHandle")] | length')"
 
+# An unknown tab is refused at once: the selftest used to wait on Home
+# while the window opened elsewhere, and fail after 5 s (audit
+# 2026-11-21, L57).
+started=$SECONDS
 capture timeout 20 "$BIN/mirqab-ui" --socket "$MIRQAB_SOCKET" --selftest nonsense
-status_is "an unknown tab still shows the window" 0 "$STATUS"
+status_is "an unknown tab is a usage error" 64 "$STATUS"
+like "it says why" "$OUTPUT" "--selftest takes a tab id"
+((SECONDS - started < 4)) && ok || not_ok "it is refused at once, not after the 5 s wait"
 
 # A popover config: the interface asks for one, and without layer shell
 # opens a window that says so. That is a real window, so it gets the
