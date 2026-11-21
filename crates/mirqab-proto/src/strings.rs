@@ -1550,6 +1550,21 @@ pub fn plan_dependents_unknown(unit: &str) -> String {
     )
 }
 
+/// A confirmation whose target is now stopped through another unit than
+/// the plan showed: a unit where the plan showed signals by pid, another
+/// unit, or signals where it showed a unit (audit of plan 006).
+pub fn plan_unit_changed(planned: Option<&str>, now: Option<&str>) -> String {
+    let how = |u: Option<&str>| match u {
+        Some(u) => format!("a stop of {}", plain(u)),
+        None => "signals by pid".to_string(),
+    };
+    format!(
+        "nothing was done: the confirmation showed {}, and the target now needs {}; ask again",
+        how(planned),
+        how(now)
+    )
+}
+
 /// `mirqab quit`: the line above the list, for Quit and Force quit.
 pub const QUIT_WILL: &str = "This will quit:";
 pub const FORCE_QUIT_WILL: &str = "This will force quit:";
