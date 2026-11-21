@@ -124,8 +124,8 @@ impl Root {
     /// fstat on the open descriptor, so nothing can be swapped in between
     /// a check and the read; O_NOCTTY too, because the daemon is a session
     /// leader without a terminal, and a planted tty would otherwise become
-    /// its controlling terminal on open. Links before the last component stay inside a
-    /// fixture tree, as in `read_prefix`.
+    /// its controlling terminal on open. Links before the last component
+    /// stay inside a fixture tree, as in `read_prefix`.
     pub fn read_regular_prefix(&self, rel: &str, n: usize) -> io::Result<Vec<u8>> {
         use std::io::Read;
         use std::os::unix::fs::OpenOptionsExt;
@@ -233,12 +233,18 @@ mod tests {
         // process was spawned without a process group of its own, so it is
         // not a group leader and the call succeeds.
         assert_ne!(unsafe { libc::setsid() }, -1, "setsid");
-        let ptmx = std::fs::OpenOptions::new()
+        let ptmx = match std::fs::OpenOptions::new()
             .read(true)
             .write(true)
             .custom_flags(libc::O_NOCTTY)
             .open("/dev/ptmx")
-            .expect("a pseudo-terminal");
+        {
+            Ok(f) => f,
+            // A container or build sandbox without pseudo-terminals: there
+            // is no tty to plant, so nothing to check.
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return,
+            Err(e) => panic!("a pseudo-terminal: {e}"),
+        };
         let unlock: libc::c_int = 0;
         let mut n: libc::c_uint = 0;
         // SAFETY: both ioctls take a pointer to an int that lives across
