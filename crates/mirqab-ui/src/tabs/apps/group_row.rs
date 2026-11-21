@@ -9,6 +9,7 @@
 use crate::tabs::apps::{icon_slot, set_app_icon};
 use crate::widgets::icon::icon_button;
 use crate::widgets::meter::Meter;
+use crate::widgets::named_box;
 use gtk::prelude::*;
 use mirqab_proto::strings;
 use mirqab_view::icons;
@@ -34,7 +35,7 @@ pub struct GroupRow {
 impl GroupRow {
     /// `on_toggle` gets the group's key when its expander is pressed.
     pub fn new(on_toggle: Rc<dyn Fn(u64)>) -> GroupRow {
-        let root = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        let root = named_box(gtk::Orientation::Horizontal, gtk::AccessibleRole::Group);
         root.add_css_class("mirqab-apps-row");
         let expander = icon_button(icons::EXPAND, strings::APPS_EXPAND);
         expander.add_css_class("mirqab-apps-expander");

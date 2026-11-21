@@ -476,10 +476,13 @@ Streams: `system`, `apps`, `process`, `ports`, `agents`, `awake`, `disk`,
   (owner, 2026-11-13). A subscription with `live: true` may ask for
   **1000 ms**, the lowest interval anywhere. The interface sets `live`
   only from a graph widget that shows the live range and is mapped in a
-  visible window, and it drops the flag (by subscribing again without it,
-  or unsubscribing) when the graph is unmapped: the page changed, the
-  range picker left "live", or the window hid. A dropped connection drops
-  its flags.
+  visible window the compositor has not suspended, and it drops the flag
+  (by subscribing again without it, or unsubscribing) when the graph is
+  unmapped (the page changed, the range picker left "live", or the window
+  hid) and when its window is suspended (minimised or on a workspace out
+  of view, where GTK keeps it mapped; this needs the compositor to send
+  xdg_toplevel `suspended`, and is not yet checked on Hyprland). A
+  dropped connection drops its flags.
 - **Everything else keeps its own slower interval.** Without `live` the
   floor is **2000 ms** and a shorter request is raised to it. Bar items
   (default 5 s), the tray tooltip, `--watch` commands, rules, and cards
@@ -560,9 +563,11 @@ to a daemon:
   or a slice and what is under it), which pass the same refusals, so one
   refused process among them refuses the stop; when the question fails the
   entry says `alsoStopsUnknown` and the stop is still planned. The plan
-  keeps the dependents it showed: a confirmation whose unit would now take
-  a unit the plan did not show, or whose list cannot be told now when the
-  plan's could, is refused and nothing runs. The session bus
+  keeps the unit it showed and the dependents it showed: a confirmation
+  that would now stop another unit, a unit where the plan showed signals
+  by pid, or signal where the plan showed a unit, is refused, and so is
+  one whose unit would now take a unit the plan did not show, or whose
+  list cannot be told now when the plan's could; nothing runs. The session bus
   (`dbus.service`, `dbus-broker.service`, `dbus-daemon.service`) is never
   stopped or signalled, and a stop that would also stop it is refused too,
   as a dependent; nor is a process of the user named `dbus-daemon`,

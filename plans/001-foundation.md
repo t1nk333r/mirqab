@@ -852,9 +852,17 @@ above:
   mirqab-ui.service` through `exec.rs`, queue the event, and the daemon
   sends it right after the interface's `ui` subscribe reply. Concurrent
   opens start the unit once; the latest event wins. 5 s without an
-  interface is `unavailable` (`MIRQAB_UI_START_MS` under `MIRQAB_TEST`);
-  a unit that fails to start is `failed`, with
-  `systemctl --user import-environment WAYLAND_DISPLAY` as the hint.
+  interface is `unavailable` (`MIRQAB_UI_START_MS` under `MIRQAB_TEST`),
+  with `systemctl --user import-environment WAYLAND_DISPLAY` as the hint;
+  a unit that fails to start is `failed`, and its message asks whether
+  the unit is installed. (Corrected after an audit: the display hint was
+  first on the failed start, but `dist/mirqab-ui.service` is
+  `Type=simple`, whose `systemctl start` returns once the process is
+  forked, before GTK opens the display, so a unit that cannot see the
+  display always ends in the 5 s wait. `Type=exec` would not help either:
+  the display failure comes after exec. Tested in
+  `crates/mirqab/tests/cli.rs`, `open_without_an_interface_fails_cleanly`
+  and `a_unit_that_fails_to_start_is_reported`.)
   `ui.hide` with no interface is done. The fallback that spawns
   `mirqab-ui` with the caller's environment (Unverified, below) moves to
   plan 020, which owns the session setup.

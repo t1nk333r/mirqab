@@ -24,6 +24,7 @@ use crate::tabs::apps::{icon_slot, set_app_icon};
 use crate::widgets::confirm_dialog;
 use crate::widgets::graph::{Graph, Live};
 use crate::widgets::icon::icon_button;
+use crate::widgets::named_box;
 use adw::prelude::*;
 use gtk::glib;
 use mirqab_proto::stream::{self, Inspect};
@@ -77,6 +78,12 @@ pub struct Inspector {
     dialog: RefCell<Option<adw::AlertDialog>>,
     /// An act's first call is out: one act in flight (review of PR #19).
     busy: Cell<bool>,
+    /// Bumped when an act starts or the selection changes, so only the
+    /// latest act's plan reply opens a dialog: hiding frees Quit while a
+    /// reply is out, and a second act's reply would open a second dialog
+    /// over the first (review of PR #24). A reply that comes back while
+    /// the sheet is off screen is dropped by `confirm`.
+    acts: Cell<u64>,
     /// The outcome of the last act on the selected row, for the page to
     /// take when the row goes (review of PR #19, B1).
     outcome: RefCell<Option<Outcome>>,
@@ -121,7 +128,7 @@ impl Inspector {
         on_close: Rc<dyn Fn()>,
         on_outcome: Rc<dyn Fn(Outcome)>,
     ) -> Rc<Inspector> {
-        let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        let root = named_box(gtk::Orientation::Vertical, gtk::AccessibleRole::Group);
         root.add_css_class("mirqab-apps-inspector");
         root.set_widget_name("apps-inspector");
         root.update_property(&[gtk::accessible::Property::Label(strings::APPS_INSPECTOR)]);
@@ -256,6 +263,7 @@ impl Inspector {
             asked: Cell::new(0),
             dialog: RefCell::new(None),
             busy: Cell::new(false),
+            acts: Cell::new(0),
             outcome: RefCell::new(None),
             on_outcome,
         });
@@ -278,7 +286,23 @@ impl Inspector {
                 i.act(true);
             }
         });
+        // The sheet off screen (the page unmapped, a tab switch, the window
+        // hid): the dialog goes with it. It sits in the window's dialog
+        // host, so it would outlive a dropped page, and its Go ahead would
+        // find no inspector and send nothing (audit).
+        let weak = Rc::downgrade(&i);
+        i.root.connect_unmap(move |_| {
+            if let Some(i) = weak.upgrade() {
+                i.hidden();
+            }
+        });
         i
+    }
+
+    /// The sheet went off screen: an open dialog is closed, sending
+    /// nothing, and Quit and Force quit are free again.
+    pub fn hidden(&self) {
+        self.close_dialog();
     }
 
     fn clear_messages(&self) {
@@ -392,6 +416,7 @@ impl Inspector {
 
     /// A new row was selected: its graph, its messages, its inspection.
     fn selected(&self, sel: &Selection) {
+        self.acts.set(self.acts.get() + 1);
         self.close_dialog();
         *self.outcome.borrow_mut() = None;
         self.clear_messages();
@@ -527,9 +552,11 @@ impl Inspector {
         };
         let weak = self.weak();
         let key = sel.key;
+        let act = self.acts.get() + 1;
+        self.acts.set(act);
         let reply: Reply = Box::new(move |r| {
             let Some(i) = weak.upgrade() else { return };
-            if i.sel.borrow().as_ref().map(|s| s.key) != Some(key) {
+            if i.acts.get() != act || i.sel.borrow().as_ref().map(|s| s.key) != Some(key) {
                 return;
             }
             i.set_busy(false);
@@ -548,6 +575,12 @@ impl Inspector {
 
     /// The dialog for a plan; Go ahead redeems it.
     fn confirm(&self, force: bool, data: &Value) {
+        // The plan came back after the sheet left the screen (another tab,
+        // the window hid): a dialog now would sit over whatever shows
+        // instead. Nothing is asked and nothing is sent.
+        if !self.root.is_mapped() {
+            return;
+        }
         let Some(sel) = self.sel.borrow().clone() else {
             return;
         };

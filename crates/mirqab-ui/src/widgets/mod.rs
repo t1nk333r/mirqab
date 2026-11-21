@@ -17,6 +17,17 @@ pub mod stat;
 use gtk::pango;
 use gtk::prelude::*;
 
+/// A box whose accessible label reaches a screen reader. A plain `GtkBox`
+/// has the Generic role, which ARIA naming (GTK 4.14+) treats as nameless,
+/// so a label set on it is dropped; `role` must be one that carries a
+/// name (Group, Navigation). The role can only be set at construction.
+pub fn named_box(orientation: gtk::Orientation, role: gtk::AccessibleRole) -> gtk::Box {
+    gtk::Box::builder()
+        .orientation(orientation)
+        .accessible_role(role)
+        .build()
+}
+
 /// The widget's font size in logical pixels: custom widgets measure in
 /// multiples of it, never in pixel literals (architecture §7.3).
 pub fn em(widget: &impl IsA<gtk::Widget>) -> f32 {
