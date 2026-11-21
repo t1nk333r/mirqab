@@ -292,6 +292,12 @@ fn live_only_while_mapped_at_two_minutes() {
     let win = shown(&g, 400, 100);
     assert_eq!(fake.live.get(), 1, "mapped at 2m");
     assert!(g.is_live());
+    // While mapped it follows the window's `suspended` state (a minimised
+    // window stays mapped); a notify while the window is shown keeps live.
+    assert!(g.watches_suspended());
+    assert!(!win.0.is_suspended());
+    win.0.notify("suspended");
+    assert_eq!(fake.live.get(), 1, "a shown window keeps live");
 
     // A live event becomes a point on the ring and is drawn.
     let cb = fake.on_event.borrow().clone().unwrap();
@@ -311,6 +317,7 @@ fn live_only_while_mapped_at_two_minutes() {
     win.0.set_visible(false);
     settle("the graph is unmapped", || !g.is_mapped());
     assert_eq!(fake.live.get(), 0, "a hidden window drops live");
+    assert!(!g.watches_suspended(), "the watch goes with the map");
     win.0.present();
     settle("the graph is mapped again", || g.is_mapped());
     assert_eq!(fake.live.get(), 1, "shown again");
@@ -772,6 +779,102 @@ fn one_act_one_dialog_and_go_ahead_sends_what_it_showed() {
 
 #[gtk::test]
 #[ignore = "needs a display: run tests/test-ui-widgets.sh"]
+fn the_dialog_goes_when_the_sheet_leaves_the_screen() {
+    use mirqab_ui::tabs::apps::inspector::Inspector;
+    use mirqab_view::tabs::apps::{self as model, Key};
+    let fake = Rc::new(Fake::new());
+    let i = Inspector::new(
+        fake.clone(),
+        Rc::new(|| true),
+        Rc::new(|| {}),
+        Rc::new(|_| {}),
+    );
+    let win = shown(&i.root, 400, 600);
+    let frame = golden_frame();
+    let quit = named(i.root.upcast_ref(), "apps-quit")
+        .and_downcast::<gtk::Button>()
+        .unwrap();
+    let p = Key::Process {
+        pid: 2001,
+        start: 5010,
+    };
+    let would = json!([{"signal": "TERM", "pid": 2001, "start": 5010, "name": "browser"}]);
+    i.show(model::selection(&frame, p, 1), &frame, true);
+
+    // A dialog open when the window hides closes with it: its Go ahead
+    // must not survive as a button that silently sends nothing.
+    fake.answers
+        .borrow_mut()
+        .push_back(needs_confirm("p1", would.clone()));
+    quit.emit_clicked();
+    let d = i.dialog().expect("a dialog");
+    let sent = fake.requests.borrow().len();
+    win.0.set_visible(false);
+    settle("the sheet is unmapped", || !i.root.is_mapped());
+    assert_eq!(i.dialog(), None, "closed with the sheet");
+    assert!(quit.is_sensitive(), "Quit is free again");
+    d.emit_by_name::<()>("response", &[&"confirm"]);
+    assert_eq!(fake.requests.borrow().len(), sent, "nothing redeemed");
+
+    // A plan that comes back while the sheet is off screen opens no
+    // dialog over whatever shows instead.
+    win.0.present();
+    settle("the sheet is mapped again", || i.root.is_mapped());
+    fake.defer.set(true);
+    quit.emit_clicked();
+    fake.defer.set(false);
+    win.0.set_visible(false);
+    settle("the sheet is unmapped", || !i.root.is_mapped());
+    let held = fake.held.borrow_mut().take().expect("a held reply");
+    held(needs_confirm("p2", would.clone()));
+    assert_eq!(i.dialog(), None, "no dialog off screen");
+    assert!(quit.is_sensitive(), "not left busy");
+
+    // Hiding frees Quit while a plan is out; when the window comes back
+    // and Quit is pressed again, the first act's late reply opens nothing,
+    // so no second dialog stacks over the one the user answers.
+    win.0.present();
+    settle("the sheet is mapped again", || i.root.is_mapped());
+    fake.defer.set(true);
+    quit.emit_clicked();
+    let first = fake
+        .held
+        .borrow_mut()
+        .take()
+        .expect("the first act's reply");
+    win.0.set_visible(false);
+    settle("the sheet is unmapped", || !i.root.is_mapped());
+    win.0.present();
+    settle("the sheet is mapped again", || i.root.is_mapped());
+    quit.emit_clicked();
+    fake.defer.set(false);
+    let second = fake
+        .held
+        .borrow_mut()
+        .take()
+        .expect("the second act's reply");
+    first(needs_confirm("p3", would.clone()));
+    assert_eq!(i.dialog(), None, "the first act's reply is dropped");
+    second(needs_confirm("p4", would.clone()));
+    assert!(i.dialog().is_some(), "the second act asks");
+    i.hidden();
+
+    // One act whose sheet hid and came back before its reply still asks.
+    fake.defer.set(true);
+    quit.emit_clicked();
+    fake.defer.set(false);
+    let only = fake.held.borrow_mut().take().expect("the act's reply");
+    win.0.set_visible(false);
+    settle("the sheet is unmapped", || !i.root.is_mapped());
+    win.0.present();
+    settle("the sheet is mapped again", || i.root.is_mapped());
+    only(needs_confirm("p5", would));
+    assert!(i.dialog().is_some(), "a lone act's late reply asks");
+    drop(win);
+}
+
+#[gtk::test]
+#[ignore = "needs a display: run tests/test-ui-widgets.sh"]
 fn hiding_the_sheet_clears_the_selection() {
     use mirqab_view::tabs::apps::Key;
     adw::init().unwrap();
@@ -1194,4 +1297,69 @@ fn a_remapped_page_shows_nothing_before_its_first_frame() {
     handle.frame(&v);
     assert!(!handle.rows().is_empty(), "the next frame fills it");
     ctx.client.close();
+}
+
+/// Every widget under `w` with an accessible label on the Generic role,
+/// as "type name: role" lines. GTK 4.14+ computes names by ARIA's rules,
+/// and Generic is a nameless container, so its label never reaches a
+/// screen reader (audit: "Range" and "Sidebar" were lost). Presentation
+/// is left out on purpose: a decorative glyph's text is meant to stay
+/// hidden.
+fn nameless_labels(w: &gtk::Widget, out: &mut Vec<String>) {
+    let role = w.accessible_role();
+    if role == gtk::AccessibleRole::Generic
+        && gtk::test_accessible_has_property(w, gtk::AccessibleProperty::Label)
+    {
+        out.push(format!(
+            "{} {:?}: {role:?}",
+            w.type_().name(),
+            w.widget_name()
+        ));
+    }
+    let mut c = w.first_child();
+    while let Some(child) = c {
+        nameless_labels(&child, out);
+        c = child.next_sibling();
+    }
+}
+
+#[gtk::test]
+#[ignore = "needs a display: run tests/test-ui-widgets.sh"]
+fn every_accessible_label_sits_on_a_role_that_carries_a_name() {
+    use mirqab_ui::tabs::apps::process_row::ProcessRow;
+    use mirqab_ui::widgets::range_picker::RangePicker;
+    use mirqab_ui::widgets::sidebar::Sidebar;
+    use mirqab_view::tabs::apps::{self as model, AppsState, Row};
+    let mut bad = Vec::new();
+
+    let picker = RangePicker::new("1h", |_| {});
+    nameless_labels(picker.root.upcast_ref(), &mut bad);
+
+    let sidebar = Sidebar::new(|_| {});
+    let tiles = mirqab_view::shell::sidebar(mirqab_view::shell::TABS, &[], &[]);
+    sidebar.set_tiles(&tiles, "home");
+    nameless_labels(sidebar.root.upcast_ref(), &mut bad);
+
+    // A process row, from the flat list.
+    let frame = golden_frame();
+    let mut flat = AppsState::default();
+    flat.flatten = true;
+    let rows = model::rows(&frame, &flat, "");
+    let p = rows
+        .iter()
+        .find_map(|r| match r {
+            Row::Process(p) => Some(p),
+            _ => None,
+        })
+        .expect("a process row");
+    let row = ProcessRow::new();
+    row.show(p);
+    nameless_labels(row.root.upcast_ref(), &mut bad);
+
+    // The Apps page: its group rows, list and inspector.
+    let (ctx, page, _handle, _win) = apps_page();
+    nameless_labels(&page, &mut bad);
+    ctx.client.close();
+
+    assert!(bad.is_empty(), "labels no screen reader hears: {bad:#?}");
 }

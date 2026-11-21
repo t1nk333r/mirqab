@@ -12,7 +12,8 @@
 //! a confirmation refused when the dependents changed. Part 4: a pid
 //! asked with its start time is `failed` once it names another process
 //! (S4), and a session bus outside any bus unit is refused by its command
-//! name (owner, 2026-11-14, Q1).
+//! name (owner, 2026-11-14, Q1). Audit: a confirmation refused when the
+//! unit its target is stopped through is not the one the plan showed.
 
 use mirqab_core::Root;
 use mirqab_core::act::{self, Recording, Sender, Signal, Target};
@@ -1131,4 +1132,99 @@ fn a_session_bus_outside_its_units_is_refused_by_name() {
         strings::refuse_session_bus_comm(9500, "dbus-daemon")
     );
     assert!(rec.lines().is_empty());
+}
+
+#[test]
+fn a_confirmation_does_not_stop_a_unit_the_plan_did_not_show() {
+    // The plan keeps the unit it would stop, apart from its dependents: a
+    // pid planned for a signal and moved into a user service before the
+    // confirmation is not stopped through that service, whose stop would
+    // end its other processes and dependents (audit of plan 006).
+    use mirqab_core::proto::strings;
+    const OTHER: &str = "other.service";
+    let events = |h: &Mutex<History>| {
+        h.lock()
+            .unwrap()
+            .events(Some("action"), 0, i64::MAX)
+            .unwrap()
+            .as_array()
+            .map_or(0, Vec::len)
+    };
+    let refused = |a: &Actions, root: &Root, args: Value, id: &str, h: &Mutex<History>| {
+        let f = confirm(a, root, Action::Quit, args.clone(), id, Some(h)).unwrap_err();
+        assert_eq!(f.code, Code::Refused, "{}", f.message);
+        let again = confirm(a, root, Action::Quit, args, id, Some(h)).unwrap_err();
+        assert_eq!(again.message, strings::PLAN_UNKNOWN, "the plan was spent");
+        f.message
+    };
+    let s = scratch("planunit");
+    let root = Root::new(&s.0);
+    let hist = scratch("planunithistory");
+    let history = Mutex::new(History::open(&hist.0.join("history.db"), 0).unwrap());
+    let (a, rec) = recorded();
+
+    // A signal planned, a unit now: refused.
+    let data = plan(&a, &root, Action::Quit, pid(2001));
+    assert_eq!(data["wouldDo"][0]["signal"], "TERM", "{data}");
+    move_to(&s, 2001, &format!("app.slice/{OTHER}"));
+    let msg = refused(
+        &a,
+        &root,
+        pid(2001),
+        data["plan"].as_str().unwrap(),
+        &history,
+    );
+    assert_eq!(msg, strings::plan_unit_changed(None, Some(OTHER)));
+    assert!(rec.lines().is_empty(), "nothing ran: {:?}", rec.lines());
+    assert_eq!(events(&history), 0, "no event");
+
+    // A unit whose dependents were unknown, another unit now: refused.
+    std::fs::create_dir_all(s.0.join("run/mirqab-test/dependents").join(SYNC)).unwrap();
+    let data = plan(&a, &root, Action::Quit, pid(1300));
+    assert_eq!(data["wouldDo"][0]["alsoStopsUnknown"], true);
+    move_to(&s, 1300, &format!("app.slice/{OTHER}"));
+    let msg = refused(
+        &a,
+        &root,
+        pid(1300),
+        data["plan"].as_str().unwrap(),
+        &history,
+    );
+    assert_eq!(msg, strings::plan_unit_changed(Some(SYNC), Some(OTHER)));
+    assert!(rec.lines().is_empty(), "nothing ran: {:?}", rec.lines());
+
+    // A unit planned, signals now: refused too, though narrower.
+    move_to(&s, 1300, &format!("app.slice/{SYNC}"));
+    dependents(&s, SYNC, "");
+    let data = plan(&a, &root, Action::Quit, pid(1300));
+    assert_eq!(data["wouldDo"][0]["unit"], SYNC);
+    move_to(&s, 1300, "app.slice/app-held-1.scope");
+    let msg = refused(
+        &a,
+        &root,
+        pid(1300),
+        data["plan"].as_str().unwrap(),
+        &history,
+    );
+    assert_eq!(msg, strings::plan_unit_changed(Some(SYNC), None));
+    assert!(rec.lines().is_empty(), "nothing ran: {:?}", rec.lines());
+    assert_eq!(events(&history), 0, "no event");
+
+    // The same unit at both calls still stops.
+    move_to(&s, 1300, &format!("app.slice/{SYNC}"));
+    let data = plan(&a, &root, Action::Quit, pid(1300));
+    confirm(
+        &a,
+        &root,
+        Action::Quit,
+        pid(1300),
+        data["plan"].as_str().unwrap(),
+        Some(&history),
+    )
+    .unwrap();
+    assert_eq!(
+        rec.lines(),
+        [format!("RUN systemctl --user stop --no-block -- {SYNC}")]
+    );
+    assert_eq!(events(&history), 1);
 }

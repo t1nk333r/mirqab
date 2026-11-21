@@ -81,6 +81,14 @@ impl Window {
 /// The ranges a graph's picker offers, in order.
 pub const RANGES: &[&str] = &["2m", "1h", "24h", "7d", "30d"];
 
+/// Whether a graph holds a live (1 s) subscription: only while its live
+/// range is on screen (architecture §5.3, §9.2), that is mapped in a
+/// window the compositor has not suspended (minimised, on a workspace out
+/// of view), at `2m`, with a live source.
+pub fn wants_live(mapped: bool, suspended: bool, range: &str, has_live: bool) -> bool {
+    mapped && !suspended && range == "2m" && has_live
+}
+
 /// The geometry of `points`, sorted by time, in `window` at `width` ×
 /// `height`. Points outside the window are dropped, values are clamped to
 /// the scale, and a run of one point becomes a short flat segment one step

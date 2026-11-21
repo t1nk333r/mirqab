@@ -2,6 +2,9 @@
 //! differences between two fixture moments, gaps, the ranges' bucket counts,
 //! pruning, a broken file moved aside, and 30 days × 64 series under 40 MB,
 //! with a `top-apps` event every minute (plan 006, part 4: the worst case).
+//! Audit fixes: the file and its directory are private (0600, 0700), a
+//! `from`/`to` span is clamped and bucketed, and a file found corrupt while
+//! open is moved aside and replaced.
 
 use mirqab_core::history::{self, History};
 use mirqab_core::root::Root;
@@ -175,6 +178,45 @@ fn each_range_returns_its_bucket_count() {
 }
 
 #[test]
+fn a_from_to_span_is_clamped_to_what_is_kept_and_bucketed_to_360_points() {
+    // Plan 001, deferred to plan 005: an unclamped span at 1-minute
+    // buckets built hundreds of MB, and i64::MIN panicked a debug build.
+    assert_eq!(history::minute(i64::MIN), i64::MIN.div_euclid(60));
+    // A whole 30 days at 2 hours touches 361 buckets: trimmed at its
+    // oldest end to 360 (review of PR #26).
+    let (from, to, bucket) = history::span(i64::MIN, i64::MAX, NOW).unwrap();
+    assert_eq!(
+        (from, to, bucket),
+        (NOW - history::KEEP_SECS + 7200, NOW + 60, 7200)
+    );
+    assert_eq!(history::span(0, NOW, NOW).unwrap().2, 7200);
+    // Each range's own span gets its own bucket.
+    for (_, span, bucket) in history::RANGES {
+        assert_eq!(history::span(NOW - span, NOW, NOW).unwrap().2, *bucket);
+    }
+    assert_eq!(
+        history::span(NOW - 600, NOW, NOW),
+        Some((NOW - 600, NOW, 60))
+    );
+    // Whatever the alignment, a clamped span gives at most 360 points.
+    let d = scratch("span");
+    let h = History::open(&d.0.join("history.db"), NOW).unwrap();
+    fill(&h, &[1], 30 * 1440);
+    for skew in [0, 59, 61, 1234, 7199] {
+        let now = NOW - skew;
+        for (f, t) in [(i64::MIN, i64::MAX), (now - 86_400 - 17, now), (0, now)] {
+            let (from, to, bucket) = history::span(f, t, now).unwrap();
+            let v = h.query(&["cpu.total"], from, to, bucket).unwrap();
+            let n = v["series"]["cpu.total"]["points"].as_array().unwrap().len();
+            assert!(n as i64 <= history::MAX_POINTS, "{n} at skew {skew}");
+        }
+    }
+    // Wholly outside the kept window: nothing.
+    assert_eq!(history::span(0, NOW - history::KEEP_SECS, NOW), None);
+    assert_eq!(history::span(NOW + 120, NOW + 600, NOW), None);
+}
+
+#[test]
 fn the_minute_just_written_is_in_a_range_that_ends_now() {
     let d = scratch("newest");
     let mut h = History::open(&d.0.join("history.db"), NOW).unwrap();
@@ -282,6 +324,306 @@ fn a_broken_file_is_moved_aside() {
     assert!(aside.ends_with(format!("history.db.broken-{NOW}")));
     assert!(aside.exists());
     assert_eq!(h.list().as_array().unwrap().len(), history::SERIES.len());
+}
+
+fn mode(p: &std::path::Path) -> u32 {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(p).unwrap().permissions().mode() & 0o777
+}
+
+/// A field of `proc/self/status` (no syscall needed).
+fn status_field(name: &str) -> String {
+    let status = std::fs::read_to_string("/proc/self/status").unwrap();
+    let line = status.lines().find(|l| l.starts_with(name)).unwrap();
+    line[name.len()..].trim().to_string()
+}
+
+/// The process's umask.
+fn umask() -> u32 {
+    u32::from_str_radix(&status_field("Umask:"), 8).unwrap()
+}
+
+/// The process's real uid.
+fn uid() -> u32 {
+    status_field("Uid:")
+        .split_whitespace()
+        .next()
+        .unwrap()
+        .parse()
+        .unwrap()
+}
+
+#[test]
+fn the_file_and_its_directory_are_private() {
+    // Plan 001, deferred to the first plan that writes events: the rows say
+    // which apps the owner ran and stopped.
+    use std::os::unix::fs::PermissionsExt;
+    let d = scratch("modes");
+    let state = d.0.join("state");
+    let path = state.join("mirqab/history.db");
+    let h = History::open(&path, NOW).unwrap();
+    assert_eq!(mode(&state.join("mirqab")), 0o700);
+    for f in ["history.db", "history.db-wal", "history.db-shm"] {
+        assert_eq!(mode(&state.join("mirqab").join(f)), 0o600, "{f}");
+    }
+    // The parent it had to make keeps the default mode (review of PR #6).
+    assert_eq!(mode(&state), 0o777 & !umask());
+    drop(h);
+
+    // Made before modes were set: the files are tightened at open. The
+    // directory is not the default one, so it may be the user's, even named
+    // `mirqab` (a checkout beside a socket chosen with `daemon --root`):
+    // left alone (review of PR #26).
+    let set = |p: &std::path::Path, m: u32| {
+        std::fs::set_permissions(p, std::fs::Permissions::from_mode(m)).unwrap()
+    };
+    set(&state.join("mirqab"), 0o755);
+    set(&path, 0o644);
+    let _h = History::open(&path, NOW).unwrap();
+    assert_eq!(mode(&state.join("mirqab")), 0o755);
+    assert_eq!(mode(&path), 0o600);
+
+    // The default directory, or one the caller owns, is tightened when it
+    // is this user's directory; a symlink to one is not followed.
+    history::private_dir(&state.join("mirqab"), true).unwrap();
+    assert_eq!(mode(&state.join("mirqab")), 0o700);
+    set(&state.join("mirqab"), 0o755);
+    let link = d.0.join("link");
+    std::os::unix::fs::symlink(state.join("mirqab"), &link).unwrap();
+    history::private_dir(&link, true).unwrap();
+    assert_eq!(mode(&state.join("mirqab")), 0o755);
+    // Someone else's directory is never touched, owned or not (skipped as
+    // root, where `/` would be ours).
+    if uid() != 0 {
+        let before = mode(std::path::Path::new("/"));
+        history::private_dir(std::path::Path::new("/"), true).unwrap();
+        assert_eq!(mode(std::path::Path::new("/")), before);
+    }
+
+    // A directory given by path: only the files are made private in it.
+    let own = d.0.join("elsewhere");
+    std::fs::create_dir_all(&own).unwrap();
+    set(&own, 0o755);
+    let _h = History::open(&own.join("h.db"), NOW).unwrap();
+    assert_eq!(mode(&own), 0o755);
+    assert_eq!(mode(&own.join("h.db")), 0o600);
+
+    // A broken file moved aside is private, as is the new one.
+    let broken = d.0.join("broken");
+    std::fs::create_dir_all(&broken).unwrap();
+    let bad = broken.join("history.db");
+    std::fs::write(
+        &bad,
+        b"this is not a database, it is a sentence long enough",
+    )
+    .unwrap();
+    set(&bad, 0o644);
+    let h = History::open(&bad, NOW).unwrap();
+    assert_eq!(mode(h.moved_aside.as_ref().unwrap()), 0o600);
+    assert_eq!(mode(&bad), 0o600);
+}
+
+/// Overwrites the root page of `sample` with garbage: the schema, `meta`
+/// and `series` still read, so the file opens, and the first use of
+/// `sample` finds it corrupt.
+fn damage_sample(path: &std::path::Path) {
+    use std::io::{Seek, SeekFrom, Write};
+    let (root, page): (i64, i64) = {
+        let c = rusqlite::Connection::open(path).unwrap();
+        let root = c
+            .query_row(
+                "SELECT rootpage FROM sqlite_master WHERE name = 'sample'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        (
+            root,
+            c.query_row("PRAGMA page_size", [], |r| r.get(0)).unwrap(),
+        )
+    };
+    let mut f = std::fs::OpenOptions::new().write(true).open(path).unwrap();
+    f.seek(SeekFrom::Start(((root - 1) * page) as u64)).unwrap();
+    f.write_all(&vec![0xa5; page as usize]).unwrap();
+}
+
+#[test]
+fn a_file_found_corrupt_while_open_is_moved_aside_and_replaced() {
+    // Audit: `open` reads only the schema, `meta` and `series`, so damage
+    // in `sample` opened without complaint and every write failed after.
+    let d = scratch("damaged");
+    let path = d.0.join("history.db");
+    {
+        let h = History::open(&path, NOW).unwrap();
+        fill(&h, &[1, 2], 1440);
+        h.compact(NOW).unwrap();
+    }
+    damage_sample(&path);
+    let mut h = History::open(&path, NOW).expect("the damage is past what open reads");
+    assert!(h.moved_aside.is_none());
+    let err = h.write_minute(NOW, &[("cpu.total", 1)]).unwrap_err();
+    assert!(err.1, "corrupt: {}", err.0);
+    h.recover(NOW + 60).unwrap();
+    let aside = h.moved_aside.clone().expect("moved aside");
+    assert!(aside.ends_with(format!("history.db.broken-{}", NOW + 60)));
+    assert!(aside.exists());
+    assert!(h.broken.is_none());
+    h.write_minute(NOW + 60, &[("cpu.total", 1)]).unwrap();
+    let v = h.query(&["cpu.total"], NOW, NOW + 120, 60).unwrap();
+    assert_eq!(
+        v["series"]["cpu.total"]["points"].as_array().unwrap().len(),
+        1
+    );
+    assert_eq!(h.list().as_array().unwrap().len(), history::SERIES.len());
+
+    // A file that cannot be moved aside leaves history off with the reason,
+    // and the next call, once it can, finishes the job.
+    use std::os::unix::fs::PermissionsExt;
+    let ro = d.0.join("ro");
+    std::fs::create_dir_all(&ro).unwrap();
+    let path = ro.join("history.db");
+    History::open(&path, NOW).unwrap();
+    damage_sample(&path);
+    let mut h = History::open(&path, NOW).unwrap();
+    assert!(h.write_minute(NOW, &[("cpu.total", 1)]).unwrap_err().1);
+    std::fs::set_permissions(&ro, std::fs::Permissions::from_mode(0o500)).unwrap();
+    let refused = h.recover(NOW + 60);
+    std::fs::set_permissions(&ro, std::fs::Permissions::from_mode(0o700)).unwrap();
+    if refused.is_ok() {
+        // Running as root: the directory's mode is no obstacle.
+        return;
+    }
+    assert!(h.broken.is_some());
+    h.recover(NOW + 120).unwrap();
+    assert!(h.broken.is_none());
+    assert!(h.moved_aside.as_ref().unwrap().exists());
+    h.write_minute(NOW + 120, &[("cpu.total", 1)]).unwrap();
+}
+
+/// The `.broken-*` files beside `path`.
+fn broken_files(path: &std::path::Path) -> Vec<String> {
+    let mut names: Vec<String> = std::fs::read_dir(path.parent().unwrap())
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|n| n.contains(".broken-"))
+        .collect();
+    names.sort();
+    names
+}
+
+#[test]
+fn damage_found_again_soon_after_a_replacement_leaves_history_off() {
+    // Review of PR #26: failing storage added a `.broken-*` file a minute.
+    let d = scratch("again");
+    let path = d.0.join("history.db");
+    History::open(&path, NOW).unwrap();
+    damage_sample(&path);
+    let mut h = History::open(&path, NOW).unwrap();
+    assert!(h.write_minute(NOW, &[("cpu.total", 1)]).unwrap_err().1);
+    h.recover(NOW).unwrap();
+    assert_eq!(broken_files(&path).len(), 1);
+    // The new file is damaged too: written out, then the page overwritten,
+    // and the connection's cache dropped so it reads the page again.
+    h.write_minute(NOW, &[("cpu.total", 1)]).unwrap();
+    h.checkpoint().unwrap();
+    damage_sample(&path);
+    h.conn().execute_batch("PRAGMA shrink_memory").unwrap();
+    assert!(h.write_minute(NOW + 60, &[("cpu.total", 1)]).unwrap_err().1);
+    let err = h.recover(NOW + 60).unwrap_err();
+    assert!(err.0.contains("again"), "{}", err.0);
+    assert_eq!(h.broken.as_deref(), Some(err.0.as_str()));
+    assert!(h.recover(NOW + 3600).is_err(), "still within the backoff");
+    assert_eq!(broken_files(&path).len(), 1, "nothing more moved aside");
+    // Once the backoff has passed, the next try replaces it.
+    h.recover(NOW + history::RECOVER_BACKOFF_SECS).unwrap();
+    assert!(h.broken.is_none());
+    assert_eq!(broken_files(&path).len(), 2);
+    h.write_minute(NOW + history::RECOVER_BACKOFF_SECS, &[("cpu.total", 1)])
+        .unwrap();
+}
+
+#[test]
+fn a_file_moved_aside_never_overwrites_an_earlier_one() {
+    // Review of PR #26: a second move in the same second overwrote the
+    // first, and a log left behind could be replayed into the new file.
+    let d = scratch("aside");
+    let path = d.0.join("history.db");
+    let taken = d.0.join(format!("history.db.broken-{NOW}"));
+    std::fs::write(&taken, b"the first one").unwrap();
+    std::fs::write(
+        d.0.join(format!("history.db.broken-{NOW}.1-wal")),
+        b"its log",
+    )
+    .unwrap();
+    std::fs::write(
+        &path,
+        b"this is not a database, it is a sentence long enough",
+    )
+    .unwrap();
+    std::fs::write(d.0.join("history.db-wal"), b"an old log").unwrap();
+    let h = History::open(&path, NOW).unwrap();
+    let aside = h.moved_aside.clone().unwrap();
+    assert!(
+        aside.ends_with(format!("history.db.broken-{NOW}.2")),
+        "{aside:?}"
+    );
+    assert_eq!(std::fs::read(&taken).unwrap(), b"the first one");
+    assert_eq!(
+        std::fs::read(d.0.join(format!("history.db.broken-{NOW}.1-wal"))).unwrap(),
+        b"its log"
+    );
+    // SQLite may drop a log it cannot read while it tries the file; one
+    // that is left goes with its file, never to the new one.
+    if let Ok(log) = std::fs::read(d.0.join(format!("history.db.broken-{NOW}.2-wal"))) {
+        assert_eq!(log, b"an old log");
+    }
+    assert_ne!(
+        std::fs::read(d.0.join("history.db-wal")).unwrap_or_default(),
+        b"an old log"
+    );
+}
+
+/// Set in the child process `the_default_directory_is_tightened` starts.
+const DEFAULT_DIR_CHILD: &str = "MIRQAB_TEST_DEFAULT_DIR_CHILD";
+
+#[test]
+fn the_default_directory_is_tightened() {
+    // Review of PR #26: `private_dir_of`'s own branch, for the real default
+    // path. `XDG_STATE_HOME` is the process's, so the check runs in a child
+    // of this test binary that runs this test alone with it set: no other
+    // test sees the variable, and none is set with `unsafe`.
+    use std::os::unix::fs::PermissionsExt;
+    if std::env::var_os(DEFAULT_DIR_CHILD).is_some() {
+        let path = History::default_path();
+        let dir = path.parent().unwrap();
+        std::fs::create_dir_all(dir).unwrap();
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let _h = History::open(&path, NOW).unwrap();
+        assert_eq!(mode(dir), 0o700);
+        return;
+    }
+    let d = scratch("default");
+    let out = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "the_default_directory_is_tightened",
+            "--exact",
+            "--nocapture",
+        ])
+        .env(DEFAULT_DIR_CHILD, "1")
+        .env("XDG_STATE_HOME", &d.0)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("1 passed"),
+        "the child ran the test"
+    );
+    assert_eq!(mode(&d.0.join("mirqab")), 0o700);
 }
 
 #[test]

@@ -5,8 +5,9 @@
 //! socket tables (`procnet.rs`), classifies each bind address (`ifaces.rs`)
 //! and names the process of each socket of the user's (`owner.rs`). The map
 //! from inode to process is rebuilt only when the set of the user's
-//! listening inodes changed since the last tick, or a mapped process is
-//! gone or is another one (a new start time); between rebuilds a tick reads
+//! listening inodes changed since the last tick, a mapped process is
+//! gone or is another one (a new start time), or the map is 30 s old (a
+//! worker forked since holds a mapped socket); between rebuilds a tick reads
 //! the tables and `stat` and `statm` of the few mapped processes. A `get`
 //! rebuilds it. A row is a port, a protocol, a bind pair and an owner: for
 //! the user's sockets, the tree of processes that hold it (a forked
@@ -41,6 +42,11 @@ use std::time::{Duration, Instant};
 /// same: addresses come and go (a VPN, a new lease) without a socket
 /// changing.
 const TABLE_MAX_AGE: Duration = Duration::from_secs(60);
+/// How long an owner map serves while the inodes and the mapped
+/// processes stay the same: a worker forked after the build (a respawn,
+/// a prefork server scaling up) holds a mapped socket without changing
+/// either (audit of plan 007). Six 5 s ticks, then one walk.
+const OWNER_MAX_AGE: Duration = Duration::from_secs(30);
 /// The longest label, in characters.
 const LABEL_MAX: usize = 40;
 
@@ -253,6 +259,8 @@ pub struct Ports {
     owners: HashMap<u64, Vec<Holder>>,
     /// The user's listening inodes at the last rebuild; None before one.
     built_for: Option<BTreeSet<u64>>,
+    /// When the last rebuild ran.
+    built_at: Option<Instant>,
     rebuilds: u64,
     /// The interface table, when read, with when and for which addresses.
     table: Option<(Instant, BTreeSet<IpAddr>, Table)>,
@@ -271,6 +279,7 @@ impl Ports {
             cache: procfs::Cache::default(),
             owners: HashMap::new(),
             built_for: None,
+            built_at: None,
             rebuilds: 0,
             table: None,
             system: SystemPorts::default(),
@@ -298,11 +307,16 @@ impl Ports {
         self.table.as_ref().map(|(_, _, t)| t)
     }
 
-    /// Whether the map must be built again: the user's inodes changed, or
-    /// a mapped process (any member of a tree, not only its root) is gone
-    /// or another one. Refreshes the trees' memory when it need not.
-    fn stale(&mut self, root: &Root, mine: &BTreeSet<u64>) -> bool {
-        if self.built_for.as_ref() != Some(mine) {
+    /// Whether the map must be built again: the user's inodes changed, a
+    /// mapped process (any member of a tree, not only its root) is gone
+    /// or another one, or the map is `OWNER_MAX_AGE` old. Refreshes the
+    /// trees' memory when it need not.
+    fn stale(&mut self, root: &Root, mine: &BTreeSet<u64>, now: Instant) -> bool {
+        if self.built_for.as_ref() != Some(mine)
+            || self
+                .built_at
+                .is_none_or(|at| now.saturating_duration_since(at) >= OWNER_MAX_AGE)
+        {
             return true;
         }
         let page = self.page;
@@ -330,7 +344,7 @@ impl Ports {
 
     /// Walks the user's processes and maps each wanted inode to those that
     /// hold it.
-    fn rebuild(&mut self, root: &Root, mine: BTreeSet<u64>) {
+    fn rebuild(&mut self, root: &Root, mine: BTreeSet<u64>, now: Instant) {
         let procs = procfs::walk(root, &mut self.cache, self.own_uid);
         let own: Vec<&procfs::Proc> = procs
             .iter()
@@ -365,6 +379,7 @@ impl Ports {
             })
             .collect();
         self.built_for = Some(mine);
+        self.built_at = Some(now);
         self.rebuilds += 1;
     }
 
@@ -382,8 +397,8 @@ impl Ports {
                 .filter(|s| s.uid == self.own_uid)
                 .map(|s| s.inode)
                 .collect();
-            if force || self.stale(root, &mine) {
-                self.rebuild(root, mine);
+            if force || self.stale(root, &mine, now) {
+                self.rebuild(root, mine, now);
             }
         }
         let table = self.table(root, &sockets, now).cloned().unwrap_or_default();
@@ -582,6 +597,10 @@ impl Sampler for Ports {
         self.measure(root, now, force)
     }
 
+    fn narrows(&self) -> bool {
+        true
+    }
+
     fn view(&self) -> Option<View> {
         Some(view)
     }
@@ -596,6 +615,7 @@ impl Sampler for Ports {
         self.cache = procfs::Cache::default();
         self.owners.clear();
         self.built_for = None;
+        self.built_at = None;
         self.table = None;
     }
 

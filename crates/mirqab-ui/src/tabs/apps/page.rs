@@ -361,6 +361,7 @@ impl Page {
         self.split.set_show_sidebar(false);
         self.quiet.set(false);
         if let Some(i) = self.inspector.borrow().as_ref() {
+            i.hidden();
             i.root.set_visible(false);
         }
     }

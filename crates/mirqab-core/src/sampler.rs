@@ -97,6 +97,17 @@ pub trait Sampler: Send {
     /// ignore it.
     fn wants(&mut self, _params: &[Value]) {}
 
+    /// Whether `wants` narrows what a sample reads, so a sample serves only
+    /// the params it was taken with: a subscriber whose params changed
+    /// while it was taken waits for the next one (at most `MIN_GAP`) rather
+    /// than get a view cut from a read for others (audit: `process` said a
+    /// live pid was gone, `ports` left out owners and UDP rows). A sampler
+    /// that reads everything keeps false, and such a subscriber is served
+    /// from the sample at once.
+    fn narrows(&self) -> bool {
+        false
+    }
+
     /// The stream was left with no subscriber: forget what was kept for
     /// them and stop what ran for them. Called under the sampler's lock
     /// once, when the last subscriber left (within one interval), and so

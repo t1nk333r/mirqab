@@ -329,11 +329,11 @@ DankMaterialShell (MIT); `NOTICE.md` carries both notices.
 
 | Method | Params | Result |
 |--------|--------|--------|
-| `subscribe` | `stream`, `params.interval` (ms, optional), `params.live` (bool, optional; §5.3). Any other `params` key belongs to the stream (the `apps` stream's `sort`, `limit`, `expand`; the `process` stream's `pid` and `start`; the `ports` stream's `udp` and `lite`). One sample is taken per tick and each subscriber gets its own view of it, shaped by its own params. Subscribing again to the same stream replaces the params. Params a stream cannot serve are `bad-request` | The effective interval; then events |
+| `subscribe` | `stream`, `params.interval` (ms, optional), `params.live` (bool, optional; §5.3). Any other `params` key belongs to the stream (the `apps` stream's `sort`, `limit`, `expand`; the `process` stream's `pid` and `start`; the `ports` stream's `udp` and `lite`). One sample is taken per tick and each subscriber gets its own view of it, shaped by its own params. Subscribing again to the same stream replaces the params. A stream that reads only what its subscribers name (`process`, `ports`) sends a subscriber whose params arrived during a sample nothing from that sample; the next, taken for it at once, is its first. Params a stream cannot serve are `bad-request` | The effective interval; then events |
 | `unsubscribe` | `stream` | — |
 | `get` | `stream`, `params` | One snapshot, no subscription, shaped by `params` as a subscription's view is. `stream` may be `<stream>.<query>` (`apps.inspect` with `params.pid` and optionally `params.start`, which answers `failed` "pid N is another process now" when the pid holds another process), answered by that stream's sampler; an unknown query is `unknown-stream` |
-| `history.query` | `series[]`, `range` (`1h`, `24h`, `7d`, `30d`) or `from`/`to` (unix seconds) | Per series its `unit` and `points`, each `[unixSeconds, avg, max]` unscaled; empty buckets omitted |
-| `history.events` | `kind`, `from`, `to` | Event rows |
+| `history.query` | `series[]` (at most 64 distinct; a repeat counts once), `range` (`1h`, `24h`, `7d`, `30d`) or `from`/`to` (unix seconds, clamped to the 30 days kept and a minute ahead; a span with nothing kept is `bad-request`) | `from`, `to` and `bucketSec` as used (for `from`/`to`, the smallest range bucket that covers the span in 360 points, the span trimmed at its oldest end to the 360 epoch-aligned buckets that end it; a span wholly in the future is `bad-request` too); per series its `unit` and `points`, each `[unixSeconds, avg, max]` unscaled; empty buckets omitted |
+| `history.events` | `kind`, `from`, `to` (clamped as for `history.query`) | Event rows |
 | `history.list` | — | The series history keeps: key, unit, scale |
 | `action` | `name`, `args`, `dryRun`; for a destructive action `confirm` (a boolean) and `plan` | What was done, or `wouldDo`. A destructive action without `confirm: true` and a plan is the error `needs-confirm`, whose `data` holds `plan`, `wouldDo`, `skipped` and `warnings` (§5.4) |
 | `config.get` / `config.set` | key paths | The config; the daemon is the only writer |
@@ -476,10 +476,13 @@ Streams: `system`, `apps`, `process`, `ports`, `agents`, `awake`, `disk`,
   (owner, 2026-11-13). A subscription with `live: true` may ask for
   **1000 ms**, the lowest interval anywhere. The interface sets `live`
   only from a graph widget that shows the live range and is mapped in a
-  visible window, and it drops the flag (by subscribing again without it,
-  or unsubscribing) when the graph is unmapped: the page changed, the
-  range picker left "live", or the window hid. A dropped connection drops
-  its flags.
+  visible window the compositor has not suspended, and it drops the flag
+  (by subscribing again without it, or unsubscribing) when the graph is
+  unmapped (the page changed, the range picker left "live", or the window
+  hid) and when its window is suspended (minimised or on a workspace out
+  of view, where GTK keeps it mapped; this needs the compositor to send
+  xdg_toplevel `suspended`, and is not yet checked on Hyprland). A
+  dropped connection drops its flags.
 - **Everything else keeps its own slower interval.** Without `live` the
   floor is **2000 ms** and a shorter request is raised to it. Bar items
   (default 5 s), the tray tooltip, `--watch` commands, rules, and cards
@@ -560,9 +563,11 @@ to a daemon:
   or a slice and what is under it), which pass the same refusals, so one
   refused process among them refuses the stop; when the question fails the
   entry says `alsoStopsUnknown` and the stop is still planned. The plan
-  keeps the dependents it showed: a confirmation whose unit would now take
-  a unit the plan did not show, or whose list cannot be told now when the
-  plan's could, is refused and nothing runs. The session bus
+  keeps the unit it showed and the dependents it showed: a confirmation
+  that would now stop another unit, a unit where the plan showed signals
+  by pid, or signal where the plan showed a unit, is refused, and so is
+  one whose unit would now take a unit the plan did not show, or whose
+  list cannot be told now when the plan's could; nothing runs. The session bus
   (`dbus.service`, `dbus-broker.service`, `dbus-daemon.service`) is never
   stopped or signalled, and a stop that would also stop it is refused too,
   as a dependent; nor is a process of the user named `dbus-daemon`,
@@ -601,7 +606,12 @@ With `mirqab daemon --root DIR` (fixture trees, used by the tests) the
 daemon keeps `history.db` and `config.json` beside its socket instead, so
 fixture numbers never reach the user's files. Only one daemon may use a
 history file: a second lock, `history.db.lock`, refuses a second daemon on
-another socket.
+another socket. History says which apps the owner ran and stopped, so its
+directory is 0700 and `history.db`, its `-wal` and `-shm` and the lock are
+0600; a parent the daemon has to make (a fresh `~/.local/state`) keeps the
+default mode. An existing directory is tightened only when it is the
+default one and this user's: one beside a socket the user chose may be
+theirs, and is left as it is.
 
 ### 5.6 D-Bus and HTTP
 
@@ -676,6 +686,17 @@ values cover.
 byte counts, packed by the daily compaction (§6.3); 43.3 MB never
 compacted. A test fills 30 days the way the writer does and checks the
 size without a manual checkpoint.
+
+A file SQLite calls not a database or corrupt is renamed
+`history.db.broken-<unix time>` (with `.1`, `.2` and on when that name is
+taken, so an earlier one is never overwritten) together with its `-wal` and
+`-shm`, and a new one made: at open or, for damage `open` does not read,
+when the minute writer or a query meets it; `status.history` names the old
+file in `movedAside`. If the move fails, history is off with the reason in
+`status.history.error`, and the writer tries again each minute. Damage met
+again within six hours of a replacement is left in place and history is off
+until the six hours have passed, so failing storage adds at most one
+`.broken-*` file every six hours.
 
 Rejected: one wide row per minute (every new series is a migration), a
 round-robin file format (a second storage engine for no gain), keeping

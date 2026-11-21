@@ -846,11 +846,15 @@ impl Actions {
             }));
         }
         let Some(id) = &ask.redeem else {
-            let also = res.unit_also().and_then(|(_, a)| a);
+            let (unit, also) = match res.unit_also() {
+                Some((u, a)) => (Some(u.to_string()), a),
+                None => (None, None),
+            };
             let plan = lock(&self.plans).make(
                 ask.action.name(),
                 ask.subject.to_value(),
                 res.targets(),
+                unit,
                 also,
                 now,
             );
@@ -891,6 +895,19 @@ impl Actions {
                 PlanError::Expired => Failure::new(Code::BadRequest, strings::PLAN_EXPIRED),
                 PlanError::OtherTool => Failure::new(Code::Refused, strings::PLAN_OTHER),
             })?;
+        // A confirmation acts the way its plan showed (audit of plan 006):
+        // a target planned for signals by pid and now in a user service is
+        // not stopped through that service, which would end its other
+        // processes and dependents; one planned in a unit and now in
+        // another, or in none, is refused too. The plan is spent, and
+        // nothing runs.
+        let unit_now = res.unit_also().map(|(u, _)| u);
+        if redeemed.unit.as_deref() != unit_now {
+            return Err(Failure::new(
+                Code::Refused,
+                strings::plan_unit_changed(redeemed.unit.as_deref(), unit_now),
+            ));
+        }
         // A confirmation does not stop a unit it did not show (review of
         // PR #18): the dependents asked again now must be among those the
         // plan listed, and must be known if the plan's were. A plan whose

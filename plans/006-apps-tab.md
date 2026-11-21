@@ -515,7 +515,9 @@ session bus, and this is what is left:
   the moment of the command, as there is for a signal. The dependents are
   asked again at the confirmation, and one the plan did not show refuses
   it (review of PR #18); one that starts depending between that question
-  and the `stop` is still not seen.
+  and the `stop` is still not seen. The unit itself is kept too: a
+  confirmation that would stop another unit, or a unit where the plan
+  showed signals, or signal where it showed a unit, is refused (audit).
 - ~~The session bus is recognised by its unit name only
   (`guard::SESSION_BUS`); a bus started by hand in some other unit
   (`dbus-run-session`, `dbus-launch`) is not.~~ Closed by part 4a (owner,
@@ -1208,7 +1210,12 @@ read commands of 5. Where it differs from the plan or adds to it:
   a session's job is its foreground process group's leader, else its
   oldest process that is not a shell, and a script run by `node`,
   `python` and the like is named after the script (`vite`); a session of
-  shells only stays with the terminal. Rule 5 climbs only through other
+  shells only stays with the terminal. Code given inline (`python3 -c`,
+  `perl -e`, `node -e`/`--eval`, `deno eval`) or a script argument that
+  is not a plain file name of at most 64 bytes names the job after the
+  interpreter, and an option's separate value (`-W ignore`) is skipped:
+  the name reaches the top-apps row and agents (`script_of`, audit of
+  2026-11-21). Rule 5 climbs only through other
   rule-5 processes of the user (`tree_groups`, `group.rs:409`). Group ids:
   `scope:`, `service:`, `flatpak:`, `container:` (12 hex), `session:`,
   `tree:`, `system`.
@@ -1827,7 +1834,15 @@ From the review of PR #18 (2026-11-14; the ruling kept 8 items, deferred
   `a_confirmation_does_not_stop_a_dependent_it_did_not_show` (a new
   dependent refused and the plan then unknown; an unreadable answer
   refused; a shown dependent gone inactive still stops),
-  `the_dependents_a_plan_showed_come_back_at_redeem` in `plan.rs`.
+  `the_unit_and_dependents_a_plan_showed_come_back_at_redeem` in
+  `plan.rs`. **Audit fix:** `Plans::make` keeps the unit the plan showed
+  apart from `also`, whose None meant both "no unit" and "dependents
+  unknown", so a pid planned for `TERM` and moved into a user service
+  before the confirmation was stopped through that service. At redeem,
+  before the dependents check, a unit that differs from the planned one
+  (another unit, a unit for signals, or signals for a unit) is
+  `strings::plan_unit_changed`: refused, the plan spent, nothing run, no
+  event. Test: `a_confirmation_does_not_stop_a_unit_the_plan_did_not_show`.
 - **K5, `dbus-daemon.service`** joins `guard::SESSION_BUS`: where the
   reference bus is installed under that name, `dbus.service` is only its
   alias (from the ruling's memory, see Unverified). Tests: the guard's
