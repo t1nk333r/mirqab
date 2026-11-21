@@ -706,6 +706,13 @@ pub fn no_runtime_dir() -> &'static str {
     "mirqab: XDG_RUNTIME_DIR is not set; the daemon needs a private runtime directory"
 }
 
+/// Neither the XDG variable nor HOME is an absolute path.
+pub fn no_home_dir(var: &str) -> String {
+    format!(
+        "mirqab: neither {var} nor HOME is an absolute path; set one so mirqab knows where its files go"
+    )
+}
+
 pub fn runtime_dir_not_ours(dir: &str) -> String {
     format!("mirqab: {dir} is not owned by this user; refusing to put the socket there")
 }

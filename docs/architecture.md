@@ -604,8 +604,11 @@ to a daemon:
 | Cache (weather, geocoding) | `~/.cache/mirqab/` |
 | Shipped defaults | `/usr/share/mirqab/` |
 
-XDG variables override each directory. The daemon is the only writer of
-`config.json`; the interface and CLI change settings through `config.set`,
+XDG variables override each directory when they are absolute paths (a
+relative one is ignored, as the XDG spec says); without one the daemon
+uses `$HOME`, and refuses to start when that is not absolute either. The
+daemon is the only writer of `config.json`; the interface and CLI change
+settings through `config.set`,
 and every subscriber to `ui` gets a `config-changed` event. A hand edit
 is noticed at the next read (a request that reads the config, or the
 minute writer's wakeup) and treated the same way: open live subscriptions
