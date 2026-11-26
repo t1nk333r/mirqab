@@ -2504,6 +2504,11 @@ mod tests {
         assert_eq!(apps_row("x\ny", "1%", "1 MB", 1).lines().count(), 1);
         assert_eq!(what_line("command", "a\rb"), "command     a\u{fffd}b");
         assert_eq!(proc_ref("a\x1bb", 1), "a\u{fffd}b (1)");
+        // A label breaks a line at the Unicode line and paragraph
+        // separators as it does at a newline, so a name holding one would
+        // add a forged line to the Quit confirmation (audit, plan 024 L18).
+        let p = plain("helper\u{2028}Left alone:\u{2029}x");
+        assert_eq!(p, "helper\u{fffd}Left alone:\u{fffd}x");
     }
 
     #[test]

@@ -519,6 +519,13 @@ mod tests {
             EXIT_FAILED
         );
         assert_eq!(reply(json!([d]), json!([]), json!([]), json!([d])), 0);
+        // One target had exited and the other was left alone: nothing was
+        // quit, so it is a failure, as plan 006 and the help say (plan 024
+        // L6).
+        assert_eq!(
+            reply(json!([]), json!([d]), json!([]), json!([d])),
+            EXIT_FAILED
+        );
         assert_eq!(
             reply(json!([]), json!([]), json!([d]), json!([])),
             EXIT_FAILED
