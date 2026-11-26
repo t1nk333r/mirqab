@@ -966,7 +966,8 @@ Three layers, cheapest first:
 2. **Widgets, on a headless display.** `crates/mirqab-ui/tests/*.rs` use
    `#[gtk::test]`, which initialises GTK once and runs every test on the
    thread that owns it. `tests/lib.sh` starts `gtk4-broadwayd` (inside the
-   `gtk4` package **[machine]**) on a private display number and exports
+   `gtk4` package **[machine]**) on a private display number, its HTTP
+   frontend bound to loopback only, and exports
    `GDK_BACKEND=broadway`, `BROADWAY_DISPLAY`, `GSK_RENDERER=cairo` and
    `GTK_A11Y=none`; the widget tests run with GTK's `test` accessibility
    backend instead, which talks to no bus and lets a test read back an

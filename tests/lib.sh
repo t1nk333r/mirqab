@@ -197,10 +197,13 @@ start_broadway() {
     local n i
     # Display N listens on TCP port 8080 + N and on a socket in the runtime
     # dir, which is the sandbox's: a number another broadwayd holds makes it
-    # exit, and the next number is tried.
+    # exit, and the next number is tried. GDK reaches the display through the
+    # socket; the HTTP frontend is bound to loopback, because without an
+    # address it listens on every interface, and anyone on the network could
+    # watch the test window and click in it (audit, plan 024 C3).
     for ((i = 0; i < 20; i++)); do
         n=$((RANDOM % 900 + 50))
-        gtk4-broadwayd ":$n" >"$SANDBOX/broadway.log" 2>&1 &
+        gtk4-broadwayd --address 127.0.0.1 ":$n" >"$SANDBOX/broadway.log" 2>&1 &
         BROADWAY_PID=$!
         local j
         for ((j = 0; j < 100; j++)); do
