@@ -598,7 +598,7 @@ pub fn listen(opts: Options) -> Result<Server, ListenError> {
                 // Off until the minute writer's `recover` gets past it
                 // (plan 024, C13).
                 if let Some(why) = &h.broken {
-                    log(&format!("history is off: {why}"));
+                    log(&strings::history_off(why));
                 }
                 (Some(Mutex::new(h)), None)
             }
