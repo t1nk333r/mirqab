@@ -147,6 +147,10 @@ struct State {
     starting_ui: Option<UiStart>,
     /// Numbers the start attempts.
     ui_starts: u64,
+    /// The last attempt whose `systemctl start` failed, and why: the opens
+    /// that joined it report that, not the display timeout (plan 024, C1).
+    /// Ids only grow, so it never matches a later attempt.
+    ui_start_failed: Option<(u64, String)>,
 }
 
 /// One attempt to start the interface. It owns the deadline and the queued
@@ -388,8 +392,10 @@ impl Sampler for SelfSampler {
     /// first reading, whose CPU is 0.
     fn snapshot(&mut self, root: &Root, now: Instant) -> Value {
         let (subscribers, ui_pid) = self.shared();
-        // Older ones are left over from gets answered otherwise; a younger
-        // one belongs to a later get.
+        // Older ones are left over from gets answered otherwise; younger
+        // ones are skipped, not a stop: they belong to later gets, and a
+        // subscriber's copy queued behind a fresh reading may serve now
+        // (plan 024, L23).
         while self
             .primed
             .front()
@@ -397,10 +403,11 @@ impl Sampler for SelfSampler {
         {
             self.primed.pop_front();
         }
-        let primed = match self.primed.front() {
-            Some((m, _)) if serves(m, now) => self.primed.pop_front(),
-            _ => None,
-        };
+        let primed = self
+            .primed
+            .iter()
+            .position(|(m, _)| serves(m, now))
+            .and_then(|i| self.primed.remove(i));
         let pick = |own: Option<&Meter>, sub: Option<&Meter>| {
             own.filter(|m| serves(m, now))
                 .or(sub.filter(|m| serves(m, now)))
@@ -433,7 +440,8 @@ fn mkdir_private(dir: &Path) -> Result<(), String> {
     // Only the leaf mirqab owns is private; parents it has to make (a
     // fresh `~/.local/state`) get the default mode (review of PR #6).
     if let Some(parent) = dir.parent().filter(|p| !p.as_os_str().is_empty()) {
-        std::fs::create_dir_all(parent).map_err(|e| format!("mkdir {}: {e}", parent.display()))?;
+        std::fs::create_dir_all(parent)
+            .map_err(|e| strings::mkdir_failed(&parent.display().to_string(), &e.to_string()))?;
     }
     match std::fs::DirBuilder::new().mode(0o700).create(dir) {
         Ok(()) => Ok(()),
@@ -447,7 +455,10 @@ fn mkdir_private(dir: &Path) -> Result<(), String> {
                 Err(strings::socket_dir_not_private(&dir.display().to_string()))
             }
         }
-        Err(e) => Err(format!("mkdir {}: {e}", dir.display())),
+        Err(e) => Err(strings::mkdir_failed(
+            &dir.display().to_string(),
+            &e.to_string(),
+        )),
     }
 }
 
@@ -488,26 +499,31 @@ fn take_lock(socket: &Path) -> Result<std::fs::File, ListenError> {
 /// leaf private first. The lock file is 0600, as the file it guards.
 fn lock_beside(target: &Path) -> Result<std::fs::File, ListenError> {
     if let Some(dir) = target.parent().filter(|d| !d.as_os_str().is_empty()) {
-        std::fs::create_dir_all(dir)
-            .map_err(|e| ListenError::Failed(format!("mkdir {}: {e}", dir.display())))?;
+        std::fs::create_dir_all(dir).map_err(|e| {
+            ListenError::Failed(strings::mkdir_failed(
+                &dir.display().to_string(),
+                &e.to_string(),
+            ))
+        })?;
     }
     let path = PathBuf::from(format!("{}.lock", target.display()));
+    let shown = path.display().to_string();
     let file = std::fs::OpenOptions::new()
         .create(true)
         .truncate(false)
         .write(true)
         .mode(0o600)
         .open(&path)
-        .map_err(|e| ListenError::Failed(format!("{}: {e}", path.display())))?;
+        .map_err(|e| ListenError::Failed(strings::lock_file_failed(&shown, &e.to_string())))?;
     // One made before modes were set is tightened.
     file.set_permissions(std::fs::Permissions::from_mode(0o600))
-        .map_err(|e| ListenError::Failed(format!("chmod {}: {e}", path.display())))?;
+        .map_err(|e| ListenError::Failed(strings::chmod_failed(&shown, &e.to_string())))?;
     match file.try_lock() {
         Ok(()) => Ok(file),
         Err(std::fs::TryLockError::WouldBlock) => Err(ListenError::AlreadyRunning),
-        Err(std::fs::TryLockError::Error(e)) => {
-            Err(ListenError::Failed(format!("{}: {e}", path.display())))
-        }
+        Err(std::fs::TryLockError::Error(e)) => Err(ListenError::Failed(
+            strings::lock_file_failed(&shown, &e.to_string()),
+        )),
     }
 }
 
@@ -577,20 +593,17 @@ pub fn listen(opts: Options) -> Result<Server, ListenError> {
         Some(path) => match History::open(path, unix_now()) {
             Ok(h) => {
                 if let Some(aside) = &h.moved_aside {
-                    log(&format!(
-                        "history could not be opened; moved it to {}",
-                        aside.display()
-                    ));
+                    log(&strings::history_moved_aside(&aside.display().to_string()));
                 }
                 // Off until the minute writer's `recover` gets past it
                 // (plan 024, C13).
                 if let Some(why) = &h.broken {
-                    log(&format!("history is off: {why}"));
+                    log(&strings::history_off(why));
                 }
                 (Some(Mutex::new(h)), None)
             }
             Err(e) => {
-                log(&format!("history is off: {e}"));
+                log(&strings::history_off(&e.to_string()));
                 (None, Some(e.to_string()))
             }
         },
@@ -615,6 +628,7 @@ pub fn listen(opts: Options) -> Result<Server, ListenError> {
             ui: None,
             starting_ui: None,
             ui_starts: 0,
+            ui_start_failed: None,
         }),
         ui_attached: Condvar::new(),
         slots,
@@ -674,10 +688,11 @@ fn bind(socket: &Path) -> Result<UnixListener, ListenError> {
         }
         remove_socket(socket).map_err(ListenError::Failed)?;
     }
+    let shown = socket.display().to_string();
     let listener = UnixListener::bind(socket)
-        .map_err(|e| ListenError::Failed(format!("bind {}: {e}", socket.display())))?;
+        .map_err(|e| ListenError::Failed(strings::bind_failed(&shown, &e.to_string())))?;
     std::fs::set_permissions(socket, std::fs::Permissions::from_mode(0o600))
-        .map_err(|e| ListenError::Failed(format!("chmod {}: {e}", socket.display())))?;
+        .map_err(|e| ListenError::Failed(strings::chmod_failed(&shown, &e.to_string())))?;
     Ok(listener)
 }
 
@@ -736,16 +751,16 @@ fn history_loop(inner: Arc<Inner>) {
             // minute running now is then never half-written in a query
             // (review of phase C).
             if let Err(e) = h.write_minute(ts - 30, &values) {
-                failed("history write failed".into(), e);
+                failed(strings::HISTORY_WRITE_FAILED.into(), e);
             }
             for (kind, data) in &events {
                 if let Err(e) = h.add_event(ts - 30, kind, data) {
-                    failed(format!("history: the {kind} event was not written"), e);
+                    failed(strings::history_event_not_written(kind), e);
                 }
             }
             if prune_due(last_prune, ts) {
                 if let Err(e) = h.prune(ts) {
-                    failed("history prune failed".into(), e);
+                    failed(strings::HISTORY_PRUNE_FAILED.into(), e);
                 }
                 last_prune = ts;
             }
@@ -755,11 +770,11 @@ fn history_loop(inner: Arc<Inner>) {
             match h.compaction_due(ts) {
                 Ok(true) => {
                     if let Err(e) = h.compact(ts) {
-                        failed("history compaction failed".into(), e);
+                        failed(strings::HISTORY_COMPACTION_FAILED.into(), e);
                     }
                 }
                 Ok(false) => {}
-                Err(e) => failed("history compaction check failed".into(), e),
+                Err(e) => failed(strings::HISTORY_COMPACTION_CHECK_FAILED.into(), e),
             }
         }
         if corrupt || h.broken.is_some() {
@@ -796,15 +811,14 @@ fn prune_due(last: i64, ts: i64) -> bool {
 fn recover_history(h: &mut History, ts: i64) {
     let before = h.broken.clone();
     match h.recover(ts) {
-        Ok(()) => log(&format!(
-            "history was damaged; moved it to {}",
-            h.moved_aside
+        Ok(()) => log(&strings::history_damaged_moved(
+            &h.moved_aside
                 .as_ref()
                 .map(|p| p.display().to_string())
-                .unwrap_or_default()
+                .unwrap_or_default(),
         )),
         Err(e) if before.as_deref() != Some(e.0.as_str()) => {
-            log(&format!("history is off: {e}"));
+            log(&strings::history_off(&e.to_string()));
         }
         Err(_) => {}
     }
@@ -931,9 +945,11 @@ impl Server {
     /// Accepts clients until the process exits (`shutdown` or a signal).
     /// Returns only when accepting fails.
     pub fn serve(self) -> std::io::Error {
+        let mut backoff = AcceptBackoff::new();
         loop {
             match self.listener.accept() {
                 Ok((stream, _)) => {
+                    backoff.accepted();
                     match sys::peer_uid(&stream) {
                         Ok(uid) if uid == self.inner.own_uid => {}
                         _ => {
@@ -948,7 +964,7 @@ impl Server {
                         .stack_size(STACK)
                         .spawn(move || inner.handle(stream, caller));
                     if let Err(e) = spawned {
-                        log(&format!("cannot serve a client: {e}"));
+                        log(&strings::client_spawn_failed(&e.to_string()));
                     }
                 }
                 Err(e) if e.kind() == ErrorKind::Interrupted => continue,
@@ -967,12 +983,64 @@ impl Server {
                         )
                     ) =>
                 {
-                    log(&format!("accept: {e}; retrying"));
-                    std::thread::sleep(Duration::from_millis(100));
+                    let errno = e.raw_os_error().unwrap_or_default();
+                    let (wait, say) = backoff.failed(errno, Instant::now());
+                    if say {
+                        log(&strings::accept_retrying(&e.to_string()));
+                    }
+                    std::thread::sleep(wait);
                 }
                 Err(e) => return e,
             }
         }
+    }
+}
+
+/// The first and the longest wait after a transient accept failure, and
+/// how often a run of the same one is logged again.
+const ACCEPT_FIRST: Duration = Duration::from_millis(100);
+const ACCEPT_MOST: Duration = Duration::from_secs(2);
+const ACCEPT_LOG_EVERY: Duration = Duration::from_secs(60);
+
+/// The accept loop's pace through transient failures: the wait doubles
+/// from ACCEPT_FIRST to ACCEPT_MOST and starts over after a client is
+/// accepted, and a failure is logged when it starts a run, differs from
+/// the last, or a minute passed since the last line. Out of descriptors,
+/// a pending client failed every accept at once, so a fixed 100 ms woke
+/// and logged ten times a second until one freed (plan 024, L24).
+struct AcceptBackoff {
+    wait: Duration,
+    last_err: Option<i32>,
+    last_log: Option<Instant>,
+}
+
+impl AcceptBackoff {
+    fn new() -> Self {
+        AcceptBackoff {
+            wait: ACCEPT_FIRST,
+            last_err: None,
+            last_log: None,
+        }
+    }
+
+    /// The wait before the next accept after a failure with `errno`, and
+    /// whether to log it.
+    fn failed(&mut self, errno: i32, now: Instant) -> (Duration, bool) {
+        let say = self.last_err != Some(errno)
+            || self
+                .last_log
+                .is_none_or(|t| now.saturating_duration_since(t) >= ACCEPT_LOG_EVERY);
+        if say {
+            self.last_log = Some(now);
+        }
+        self.last_err = Some(errno);
+        let wait = self.wait;
+        self.wait = (self.wait * 2).min(ACCEPT_MOST);
+        (wait, say)
+    }
+
+    fn accepted(&mut self) {
+        *self = AcceptBackoff::new();
     }
 }
 
@@ -1556,7 +1624,8 @@ impl Inner {
 
     /// `history.query`: `series[]` with `range` (1h, 24h, 7d, 30d) or
     /// `from`/`to` in unix seconds, clamped to what is kept and bucketed so
-    /// a series has at most `history::MAX_POINTS` points (`history::span`).
+    /// a series has at most `history::MAX_POINTS` points (`history::span`;
+    /// a range is trimmed the same way, `history::range_span`).
     /// A series named twice is answered once, and no more series than
     /// history holds are taken: each is one scan under the history lock,
     /// which the minute writer waits for (plan 001, deferred to plan 005).
@@ -1576,8 +1645,8 @@ impl Inner {
         }
         let now = unix_now();
         let (from, to, bucket) = match req.param("range").and_then(Value::as_str) {
-            Some(name) => match history::range(name) {
-                Some((span, bucket)) => (now - span, now + 1, bucket),
+            Some(name) => match history::range_span(name, now) {
+                Some(s) => s,
                 None => {
                     return Reply::err(req.id, Code::BadRequest, strings::unknown_range(name));
                 }
@@ -1746,7 +1815,9 @@ impl Inner {
                 if state.starting_ui.as_ref().is_some_and(|s| s.id == id) {
                     state.starting_ui = None;
                 }
-                // Other opens waiting on this attempt leave now too.
+                // Other opens waiting on this attempt leave now too, and
+                // with this failure.
+                state.ui_start_failed = Some((id, why.clone()));
                 self.ui_attached.notify_all();
                 return Err((Code::Failed, strings::interface_start_failed(&why)));
             }
@@ -1763,6 +1834,11 @@ impl Inner {
                 .wait_timeout(state, left)
                 .map(|(g, _)| g)
                 .unwrap_or_else(|p| p.into_inner().0);
+        }
+        if let Some((failed, why)) = &state.ui_start_failed
+            && *failed == id
+        {
+            return Err((Code::Failed, strings::interface_start_failed(why)));
         }
         if state.ui.is_some() {
             Ok(())
@@ -1927,6 +2003,52 @@ mod tests {
     }
 
     #[test]
+    fn a_directory_that_cannot_be_made_is_said_with_strings() {
+        // Plan 024, L13: the daemon's start-up errors were worded here, not
+        // in strings.rs.
+        let d = std::env::temp_dir().join(format!("mirqab-mkdir-{}", std::process::id()));
+        let _ = crate::act::remove_path(&d, false);
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(d.join("file"), "").unwrap();
+        let parent = d.join("file/sub");
+        let why = std::io::Error::from_raw_os_error(libc::ENOTDIR).to_string();
+        assert_eq!(
+            mkdir_private(&parent.join("mirqab")),
+            Err(strings::mkdir_failed(&parent.display().to_string(), &why))
+        );
+        let _ = crate::act::remove_path(&d, false);
+    }
+
+    #[test]
+    fn accept_failures_back_off_and_are_logged_once_a_minute() {
+        // Plan 024, L24: out of descriptors the loop woke and logged every
+        // 100 ms.
+        let mut b = AcceptBackoff::new();
+        let t0 = Instant::now();
+        let s = Duration::from_secs;
+        let ms = Duration::from_millis;
+        let mut waits = Vec::new();
+        let mut said = Vec::new();
+        for i in 0..7 {
+            let (wait, say) = b.failed(libc::EMFILE, t0 + s(i));
+            waits.push(wait);
+            said.push(say);
+        }
+        assert_eq!(
+            waits,
+            [ms(100), ms(200), ms(400), ms(800), ms(1600), s(2), s(2)]
+        );
+        assert_eq!(said, [true, false, false, false, false, false, false]);
+        // Another error is said at once; the same one again after a minute.
+        assert_eq!(b.failed(libc::ENFILE, t0 + s(8)), (s(2), true));
+        assert_eq!(b.failed(libc::ENFILE, t0 + s(67)), (s(2), false));
+        assert_eq!(b.failed(libc::ENFILE, t0 + s(68)), (s(2), true));
+        // A client accepted starts over.
+        b.accepted();
+        assert_eq!(b.failed(libc::ENFILE, t0 + s(69)), (ms(100), true));
+    }
+
+    #[test]
     fn a_wake_far_past_the_boundary_is_not_a_minute() {
         // Audit 2026-11-21, L50: after a suspend or a clock step the sleep
         // ends mid-minute, and a row labelled then is written over (or
@@ -1994,6 +2116,31 @@ mod tests {
         assert_eq!(cpu(&s.snapshot(&root, t1)), 100.0);
         // The next tick still reads from t0: 100 ticks in 2 s.
         assert_eq!(cpu(&s.sample(&root, t0 + Duration::from_secs(2))), 50.0);
+        let _ = crate::act::remove_path(&d, false);
+    }
+
+    #[test]
+    fn a_get_of_self_finds_its_copy_behind_a_younger_reading() {
+        // Plan 024, L23: only the front of the queue was tried, so a get
+        // whose copy sat behind another get's fresh reading read 0 % once a
+        // tick had moved the subscribers' baseline.
+        let (d, root) = self_root("queue");
+        let mut s = SelfSampler::new(Arc::default(), Instant::now());
+        let t0 = Instant::now();
+        let ms = Duration::from_millis;
+        s.sample(&root, t0);
+        // A: the subscribers' baseline is too young, so a fresh reading.
+        assert_eq!(s.prime(&root, t0 + ms(100)), Some(SELF_GAP));
+        // B: it serves now, so a copy of it, and no wait.
+        assert_eq!(s.prime(&root, t0 + ms(300)), None);
+        // A tick before B's snapshot moves the subscribers' baseline.
+        set_ticks(&d, 130);
+        s.sample(&root, t0 + ms(300));
+        // B reads against its copy, 30 ticks in 0.3 s.
+        assert_eq!(cpu(&s.snapshot(&root, t0 + ms(300))), 100.0);
+        // A, after its gap, still has its own: 50 ticks in 0.5 s.
+        set_ticks(&d, 150);
+        assert_eq!(cpu(&s.snapshot(&root, t0 + ms(600))), 100.0);
         let _ = crate::act::remove_path(&d, false);
     }
 }

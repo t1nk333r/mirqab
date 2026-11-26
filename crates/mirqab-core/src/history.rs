@@ -108,12 +108,26 @@ pub fn span(from: i64, to: i64, now: i64) -> Option<(i64, i64, i64)> {
         .map(|r| r.2)
         .find(|b| (width + b - 1) / b <= MAX_POINTS)
         .unwrap_or(RANGES[RANGES.len() - 1].2);
+    Some((trim(from, to, bucket), to, bucket))
+}
+
+/// A named range's span at `now`, with the range's own bucket, trimmed as
+/// `span` trims: at a `now` off a bucket boundary, 24 h and 30 d touched
+/// 361 buckets (plan 024, L3).
+pub fn range_span(name: &str, now: i64) -> Option<(i64, i64, i64)> {
+    let (span, bucket) = range(name)?;
+    let to = now + 1;
+    Some((trim(now - span, to, bucket), to, bucket))
+}
+
+/// `from`, raised to the start of the oldest of the MAX_POINTS buckets that
+/// end the span at `to`.
+fn trim(from: i64, to: i64, bucket: i64) -> i64 {
     // The bucket holding the last minute before `to`, and the start of the
     // one MAX_POINTS - 1 before it, in the query's own floor arithmetic.
     let per = bucket / 60;
     let last = (minute(to) - 1).div_euclid(per);
-    let from = from.max(unix((last - (MAX_POINTS - 1)) * per));
-    Some((from, to, bucket))
+    from.max(unix((last - (MAX_POINTS - 1)) * per))
 }
 
 const DDL: &str = "
