@@ -1465,15 +1465,19 @@ pub fn apps_container(name: &str, id: &str) -> String {
     format!("{} (container {})", plain(name), plain(id))
 }
 
-/// `s` safe to print: every control character (C0, DEL, C1) and the
-/// bidirectional overrides and isolates (U+202A–202E, U+2066–2069) become
-/// U+FFFD. A process names itself, and an escape sequence or a newline in
-/// its name would rewrite the terminal or forge rows in `mirqab apps` and
-/// in the text an MCP client reads (review of PR #16). JSON needs none of
+/// `s` safe to print: every control character (C0, DEL, C1), the line and
+/// paragraph separators (U+2028, U+2029) and the bidirectional overrides
+/// and isolates (U+202A–202E, U+2066–2069) become U+FFFD. A process names
+/// itself, and an escape sequence or a newline in its name would rewrite
+/// the terminal or forge rows in `mirqab apps`, in the text an MCP client
+/// reads and in the window's labels, which break a line at U+2028 and
+/// U+2029 as well (review of PR #16; plan 024 L18). JSON needs none of
 /// this: serde escapes.
 pub fn plain(s: &str) -> std::borrow::Cow<'_, str> {
-    let bad =
-        |c: char| c.is_control() || matches!(c, '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}');
+    let bad = |c: char| {
+        c.is_control()
+            || matches!(c, '\u{2028}' | '\u{2029}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
+    };
     if !s.chars().any(bad) {
         return std::borrow::Cow::Borrowed(s);
     }
