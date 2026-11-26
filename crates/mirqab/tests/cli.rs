@@ -62,12 +62,14 @@ fn start_on(name: &str, at: Sock) -> Daemon {
     let fixture =
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/root-desktop");
     // `open` runs `systemctl --user start mirqab-ui.service`; a stub records
-    // the call, and fails when the file `fail` exists in the scratch dir.
+    // the call, takes a second when the file `slow` exists in the scratch
+    // dir, and fails when the file `fail` does.
     let bin = dir.join("bin");
     std::fs::create_dir_all(&bin).unwrap();
     std::fs::write(
         bin.join("systemctl"),
         "#!/bin/sh\nprintf '%s\\n' \"$*\" >>\"$STUB_LOG\"\n\
+         if [ -f \"$STUB_SLOW\" ]; then sleep 1; fi\n\
          if [ -f \"$STUB_FAIL\" ]; then echo 'Unit mirqab-ui.service not found.' >&2; exit 5; fi\n",
     )
     .unwrap();
@@ -112,6 +114,7 @@ fn start_on(name: &str, at: Sock) -> Daemon {
         .env("PATH", path)
         .env("STUB_LOG", dir.join("systemctl.log"))
         .env("STUB_FAIL", dir.join("fail"))
+        .env("STUB_SLOW", dir.join("slow"))
         .env("MIRQAB_TEST", "1")
         .env("MIRQAB_UI_START_MS", "2000")
         .env_remove("NOTIFY_SOCKET")
@@ -414,6 +417,30 @@ fn a_unit_that_fails_to_start_is_reported() {
     // A failed start is the unit missing or broken, not the display.
     assert!(err.contains("~/.config/systemd/user"), "{err}");
     assert!(!err.contains("WAYLAND_DISPLAY"), "{err}");
+}
+
+#[test]
+fn an_open_joining_a_failed_start_reports_the_failure() {
+    // Plan 024, C1: B joined A's start, which failed; B said the unit
+    // started and the display timed out, at once and as `unavailable`.
+    let d = start("joinfail");
+    std::fs::write(d.dir.join("fail"), "").unwrap();
+    std::fs::write(d.dir.join("slow"), "").unwrap();
+    let a = spawn_cli(&d, &["open", "system"]);
+    wait_for_starts(&d, 1);
+    let b = spawn_cli(&d, &["toggle"]);
+    for (who, out) in [("A", a), ("B", b)] {
+        let out = out.wait_with_output().unwrap();
+        assert_eq!(out.status.code(), Some(1), "{who}");
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            err.contains("mirqab: failed: could not start"),
+            "{who}: {err}"
+        );
+        assert!(!err.contains("did not connect"), "{who}: {err}");
+        assert!(!err.contains("WAYLAND_DISPLAY"), "{who}: {err}");
+    }
+    assert_eq!(stub_log(&d).lines().count(), 1, "started once");
 }
 
 #[test]

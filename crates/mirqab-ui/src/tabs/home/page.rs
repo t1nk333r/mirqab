@@ -7,9 +7,9 @@
 use crate::app::Ctx;
 use crate::tabs::home::pinned_card::PinnedCard;
 use gtk::prelude::*;
-use mirqab_proto::strings;
+use mirqab_proto::{stream, strings};
 use mirqab_view::cards;
-use mirqab_view::tabs::home;
+use mirqab_view::tabs::{home, system};
 use serde_json::Value;
 use std::any::Any;
 use std::cell::{Cell, RefCell};
@@ -22,6 +22,9 @@ struct Page {
     cards: RefCell<Vec<PinnedCard>>,
     /// The streams of the current cards, subscribed while mapped.
     streams: RefCell<Vec<&'static str>>,
+    /// The `system` params the current cards need: the disk sensors and
+    /// NVIDIA's readings only while a card shows them (plan 024).
+    system_params: RefCell<Value>,
     subs: RefCell<Vec<Box<dyn Any>>>,
     /// The streams that have sent an event since the page subscribed.
     seen: RefCell<Vec<&'static str>>,
@@ -105,8 +108,10 @@ impl Page {
         self.empty.set_visible(empty);
         self.grid.set_visible(!empty);
         let streams = home::streams(&wanted);
-        if *self.streams.borrow() != streams {
+        let params = system::params(ids.iter().copied());
+        if *self.streams.borrow() != streams || *self.system_params.borrow() != params {
             *self.streams.borrow_mut() = streams;
+            *self.system_params.borrow_mut() = params;
             if self.mapped.get() {
                 self.subscribe();
             }
@@ -131,13 +136,18 @@ impl Page {
             return;
         };
         self.seen.borrow_mut().clear();
-        let mut subs = Vec::new();
+        let mut subs: Vec<Box<dyn Any>> = Vec::new();
         for s in self.streams.borrow().iter().copied() {
             let weak: Weak<Page> = Rc::downgrade(self);
-            subs.push(crate::client::Source::subscribe(
-                &ctx.client,
+            let params = if s == stream::SYSTEM {
+                self.system_params.borrow().clone()
+            } else {
+                Value::Null
+            };
+            subs.push(Box::new(ctx.client.subscribe_params(
                 s,
                 2000,
+                params,
                 Rc::new(move |data: &Value| {
                     let Some(page) = weak.upgrade() else { return };
                     for c in page.cards.borrow().iter() {
@@ -157,7 +167,7 @@ impl Page {
                         page.ready();
                     }
                 }),
-            ));
+            )));
         }
         *self.subs.borrow_mut() = subs;
     }
@@ -203,6 +213,7 @@ pub fn build(ctx: &Rc<Ctx>) -> gtk::Widget {
         empty,
         cards: RefCell::new(Vec::new()),
         streams: RefCell::new(Vec::new()),
+        system_params: RefCell::new(Value::Null),
         subs: RefCell::new(Vec::new()),
         seen: RefCell::new(Vec::new()),
         mapped: Cell::new(false),

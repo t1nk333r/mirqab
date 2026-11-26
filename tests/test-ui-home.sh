@@ -12,6 +12,7 @@
 # mirqab:covers crates/mirqab-ui/src/app.rs crates/mirqab-core/src/config.rs
 # mirqab:covers crates/mirqab-ui/src/tabs/apps/top_card.rs
 # mirqab:covers tests/fixtures/root-desktop/** crates/mirqab-core/src/samplers/apps/**
+# mirqab:covers crates/mirqab-core/src/samplers/system/**
 # mirqab:covers-shared
 
 sandbox

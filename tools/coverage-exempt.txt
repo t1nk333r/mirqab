@@ -6,5 +6,4 @@ docs/**                   # architecture and guides; tools/check-docs.sh checks 
 tests/fixtures/README.md  # describes the fixtures; read by nobody
 LICENSE                   # the licence text
 .gitignore                # git's ignore list
-tools/check-docs.sh       # the docs gate, run by CI's docs job
 .shellcheckrc             # shellcheck settings, read by tools/lint.sh
