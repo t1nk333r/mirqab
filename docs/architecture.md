@@ -337,7 +337,7 @@ DankMaterialShell (MIT); `NOTICE.md` carries both notices.
 | `subscribe` | `stream`, `params.interval` (ms, optional), `params.live` (bool, optional; §5.3). Any other `params` key belongs to the stream (the `apps` stream's `sort`, `limit`, `expand`; the `process` stream's `pid` and `start`; the `ports` stream's `udp` and `lite`). One sample is taken per tick and each subscriber gets its own view of it, shaped by its own params. Subscribing again to the same stream replaces the params. A stream that reads only what its subscribers name (`process`, `ports`) sends a subscriber whose params arrived during a sample nothing from that sample; the next, taken for it at once, is its first. Params a stream cannot serve are `bad-request` | The effective interval; then events |
 | `unsubscribe` | `stream` | — |
 | `get` | `stream`, `params` | One snapshot, no subscription, shaped by `params` as a subscription's view is. `stream` may be `<stream>.<query>` (`apps.inspect` with `params.pid` and optionally `params.start`, which answers `failed` "pid N is another process now" when the pid holds another process), answered by that stream's sampler; an unknown query is `unknown-stream` |
-| `history.query` | `series[]` (at most 64 distinct; a repeat counts once), `range` (`1h`, `24h`, `7d`, `30d`) or `from`/`to` (unix seconds, clamped to the 30 days kept and a minute ahead; a span with nothing kept is `bad-request`) | `from`, `to` and `bucketSec` as used (for `from`/`to`, the smallest range bucket that covers the span in 360 points, the span trimmed at its oldest end to the 360 epoch-aligned buckets that end it; a span wholly in the future is `bad-request` too); per series its `unit` and `points`, each `[unixSeconds, avg, max]` unscaled; empty buckets omitted |
+| `history.query` | `series[]` (at most 64 distinct; a repeat counts once), `range` (`1h`, `24h`, `7d`, `30d`) or `from`/`to` (unix seconds, clamped to the 30 days kept and a minute ahead; a span with nothing kept is `bad-request`) | `from`, `to` and `bucketSec` as used (for `from`/`to`, the smallest range bucket that covers the span in 360 points; a `from`/`to` span or a range's is trimmed at its oldest end to the 360 epoch-aligned buckets that end it; a span wholly in the future is `bad-request` too); per series its `unit` and `points`, each `[unixSeconds, avg, max]` unscaled; empty buckets omitted |
 | `history.events` | `kind`, `from`, `to` (clamped as for `history.query`) | Event rows |
 | `history.list` | — | The series history keeps: key, unit, scale |
 | `action` | `name`, `args`, `dryRun`; for a destructive action `confirm` (a boolean) and `plan` | What was done, or `wouldDo`. A destructive action without `confirm: true` and a plan is the error `needs-confirm`, whose `data` holds `plan`, `wouldDo`, `skipped` and `warnings` (§5.4) |
@@ -651,7 +651,9 @@ is noticed at the next read (a request that reads the config, a
 wakeup) and treated the same way: open live subscriptions take a new
 `live.intervalMs` and `ui` gets `config-changed`. A config the
 daemon cannot parse is left untouched, reported in `status`, and defaults
-are used: the app never rewrites a file the user broke by hand.
+are used: the app never rewrites a file the user broke by hand. A write
+replaces the file atomically and keeps its mode; a symlink (a config kept
+in a dotfiles repository) stays, and the file it points to is replaced.
 `theme.accent` and `units.clock` are reserved keys: accepted and checked,
 so a config that sets them stays valid, but read by nothing yet. No clock
 is shown before plan 016, which decides the clock format's key; its
@@ -751,7 +753,9 @@ file in `movedAside`. If the move fails, history is off with the reason in
 `status.history.error`, and the writer tries again each minute. Damage met
 again within six hours of a replacement is left in place and history is off
 until the six hours have passed, so failing storage adds at most one
-`.broken-*` file every six hours.
+`.broken-*` file every six hours. A damaged file deleted by hand is not
+waited for: the next try moves aside any `-wal` or `-shm` left behind and
+makes a new file.
 
 Rejected: one wide row per minute (every new series is a migration), a
 round-robin file format (a second storage engine for no gain), keeping
@@ -801,6 +805,10 @@ only in part.
 | 24 h | `sample` | 4 min | 360 |
 | 7 d | `sample` | 30 min | 336 |
 | 30 d | `sample` | 2 h | 360 |
+
+The points are for a query made on a bucket boundary. At any other moment
+the span starts inside a bucket: 7 d then touches 337, and 24 h and 30 d,
+which would touch 361, are trimmed at their oldest end to 360.
 
 `history.query` returns `avg` and `max` per bucket, so a short spike stays
 visible at 30 d. The 2 min range arrives on the live stream itself (each
@@ -874,7 +882,8 @@ Sizes are in em of the base font so the fractional-scale case works.
   inspector, no colour and no icon (plan 006, part 4).
 - **Strings live in one place.** The first release is English only
   (owner, 2026-11-13). Every string a person reads, in the interface, the
-  CLI and the daemon's stream data, is a function or constant in
+  CLI, the daemon's stream data and replies, and its start-up errors and
+  journal lines, is a function or constant in
   `crates/mirqab-proto/src/strings.rs`, so a translation later replaces
   one module's body (with gettext or a message file) and touches no call
   site. Lint greps `crates/mirqab-ui/src` for a string literal passed
@@ -987,7 +996,8 @@ Three layers, cheapest first:
 2. **Widgets, on a headless display.** `crates/mirqab-ui/tests/*.rs` use
    `#[gtk::test]`, which initialises GTK once and runs every test on the
    thread that owns it. `tests/lib.sh` starts `gtk4-broadwayd` (inside the
-   `gtk4` package **[machine]**) on a private display number and exports
+   `gtk4` package **[machine]**) on a private display number, its HTTP
+   frontend bound to loopback only, and exports
    `GDK_BACKEND=broadway`, `BROADWAY_DISPLAY`, `GSK_RENDERER=cairo` and
    `GTK_A11Y=none`; the widget tests run with GTK's `test` accessibility
    backend instead, which talks to no bus and lets a test read back an
@@ -1176,8 +1186,13 @@ default in the health report.
 
 Never commit: a real hostname, address, interface name, MAC, SSID, serial
 number, coordinates more precise than a city, a token, or anything copied
-from a live `~/.config`. Fixtures are synthetic or scrubbed, and
-`tools/secrets.sh` checks patterns for all of these.
+from a live `~/.config`. Fixtures are synthetic or scrubbed.
+`tools/secrets.sh` runs gitleaks and checks for IPv4 and IPv6 addresses
+outside the documentation ranges, MAC addresses, coordinates, token
+shapes, home paths, private keys, personal e-mail addresses, and a
+machine's own hostnames through the local deny list named by
+`MIRQAB_SECRETS_DENY`. Interface names, SSIDs and serial numbers have no
+pattern: review them by hand, or add them to the local deny list.
 
 ## 11. CLI and MCP
 

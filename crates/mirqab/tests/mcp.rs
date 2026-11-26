@@ -2,7 +2,7 @@
 //! handshake and the 2026-07-28 per-request `_meta`; `tools/list` matches
 //! the tools of the plans merged so far; an unknown tool and malformed JSON
 //! are JSON-RPC errors and the server stays up; a missing daemon gives tool
-//! errors, not a crash; `system_load` reads the fixture daemon; `top_apps`
+//! errors, not a crash, and no runtime dir says so; `system_load` reads the fixture daemon; `top_apps`
 //! and `what_is_process` (plan 006) read it too, and send no command line
 //! or path to the agent.
 
@@ -81,7 +81,7 @@ struct Server {
 
 impl Server {
     fn start(socket: &std::path::Path) -> Server {
-        let mut child = Command::new(BIN)
+        let child = Command::new(BIN)
             .arg("--socket")
             .arg(socket)
             .arg("mcp")
@@ -91,6 +91,10 @@ impl Server {
             .stderr(Stdio::null())
             .spawn()
             .unwrap();
+        Server::from(child)
+    }
+
+    fn from(mut child: Child) -> Server {
         let input = child.stdin.take();
         let output = BufReader::new(child.stdout.take().unwrap());
         Server {
@@ -315,6 +319,9 @@ fn top_apps_and_what_is_process_read_the_fixture() {
         (4, "what_is_process", json!({"pid": "2001"})),
         (5, "top_apps", json!({"limit": 0})),
         (6, "top_apps", json!({"sort": "size"})),
+        (8, "what_is_process", json!({"pid": 2001.5})),
+        (9, "top_apps", json!({"limit": 0.0})),
+        (10, "top_apps", json!({"limit": 51.0})),
     ] {
         let r = call(id, name, args.clone());
         assert_eq!(r["isError"], true, "{name} {args}: {r}");
@@ -326,6 +333,18 @@ fn top_apps_and_what_is_process_read_the_fixture() {
             .as_str()
             .unwrap()
             .contains("no process 99999")
+    );
+
+    // JSON Schema's integer takes a whole number written with a fraction
+    // (plan 024 L8): the same answers as the plain numbers.
+    let what = call(11, "what_is_process", json!({"pid": 2001.0}));
+    assert_eq!(what["isError"], false, "{what}");
+    assert_eq!(what["structuredContent"]["pid"], 2001);
+    let top = call(12, "top_apps", json!({"limit": 3.0}));
+    assert_eq!(top["isError"], false, "{top}");
+    assert_eq!(
+        top["structuredContent"]["groups"].as_array().unwrap().len(),
+        4
     );
 }
 
@@ -436,6 +455,33 @@ fn no_daemon_is_a_tool_error_the_agent_can_show() {
             .as_str()
             .unwrap()
             .contains("systemctl --user start mirqab.socket")
+    );
+}
+
+#[test]
+fn no_runtime_dir_names_the_cause_not_the_socket_unit() {
+    // A client that passes a scrubbed environment (plan 024 C15): no
+    // --socket, $MIRQAB_SOCKET or $XDG_RUNTIME_DIR to name a socket by.
+    let child = Command::new(BIN)
+        .arg("mcp")
+        .env("DBUS_SESSION_BUS_ADDRESS", "unix:path=/nonexistent")
+        .env_remove("XDG_RUNTIME_DIR")
+        .env_remove("MIRQAB_SOCKET")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let mut s = Server::from(child);
+    let r = s.ask(json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+        "params": {"name": "system_load", "arguments": {}}}));
+    assert_eq!(r["result"]["isError"], true, "{r}");
+    let text = text_of(&r["result"]);
+    assert!(text.contains("XDG_RUNTIME_DIR is not set"), "{text}");
+    assert!(text.contains("--socket"), "{text}");
+    assert!(
+        !text.contains("os error") && !text.contains("mirqab.socket"),
+        "{text}"
     );
 }
 

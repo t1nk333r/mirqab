@@ -116,16 +116,15 @@ fn main() -> ExitCode {
         "quit" => quit::run(args),
         "ports" | "port" => ports::run(&command, args),
         // With no socket to name, the server still starts: each tool then
-        // says there is no daemon, which the agent can tell the user.
+        // says no socket could be named, which the agent can tell the user.
         "mcp" | "--mcp" if !args.rest.is_empty() => {
             usage_error(&strings::unknown_option(&args.rest[0]))
         }
         "mcp" | "--mcp" => mcp::run(
-            &args
-                .socket
+            args.socket
                 .clone()
                 .or_else(mirqab_core::server::default_socket)
-                .unwrap_or_default(),
+                .as_deref(),
         ),
         "mcp-config" => mcp_config::run(args),
         "completions" => match args.rest.as_slice() {

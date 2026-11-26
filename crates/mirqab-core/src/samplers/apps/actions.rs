@@ -1082,7 +1082,7 @@ impl Actions {
                 .unwrap_or(0);
             match lock(h).add_event(ts, "action", &data) {
                 Ok(()) => recorded = true,
-                Err(e) => crate::server::log(&format!("history: the action was not recorded: {e}")),
+                Err(e) => crate::server::log(&strings::action_not_recorded(&e.to_string())),
             }
         }
         Ok(json!({

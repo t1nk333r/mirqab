@@ -22,10 +22,12 @@ TESTS_RUN=0
 TESTS_FAILED=0
 
 # Binaries a test must never execute for real. Read-only tools the tests use
-# (jq, sed, grep, git, cargo) are deliberately absent.
+# (jq, sed, grep, git, cargo) are deliberately absent. pacman is read-only
+# but answers from the live package database: a test that needs it copies
+# tests/fixtures/bin/pacman over the stub.
 STUBBED_CMDS=(sudo pkexec systemctl systemd-run systemd-inhibit loginctl
     busctl notify-send xdg-open curl wget hyprctl pactl wpctl kill pkill
-    claude codex gemini opencode cursor-agent)
+    claude codex gemini opencode cursor-agent pacman)
 
 # The toolchain lives in the real HOME. Capture it before the sandbox moves
 # HOME, so cargo neither downloads the registry again nor writes into it.
@@ -195,10 +197,13 @@ start_broadway() {
     local n i
     # Display N listens on TCP port 8080 + N and on a socket in the runtime
     # dir, which is the sandbox's: a number another broadwayd holds makes it
-    # exit, and the next number is tried.
+    # exit, and the next number is tried. GDK reaches the display through the
+    # socket; the HTTP frontend is bound to loopback, because without an
+    # address it listens on every interface, and anyone on the network could
+    # watch the test window and click in it (audit, plan 024 C3).
     for ((i = 0; i < 20; i++)); do
         n=$((RANDOM % 900 + 50))
-        gtk4-broadwayd ":$n" >"$SANDBOX/broadway.log" 2>&1 &
+        gtk4-broadwayd --address 127.0.0.1 ":$n" >"$SANDBOX/broadway.log" 2>&1 &
         BROADWAY_PID=$!
         local j
         for ((j = 0; j < 100; j++)); do
