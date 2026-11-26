@@ -2,7 +2,8 @@
 # output in the three formats against root-desktop; `--watch` is silent
 # while the reading is unchanged and prints when counters swapped under it
 # change it; an interval under 2 s is raised; a closed pipe ends it;
-# `--list` names the items; usage errors exit 64.
+# `--list` names the items; usage errors exit 64; a system frame this
+# mirqab cannot read exits 1 with the restart hint, not a dash.
 # mirqab:covers crates/mirqab/src/bar/** crates/mirqab/src/{main,cli}.rs
 # mirqab:covers crates/mirqab-proto/src/strings.rs crates/mirqab-core/src/sys.rs
 # mirqab:covers tests/fixtures/root-desktop/** tests/fixtures/root-desktop.t1/**
@@ -89,3 +90,35 @@ is "a closed pipe ends --watch" 0 "${PIPESTATUS[0]}"
 is "no subscriber is left" 0 "$(status_until '.streams.system.subscribers' 0)"
 
 stop_daemon
+
+# An old daemon whose system frame no longer parses (plan 024 L32): every
+# connection gets reply 1 and an event, both with a mistyped field. The
+# one-shot read and --watch exit 1 with the restart hint and print no "—".
+if command -v socat >/dev/null 2>&1; then
+    export MIRQAB_SOCKET="$XDG_RUNTIME_DIR/old.sock"
+    cat >"$SANDBOX/old-daemon" <<'SH'
+#!/bin/sh
+read -r _
+echo '{"type":"reply","id":1,"result":{"cpu":"x"}}'
+echo '{"type":"event","stream":"system","data":{"cpu":"x"}}'
+sleep 2
+SH
+    chmod +x "$SANDBOX/old-daemon"
+    socat "UNIX-LISTEN:$MIRQAB_SOCKET,fork" "EXEC:$SANDBOX/old-daemon" 2>/dev/null &
+    HELPER_PIDS+=("$!")
+    for _ in $(seq 50); do
+        [[ -S $MIRQAB_SOCKET ]] && break
+        sleep 0.1
+    done
+    for mode in one-shot --watch; do
+        args=(bar cpu --format plain)
+        [[ $mode == --watch ]] && args+=(--watch)
+        code=0
+        timeout 10 "$BIN/mirqab" "${args[@]}" >"$SANDBOX/old.out" 2>"$SANDBOX/old.err" || code=$?
+        status_is "an unreadable frame exits 1 ($mode)" 1 "$code"
+        like "and says to restart the daemon ($mode)" "$(cat "$SANDBOX/old.err")" "restart the daemon"
+        is "and prints no reading ($mode)" "" "$(cat "$SANDBOX/old.out")"
+    done
+else
+    not_ok "socat is installed (the unreadable-frame case needs it)"
+fi

@@ -6,9 +6,9 @@ mod format;
 pub mod items;
 
 use crate::cli::{CallError, call, no_daemon, socket_or_exit};
-use crate::{Args, EXIT_NO_DAEMON, EXIT_USAGE};
+use crate::{Args, EXIT_FAILED, EXIT_NO_DAEMON, EXIT_USAGE};
 use format::Format;
-use mirqab_core::proto::stream::{self, SystemData};
+use mirqab_core::proto::stream;
 use mirqab_core::proto::{Request, ServerFrame, frame, strings};
 use serde_json::{Value, json};
 use std::io::{BufRead, BufReader, Write};
@@ -125,7 +125,8 @@ fn combo_parts(socket: &std::path::Path) -> Vec<String> {
 /// and the percentage, never the tooltip alone. The tooltips of cpu, mem
 /// and load hold figures that move every sample, so comparing whole lines
 /// printed every interval with an unchanged text (audit 2026-11-21); a
-/// tooltip may now lag until the text next changes (plan 004).
+/// tooltip may now lag until the text next changes (plan 004). Plain
+/// prints the text alone, so it compares the text alone (plan 024 L29).
 #[derive(Debug, Clone, PartialEq, Default)]
 struct Shown {
     text: String,
@@ -134,9 +135,10 @@ struct Shown {
 }
 
 /// The output line, what decides a change, and whether it carries no
-/// value yet.
-fn reading_line(o: &Opts, combo: &[String], data: &Value) -> (String, Shown, bool) {
-    let d: SystemData = serde_json::from_value(data.clone()).unwrap_or_default();
+/// value yet; or the message for a frame this mirqab cannot read, which
+/// would otherwise show as no value (plan 024 L32).
+fn reading_line(o: &Opts, combo: &[String], data: &Value) -> Result<(String, Shown, bool), String> {
+    let d = crate::cli::system(data)?;
     // Known items always read; `parse` refused the others.
     let r = items::read(&o.item, &d, combo).unwrap_or(items::Reading {
         text: strings::NO_VALUE.to_string(),
@@ -146,12 +148,26 @@ fn reading_line(o: &Opts, combo: &[String], data: &Value) -> (String, Shown, boo
     });
     let line = format::line(o.format, &o.item, &r);
     let unknown = r.class == "unknown";
-    let shown = Shown {
-        text: r.text,
-        class: r.class,
-        percentage: r.percentage,
+    let shown = match o.format {
+        Format::Plain => Shown {
+            text: r.text,
+            ..Shown::default()
+        },
+        Format::Waybar | Format::Json => Shown {
+            text: r.text,
+            class: r.class,
+            percentage: r.percentage,
+        },
     };
-    (line, shown, unknown)
+    Ok((line, shown, unknown))
+}
+
+/// A frame `reading_line` cannot read: said on stderr, exit 1, as for an
+/// error from the daemon. In `--watch` too, so a bar that restarts its
+/// command tries again, and the next frames would be just as unreadable.
+fn unreadable(msg: &str) -> ExitCode {
+    crate::out::err(msg);
+    ExitCode::from(EXIT_FAILED)
 }
 
 pub fn run(args: Args) -> ExitCode {
@@ -171,10 +187,13 @@ pub fn run(args: Args) -> ExitCode {
     };
     if !o.watch {
         return match call(&socket, Request::new(1, "get").with_stream(stream::SYSTEM)) {
-            Ok(v) => {
-                crate::out::line(&reading_line(&o, &combo, &v).0);
-                ExitCode::SUCCESS
-            }
+            Ok(v) => match reading_line(&o, &combo, &v) {
+                Ok((line, _, _)) => {
+                    crate::out::line(&line);
+                    ExitCode::SUCCESS
+                }
+                Err(msg) => unreadable(&msg),
+            },
             Err(e) => crate::cli::exit_for(&socket, e),
         };
     }
@@ -222,7 +241,10 @@ fn watch(o: &Opts, combo: &[String], socket: &std::path::Path) -> ExitCode {
                 }
             }
             Ok(ServerFrame::Event(ev)) if ev.stream == stream::SYSTEM => {
-                let (out, shown, unknown) = reading_line(o, combo, &ev.data);
+                let (out, shown, unknown) = match reading_line(o, combo, &ev.data) {
+                    Ok(r) => r,
+                    Err(msg) => return unreadable(&msg),
+                };
                 let now = Instant::now();
                 if last.as_ref() != Some(&shown) && throttle.allow(now, o.secs) {
                     // A closed bar ends the process inside out::line.
@@ -275,12 +297,49 @@ mod tests {
     fn a_tooltip_alone_changing_is_no_change() {
         let o = parse(&["cpu".into()]).ok().flatten().unwrap();
         let frame = |percent: f64, user: f64| json!({"cpu": {"percent": percent, "user": user, "system": 1.0, "iowait": 0.0}});
-        let (line_a, a, _) = reading_line(&o, &[], &frame(12.2, 8.0));
-        let (line_b, b, _) = reading_line(&o, &[], &frame(12.4, 9.0));
+        let (line_a, a, _) = reading_line(&o, &[], &frame(12.2, 8.0)).unwrap();
+        let (line_b, b, _) = reading_line(&o, &[], &frame(12.4, 9.0)).unwrap();
         assert_ne!(line_a, line_b, "the tooltips differ");
         assert_eq!(a, b, "the text, class and percentage do not");
-        let (_, c, _) = reading_line(&o, &[], &frame(40.0, 9.0));
+        let (_, c, _) = reading_line(&o, &[], &frame(40.0, 9.0)).unwrap();
         assert_ne!(a, c, "a new text is a change");
+    }
+
+    #[test]
+    fn plain_compares_only_the_text_it_prints() {
+        // 52.2 and 51.8 °C both print 52°, but their percentages of a
+        // 105 °C critical point differ, and so may the thermal word
+        // (plan 024 L29).
+        let frame = |celsius: f64, state: &str| {
+            json!({
+                "temps": [{"label": "CPU", "celsius": celsius, "critical": 105.0, "kind": "cpu"}],
+                "thermal": {"state": state, "throttling": false},
+            })
+        };
+        let read = |format: &str, f: &Value| {
+            let o = parse(&["temp".into(), "--format".into(), format.into()])
+                .ok()
+                .flatten()
+                .unwrap();
+            reading_line(&o, &[], f).unwrap()
+        };
+        let (a, b) = (frame(52.2, "warm"), frame(51.8, "hot"));
+        let (line_a, plain_a, _) = read("plain", &a);
+        let (line_b, plain_b, _) = read("plain", &b);
+        assert_eq!((line_a.as_str(), line_b.as_str()), ("52°", "52°"));
+        assert_eq!(plain_a, plain_b, "the same plain line is no change");
+        assert_ne!(
+            read("waybar", &a).1,
+            read("waybar", &b).1,
+            "Waybar shows the class"
+        );
+    }
+
+    #[test]
+    fn a_frame_this_mirqab_cannot_read_is_an_error_not_no_value() {
+        let o = parse(&["cpu".into()]).ok().flatten().unwrap();
+        let e = reading_line(&o, &[], &json!({"cpu": "x"})).unwrap_err();
+        assert!(e.contains("restart the daemon"), "{e}");
     }
 
     #[test]
