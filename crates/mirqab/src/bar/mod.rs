@@ -121,6 +121,19 @@ fn combo_parts(socket: &std::path::Path) -> Vec<String> {
         .unwrap_or_else(|| items::COMBO_DEFAULT.iter().map(|s| s.to_string()).collect())
 }
 
+/// The `system` params an item needs: `gpus` when it shows a GPU, so the
+/// daemon runs `nvidia-smi` for it; never `disks`, as no item shows a disk
+/// temperature (plan 024 C18, C19). `temp`'s thermal word counts an NVIDIA
+/// card from the daemon's minute reading.
+fn stream_params(item: &str, combo: &[String]) -> Value {
+    let gpu = item == "gpu" || (item == "combo" && combo.iter().any(|p| p == "gpu"));
+    if gpu {
+        json!({"gpus": true})
+    } else {
+        json!({})
+    }
+}
+
 /// What decides whether `--watch` prints a new line: the text, the class
 /// and the percentage, never the tooltip alone. The tooltips of cpu, mem
 /// and load hold figures that move every sample, so comparing whole lines
@@ -170,7 +183,10 @@ pub fn run(args: Args) -> ExitCode {
         Vec::new()
     };
     if !o.watch {
-        return match call(&socket, Request::new(1, "get").with_stream(stream::SYSTEM)) {
+        let req = Request::new(1, "get")
+            .with_stream(stream::SYSTEM)
+            .with_params(stream_params(&o.item, &combo));
+        return match call(&socket, req) {
             Ok(v) => {
                 crate::out::line(&reading_line(&o, &combo, &v).0);
                 ExitCode::SUCCESS
@@ -189,9 +205,11 @@ fn watch(o: &Opts, combo: &[String], socket: &std::path::Path) -> ExitCode {
             return ExitCode::from(EXIT_NO_DAEMON);
         }
     };
+    let mut params = stream_params(&o.item, combo);
+    params["interval"] = json!(o.secs.saturating_mul(1000));
     let req = Request::new(1, "subscribe")
         .with_stream(stream::SYSTEM)
-        .with_params(json!({"interval": o.secs.saturating_mul(1000)}));
+        .with_params(params);
     if (&conn).write_all(&frame::encode(&req)).is_err() {
         no_daemon(socket, strings::CONNECTION_CLOSED);
         return ExitCode::from(EXIT_NO_DAEMON);
@@ -281,6 +299,23 @@ mod tests {
         assert_eq!(a, b, "the text, class and percentage do not");
         let (_, c, _) = reading_line(&o, &[], &frame(40.0, 9.0));
         assert_ne!(a, c, "a new text is a change");
+    }
+
+    #[test]
+    fn only_a_gpu_item_asks_for_the_gpus_and_none_for_the_disks() {
+        // Plan 024 C18, C19: a `cpu` item all day made the daemon read the
+        // disk sensors and run nvidia-smi.
+        let combo =
+            |parts: &[&str]| -> Vec<String> { parts.iter().map(|s| s.to_string()).collect() };
+        for item in ["cpu", "mem", "temp", "load"] {
+            assert_eq!(stream_params(item, &combo(&["gpu"])), json!({}), "{item}");
+        }
+        assert_eq!(stream_params("gpu", &[]), json!({"gpus": true}));
+        assert_eq!(
+            stream_params("combo", &combo(&["cpu", "gpu"])),
+            json!({"gpus": true})
+        );
+        assert_eq!(stream_params("combo", &combo(&["cpu", "temp"])), json!({}));
     }
 
     #[test]

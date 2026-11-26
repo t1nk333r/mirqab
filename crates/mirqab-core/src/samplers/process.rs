@@ -276,7 +276,7 @@ impl Sampler for Process {
 
     fn probe(&mut self, root: &Root) -> Result<(), String> {
         root.read_dir("proc")
-            .map_err(|e| format!("proc cannot be listed: {e}"))?;
+            .map_err(|e| strings::proc_unlisted(&e.to_string()))?;
         self.tck = selfcost::clk_tck(root);
         self.page = selfcost::page_size(root);
         Ok(())

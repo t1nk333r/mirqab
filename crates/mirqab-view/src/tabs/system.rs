@@ -7,7 +7,7 @@ use crate::format::{self, TempUnit};
 use crate::graph::Scale;
 use mirqab_proto::stream::{Gpu, SystemData};
 use mirqab_proto::strings as s;
-use serde_json::Value;
+use serde_json::{Map, Value, json};
 
 const fn card(id: &'static str, size: Size) -> Card {
     Card {
@@ -28,6 +28,38 @@ pub const CARDS: &[Card] = &[
     card("system.temps", Size::Half),
     card("system.power", Size::Half),
 ];
+
+/// The `system` params the shown cards need: `disks` while the
+/// temperatures card is shown, `gpus` while the GPU card is. The daemon
+/// reads the disk sensors and runs `nvidia-smi` only for a subscriber
+/// that asks (plan 024 C18, C19).
+pub fn params<'a>(card_ids: impl IntoIterator<Item = &'a str>) -> Value {
+    let mut out = Map::new();
+    for id in card_ids {
+        let flag = match id {
+            "system.temps" => "disks",
+            "system.gpu" => "gpus",
+            _ => continue,
+        };
+        out.insert(flag.into(), json!(true));
+    }
+    Value::Object(out)
+}
+
+/// Several handles' `system` params merged into one subscription: a flag
+/// is sent when any handle asks for it.
+pub fn merge_params(all: &[Value]) -> Value {
+    let mut out = Map::new();
+    for flag in ["disks", "gpus"] {
+        if all
+            .iter()
+            .any(|p| p.get(flag).and_then(Value::as_bool) == Some(true))
+        {
+            out.insert(flag.into(), json!(true));
+        }
+    }
+    Value::Object(out)
+}
 
 /// A status colour; the widget maps it to a style class.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

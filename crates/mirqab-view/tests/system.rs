@@ -1,6 +1,7 @@
 //! The System tab's view model (plan 002, Tests): on the golden event, the
 //! memory split sums to the total, labels and groups are chosen, and the
-//! graph helpers read events and history replies.
+//! graph helpers read events and history replies; the cards ask for the
+//! disk sensors and NVIDIA readings they show (plan 024).
 
 use mirqab_proto::stream::{Core, Cpu, Gpu, Power, SystemData};
 use mirqab_view::format::TempUnit;
@@ -175,4 +176,19 @@ fn the_helper_line_follows_the_daemon_not_a_missing_reading() {
         !no_rapl.needs_helper && !no_rapl.rapl,
         "no RAPL: no line, no graph"
     );
+}
+
+#[test]
+fn the_cards_ask_for_the_disks_and_gpus_they_show() {
+    // Plan 024 C18, C19: the daemon reads the disk sensors and runs
+    // nvidia-smi only for a subscriber whose params ask.
+    let all = system::params(system::CARDS.iter().map(|c| c.id));
+    assert_eq!(all, json!({"disks": true, "gpus": true}), "the page");
+    assert_eq!(system::params(["system.cpu", "system.memory"]), json!({}));
+    assert_eq!(system::params(["system.temps"]), json!({"disks": true}));
+    // A graph's live handle names nothing; the page's flags stay.
+    let merged =
+        system::merge_params(&[json!(null), json!({"gpus": true}), json!({"disks": true})]);
+    assert_eq!(merged, json!({"disks": true, "gpus": true}));
+    assert_eq!(system::merge_params(&[json!(null), json!({})]), json!({}));
 }

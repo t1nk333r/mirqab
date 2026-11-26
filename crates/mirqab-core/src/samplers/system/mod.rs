@@ -22,6 +22,7 @@ use crate::proto::stream::{self, Advice, Cpu, Gpu, Mem, Power, SystemData, Temp}
 use crate::proto::strings;
 use crate::root::Root;
 use crate::sampler::Sampler;
+use crate::samplers::apps::MAX_PRIMED;
 use cpu::Stat;
 use gpu::NvidiaRow;
 use mem::VmStat;
@@ -42,6 +43,12 @@ const NVIDIA_EVERY: Duration = Duration::from_secs(2);
 /// After a failed or empty `nvidia-smi` (no driver: nouveau, vfio), wait
 /// this long before the next try (review of PR #7).
 const NVIDIA_RETRY: Duration = Duration::from_secs(60);
+/// With no GPU on screen `nvidia-smi` is not run for a live sample or a
+/// `get`: the minute's reading is repeated while it is this young (a
+/// minute and a late tick), so the thermal word still counts the card,
+/// and otherwise there is none (plan 002: "only while a GPU card is on
+/// screen"; plan 024 C19).
+const NVIDIA_HELD: Duration = Duration::from_secs(MAX_MINUTE_GAP_SECS);
 /// An awake dGPU's sensors are read at most this often, twice amdgpu's
 /// 5 s autosuspend delay, so polling never keeps an idle card powered;
 /// a faster stream repeats the last values (audit of plan 002).
@@ -60,8 +67,14 @@ const BASELINE_MIN: Duration = Duration::from_secs(1);
 /// minute) would multiply a burst up to 60 times, so that minute has no
 /// page or swap point (review of the audit 2026-11-21 L24 fix).
 const PAGE_GAP_MIN: Duration = Duration::from_secs(10);
-/// How long `get` waits for a second reading when no baseline fits.
+/// How long `get` waits for a second reading when no baseline fits; the
+/// server sleeps it without the sampler's lock (`Sampler::prime`).
 const SNAPSHOT_GAP: Duration = Duration::from_millis(200);
+/// A primed reading gives a rate once it is this old, so a get still in
+/// its gap keeps its own; and is dropped past the oldest a queued
+/// baseline can be by then (90 s, and the wait for the lock).
+const PRIMED_MIN: Duration = Duration::from_millis(150);
+const PRIMED_MAX: Duration = Duration::from_secs(MAX_MINUTE_GAP_SECS + 10);
 /// Restart advice (plan 002): uptime over 30 days, or over 7 with swap more
 /// than half full or memory pressure above 10 % for the last hour.
 const ADVICE_UPTIME: u64 = 30 * 86_400;
@@ -124,8 +137,17 @@ pub struct System {
     minute_prev: Option<(Reading, u64)>,
     /// Gauge sums and counts from live samples during this minute.
     acc: BTreeMap<&'static str, (f64, u32)>,
-    /// Memory `some60` of the last 60 minutes, for the advice.
+    /// Memory `some60` of the last 60 minutes, for the advice. A minute
+    /// that follows a gap (a suspend, a stall) empties it first.
     psi_hour: VecDeque<f64>,
+    /// `get`'s first readings, one per pending get (`Sampler::prime`).
+    primed: VecDeque<Reading>,
+    /// What the subscribers (or a `get`) show, from their params
+    /// (`Sampler::wants`): `disks`, the disk temperatures; `gpus`, fresh
+    /// NVIDIA readings. A bar item never asks for the disks, and for the
+    /// GPUs only when it shows one (plan 024 C18, C19).
+    want_disks: bool,
+    want_gpus: bool,
     nvidia: Option<(Instant, Vec<NvidiaRow>)>,
     /// The last build's nvidia-smi temperatures, one per card (`nvidia.N`):
     /// NVIDIA's driver has no hwmon chip, so `temp.gpu` and the thermal
@@ -215,9 +237,20 @@ impl System {
         }
     }
 
-    fn nvidia_rows(&mut self, root: &Root, now: Instant) -> Vec<NvidiaRow> {
+    /// The NVIDIA cards' rows: `fresh`, from `nvidia-smi` at most every
+    /// `NVIDIA_EVERY`; otherwise the last rows while `NVIDIA_HELD` young,
+    /// with nothing run.
+    fn nvidia_rows(&mut self, root: &Root, now: Instant, fresh: bool) -> Vec<NvidiaRow> {
         if !self.has_nvidia || !gpu::nvidia_wanted(root) {
             return Vec::new();
+        }
+        if !fresh {
+            return self
+                .nvidia
+                .as_ref()
+                .filter(|(at, _)| now.saturating_duration_since(*at) <= NVIDIA_HELD)
+                .map(|(_, rows)| rows.clone())
+                .unwrap_or_default();
         }
         let last = self
             .nvidia
@@ -275,13 +308,15 @@ impl System {
     /// `disks`: whether the disk temperature sensors are wanted: read when
     /// the last reading is `DISK_EVERY` old or there is none, otherwise
     /// repeated (`temps::Disks`). Without it they are neither read nor
-    /// shown, and the pace does not move.
+    /// shown, and the pace does not move. `gpus`: whether `nvidia-smi` may
+    /// run (`nvidia_rows`).
     fn build(
         &mut self,
         root: &Root,
         cur: &Reading,
         prev: Option<&Reading>,
         disks: bool,
+        gpus: bool,
     ) -> SystemData {
         let secs = prev.map_or(0.0, |p| cur.at.duration_since(p.at).as_secs_f64());
         let shares = match (prev.and_then(|p| p.stat.all), cur.stat.all) {
@@ -354,7 +389,7 @@ impl System {
             (_, Some(_)) => false,
             _ => temps::throttling_by_clock(&temps, mhz_avg, self.mhz_max),
         };
-        let nvidia = self.nvidia_rows(root, cur.at);
+        let nvidia = self.nvidia_rows(root, cur.at, gpus);
         self.nvidia_temps = nvidia_temps(&nvidia);
         let thermal = temps::thermal(
             &[temps.as_slice(), self.nvidia_temps.as_slice()].concat(),
@@ -485,14 +520,21 @@ impl System {
     /// `minute` at an explicit wall time and instant, for tests.
     pub fn minute_at(&mut self, root: &Root, wall: u64, at: Instant) -> Vec<(&'static str, i64)> {
         let cur = Reading::take(root, at, &self.cpu_ids);
+        let had_prev = self.minute_prev.is_some();
         let prev = self
             .minute_prev
             .take()
             .filter(|(_, w)| wall > *w && wall - w <= MAX_MINUTE_GAP_SECS)
             .map(|(r, _)| r);
+        // A suspend, a stall or a clock step: the minutes before it are
+        // not "the last hour" the pressure advice speaks of (plan 024 L4).
+        if had_prev && prev.is_none() {
+            self.psi_hour.clear();
+        }
         // No series stores a disk temperature, and the minute runs with
-        // nobody looking: it leaves the disks to spin down.
-        let data = self.build(root, &cur, prev.as_ref(), false);
+        // nobody looking: it leaves the disks to spin down. It reads the
+        // GPUs, for the gpu.N and temp.gpu series.
+        let data = self.build(root, &cur, prev.as_ref(), false, true);
         let acc = std::mem::take(&mut self.acc);
         let mean =
             |k: &str, point: Option<f64>| acc.get(k).map(|(s, n)| s / f64::from(*n)).or(point);
@@ -582,14 +624,25 @@ impl System {
     }
 }
 
+/// Whether a baseline `age` old gives a useful rate: 1–90 s.
+fn fits(age: Duration) -> bool {
+    (BASELINE_MIN..=Duration::from_secs(MAX_MINUTE_GAP_SECS)).contains(&age)
+}
+
 impl System {
     /// The minute baseline when it is 1–90 s old.
     fn minute_baseline(&self, now: Instant) -> Option<Reading> {
         let (r, _) = self.minute_prev.as_ref()?;
-        let age = now.saturating_duration_since(r.at);
-        (BASELINE_MIN..=Duration::from_secs(MAX_MINUTE_GAP_SECS))
-            .contains(&age)
-            .then(|| r.clone())
+        fits(now.saturating_duration_since(r.at)).then(|| r.clone())
+    }
+
+    /// The youngest of the live and minute baselines that is 1–90 s old.
+    fn young_baseline(&self, now: Instant) -> Option<&Reading> {
+        self.live
+            .iter()
+            .chain(self.minute_prev.iter().map(|(r, _)| r))
+            .filter(|r| fits(now.saturating_duration_since(r.at)))
+            .min_by_key(|r| now.saturating_duration_since(r.at))
     }
 }
 
@@ -608,7 +661,7 @@ impl Sampler for System {
             .map(|t| cpu::stat(&t))
             .unwrap_or_default();
         if stat.all.is_none() {
-            return Err("proc/stat has no cpu line".to_string());
+            return Err(strings::SYSTEM_UNAVAILABLE.to_string());
         }
         self.cpu_ids = stat.cores.iter().map(|(n, _)| *n).collect();
         self.model = root
@@ -640,42 +693,62 @@ impl Sampler for System {
             .take()
             .filter(|p| now.duration_since(p.at) <= LIVE_STALE)
             .or_else(|| self.minute_baseline(now));
-        let data = self.build(root, &cur, prev.as_ref(), true);
+        let data = self.build(root, &cur, prev.as_ref(), self.want_disks, self.want_gpus);
         self.accumulate(&data);
         self.live = Some(cur);
         serde_json::to_value(data).unwrap_or(Value::Null)
     }
 
+    /// `disks` and `gpus`, each true when any subscriber's params (or the
+    /// `get`'s) say so: the System page and `mirqab sensors` ask, a bar
+    /// item asks only for the GPUs it shows (plan 024 C18, C19).
+    fn wants(&mut self, params: &[Value]) {
+        let asks = |k: &str| {
+            params
+                .iter()
+                .any(|p| p.get(k).and_then(Value::as_bool) == Some(true))
+        };
+        self.want_disks = asks("disks");
+        self.want_gpus = asks("gpus");
+    }
+
+    /// `get`'s first reading, under the lock; the server waits
+    /// `SNAPSHOT_GAP` without it before `snapshot` (plan 006, part 4,
+    /// decision 10; plan 024 C6). A baseline that serves needs no wait,
+    /// and is queued as this get's reading too: a tick between the get's
+    /// two locked steps replaces the live one.
+    fn prime(&mut self, root: &Root, now: Instant) -> Option<Duration> {
+        let (first, gap) = match self.young_baseline(now) {
+            Some(b) => (b.clone(), None),
+            None => (Reading::take(root, now, &self.cpu_ids), Some(SNAPSHOT_GAP)),
+        };
+        self.primed.push_back(first);
+        while self.primed.len() > MAX_PRIMED {
+            self.primed.pop_front();
+        }
+        gap
+    }
+
     /// `get`: rates against the youngest of the live and minute baselines,
     /// neither of which it moves, so a `get` cannot shorten a subscriber's
-    /// window (review of plan 001 phase B).
-    /// With no baseline 1–90 s old (history off, or after a sleep), it
-    /// takes its own second reading 200 ms later (review of PR #7: it
-    /// averaged since the daemon started).
+    /// window (review of plan 001 phase B). With no baseline 1–90 s old
+    /// (history off, or after a sleep), against the oldest reading
+    /// `prime` queued that is at least `PRIMED_MIN` old (review of PR #7:
+    /// it averaged since the daemon started); with none, no rate. It
+    /// never sleeps: the reading is stamped `now`, so a late lock cannot
+    /// inflate a rate. This get's primed reading is taken whichever
+    /// answers.
     fn snapshot(&mut self, root: &Root, now: Instant) -> Value {
-        let young = |r: &Reading| {
-            let age = now.saturating_duration_since(r.at);
-            (BASELINE_MIN..=Duration::from_secs(MAX_MINUTE_GAP_SECS)).contains(&age)
-        };
-        let prev = self
-            .live
+        self.primed
+            .retain(|r| now.saturating_duration_since(r.at) <= PRIMED_MAX);
+        let mine = self
+            .primed
             .iter()
-            .chain(self.minute_prev.iter().map(|(r, _)| r))
-            .filter(|r| young(r))
-            .min_by_key(|r| now.saturating_duration_since(r.at))
-            .cloned();
-        let (prev, cur) = match prev {
-            Some(p) => (p, Reading::take(root, now, &self.cpu_ids)),
-            None => {
-                let first = Reading::take(root, now, &self.cpu_ids);
-                std::thread::sleep(SNAPSHOT_GAP);
-                (
-                    first,
-                    Reading::take(root, now + SNAPSHOT_GAP, &self.cpu_ids),
-                )
-            }
-        };
-        let data = self.build(root, &cur, Some(&prev), true);
+            .position(|r| now.saturating_duration_since(r.at) >= PRIMED_MIN)
+            .and_then(|i| self.primed.remove(i));
+        let prev = self.young_baseline(now).cloned().or(mine);
+        let cur = Reading::take(root, now, &self.cpu_ids);
+        let data = self.build(root, &cur, prev.as_ref(), self.want_disks, self.want_gpus);
         serde_json::to_value(data).unwrap_or(Value::Null)
     }
 
