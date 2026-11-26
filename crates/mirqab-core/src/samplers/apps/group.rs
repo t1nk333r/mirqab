@@ -20,7 +20,7 @@
 //! left out.
 
 use super::desktop::{Desktop, Entry};
-use super::procfs::{Proc, basename};
+use super::procfs::{self, Proc};
 use crate::proto::strings;
 use std::collections::{BTreeMap, HashMap};
 
@@ -340,9 +340,6 @@ fn job_name(p: &Proc) -> String {
     p.name()
 }
 
-/// The longest script name a job takes.
-const SCRIPT_MAX: usize = 64;
-
 /// The script (or python's `-m` module) an interpreter's arguments
 /// clearly name, else None. None for code given inline (`python3 -c`,
 /// `perl -e` and `-lne`, `ruby -e`, `node -e`/`-p`/`--eval`, `deno eval`)
@@ -421,14 +418,11 @@ pub(crate) fn script_and_rest<'a>(
             _ => break i,
         }
     };
-    let found = args.get(at)?.as_str();
-    let name = basename(found);
+    let name = procfs::plain_name(args.get(at)?)?;
     let plain = |c: char| c.is_ascii_alphanumeric() || "._-+@".contains(c);
-    (!name.is_empty()
-        && name.len() <= SCRIPT_MAX
-        && !found.chars().any(|c| c.is_whitespace() || c.is_control())
-        && name.chars().all(plain))
-    .then(|| (name.to_string(), args.get(at + 1..).unwrap_or(&[])))
+    name.chars()
+        .all(plain)
+        .then(|| (name.to_string(), args.get(at + 1..).unwrap_or(&[])))
 }
 
 fn named(entry: Option<&Entry>, fallback: String) -> (String, Option<String>) {

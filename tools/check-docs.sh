@@ -28,6 +28,14 @@ done < <(sed -n 's/^| \([0-9][0-9][0-9]\) |.*/\1/p' <<<"$index")
 
 # 2. relative links: [text](target), skipping URLs, mail and in-page anchors.
 # Fenced code blocks are skipped: their brackets are code, not links.
+# The list is taken first: a process substitution's status is ignored, so a
+# checkout git refuses (another user's, without safe.directory) checked no
+# link and passed (plan 024 L37).
+if ! mds="$(git ls-files -co --exclude-standard -- '*.md')"; then
+    printf 'check-docs: git cannot list the Markdown files (a checkout another user owns needs safe.directory); nothing checked\n' >&2
+    exit 2
+fi
+[[ -n $mds ]] || err "git listed no Markdown files"
 while IFS= read -r md; do
     [[ -f $md ]] || continue
     dir="$(dirname "$md")"
@@ -46,7 +54,7 @@ while IFS= read -r md; do
                 print NR ":" t
             }
         }' "$md")
-done < <(git ls-files -co --exclude-standard -- '*.md')
+done <<<"$mds"
 
 # 3. a golden file per stream
 stream_rs=crates/mirqab-proto/src/stream.rs

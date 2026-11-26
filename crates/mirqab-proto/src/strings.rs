@@ -580,6 +580,9 @@ pub const MCP_ARG_SORT: &str = "cpu (default), mem or name";
 pub const MCP_ARG_LIMIT: &str =
     "how many apps, 1 to 50 (default 10); the System group comes on top of them";
 pub const MCP_ARG_PID: &str = "the process id";
+/// `mirqab mcp` with no socket to name: the client started it without
+/// `$XDG_RUNTIME_DIR` (plan 024 C15).
+pub const MCP_NO_SOCKET: &str = "mirqab: no daemon socket to dial, because XDG_RUNTIME_DIR is not set in this MCP server's environment; add XDG_RUNTIME_DIR to the server's env in the client's MCP settings, or register it as: mirqab --socket PATH mcp";
 pub const MCP_PID_REQUIRED: &str = "pid is required: a process id (a positive whole number)";
 
 pub fn mcp_bad_argument(name: &str, expected: &str) -> String {
@@ -770,6 +773,32 @@ pub fn socket_busy(path: &str) -> String {
     format!("{path} is a socket that did not refuse a connection; another daemon may be starting")
 }
 
+/// The daemon's start-up failures: a directory, a lock file or the socket
+/// it could not make, and accepting that failed for good.
+pub fn mkdir_failed(path: &str, why: &str) -> String {
+    format!("mkdir {path}: {why}")
+}
+
+pub fn lock_file_failed(path: &str, why: &str) -> String {
+    format!("{path}: {why}")
+}
+
+pub fn chmod_failed(path: &str, why: &str) -> String {
+    format!("chmod {path}: {why}")
+}
+
+pub fn bind_failed(path: &str, why: &str) -> String {
+    format!("bind {path}: {why}")
+}
+
+pub fn daemon_failed(why: &str) -> String {
+    format!("mirqab: {why}")
+}
+
+pub fn accept_failed(why: &str) -> String {
+    format!("mirqab: accept: {why}")
+}
+
 pub fn ready(socket: &str) -> String {
     format!("ready {socket}")
 }
@@ -797,8 +826,45 @@ pub fn interface_did_not_attach() -> &'static str {
     "mirqab-ui.service started but the interface did not connect within 5 s; if journalctl --user -u mirqab-ui.service says it cannot open the display, run: systemctl --user import-environment WAYLAND_DISPLAY"
 }
 
+/// Why `config.json` is broken when it parses but is not an object.
+pub const CONFIG_NOT_OBJECT: &str = "not a JSON object";
+
 pub fn config_broken(why: &str) -> String {
     format!("config.json could not be read ({why}); using defaults and leaving the file untouched")
+}
+
+/// The daemon's journal lines about its history file and its clients.
+pub fn history_moved_aside(path: &str) -> String {
+    format!("history could not be opened; moved it to {path}")
+}
+
+pub fn history_damaged_moved(path: &str) -> String {
+    format!("history was damaged; moved it to {path}")
+}
+
+pub fn history_off(why: &str) -> String {
+    format!("history is off: {why}")
+}
+
+pub const HISTORY_WRITE_FAILED: &str = "history write failed";
+pub const HISTORY_PRUNE_FAILED: &str = "history prune failed";
+pub const HISTORY_COMPACTION_FAILED: &str = "history compaction failed";
+pub const HISTORY_COMPACTION_CHECK_FAILED: &str = "history compaction check failed";
+
+pub fn history_event_not_written(kind: &str) -> String {
+    format!("history: the {kind} event was not written")
+}
+
+pub fn action_not_recorded(why: &str) -> String {
+    format!("history: the action was not recorded: {why}")
+}
+
+pub fn client_spawn_failed(why: &str) -> String {
+    format!("cannot serve a client: {why}")
+}
+
+pub fn accept_retrying(why: &str) -> String {
+    format!("accept: {why}; retrying")
 }
 
 pub fn status_lines(
@@ -872,6 +938,10 @@ pub fn history_damaged_again(hours: i64) -> String {
     format!(
         "history was damaged again within {hours} hours of being replaced; it is off and the file is left in place until then"
     )
+}
+
+pub fn history_move_aside_failed(first: &str, why: &str) -> String {
+    format!("{first}; and moving it aside failed: {why}")
 }
 
 pub fn history_schema_newer(found: &str, ours: &str) -> String {
@@ -2231,6 +2301,16 @@ pub const PORTS_PARAMS: &str =
 /// `status`'s reason when the socket tables cannot be read.
 pub fn ports_unavailable(why: &str) -> String {
     format!("proc/net/tcp cannot be read: {why}")
+}
+
+/// `status`'s reason when `proc/stat` has no aggregate `cpu` line (the
+/// `system` stream).
+pub const SYSTEM_UNAVAILABLE: &str = "proc/stat has no cpu line";
+
+/// `status`'s reason when `proc` cannot be listed (the `apps` and
+/// `process` streams).
+pub fn proc_unlisted(why: &str) -> String {
+    format!("proc cannot be listed: {why}")
 }
 
 /// What a scope means, in a sentence: `mirqab port`, the page's Reach

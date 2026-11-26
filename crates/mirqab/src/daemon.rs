@@ -100,7 +100,7 @@ pub fn run(args: Args) -> ExitCode {
         Err(ListenError::AlreadyRunning) => {
             return fail(&strings::already_running(&socket.display().to_string()));
         }
-        Err(ListenError::Failed(why)) => return fail(&format!("mirqab: {why}")),
+        Err(ListenError::Failed(why)) => return fail(&strings::daemon_failed(&why)),
     };
     // Not out::print: the daemon must not exit because no one reads its
     // stdout, so a failed write is ignored.
@@ -124,5 +124,5 @@ pub fn run(args: Args) -> ExitCode {
         crate::tray::start(&socket);
     }
     let err = server.serve();
-    fail(&format!("mirqab: accept: {err}"))
+    fail(&strings::accept_failed(&err.to_string()))
 }
