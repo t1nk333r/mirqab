@@ -934,9 +934,11 @@ impl Server {
     /// Accepts clients until the process exits (`shutdown` or a signal).
     /// Returns only when accepting fails.
     pub fn serve(self) -> std::io::Error {
+        let mut backoff = AcceptBackoff::new();
         loop {
             match self.listener.accept() {
                 Ok((stream, _)) => {
+                    backoff.accepted();
                     match sys::peer_uid(&stream) {
                         Ok(uid) if uid == self.inner.own_uid => {}
                         _ => {
@@ -970,12 +972,64 @@ impl Server {
                         )
                     ) =>
                 {
-                    log(&format!("accept: {e}; retrying"));
-                    std::thread::sleep(Duration::from_millis(100));
+                    let errno = e.raw_os_error().unwrap_or_default();
+                    let (wait, say) = backoff.failed(errno, Instant::now());
+                    if say {
+                        log(&format!("accept: {e}; retrying"));
+                    }
+                    std::thread::sleep(wait);
                 }
                 Err(e) => return e,
             }
         }
+    }
+}
+
+/// The first and the longest wait after a transient accept failure, and
+/// how often a run of the same one is logged again.
+const ACCEPT_FIRST: Duration = Duration::from_millis(100);
+const ACCEPT_MOST: Duration = Duration::from_secs(2);
+const ACCEPT_LOG_EVERY: Duration = Duration::from_secs(60);
+
+/// The accept loop's pace through transient failures: the wait doubles
+/// from ACCEPT_FIRST to ACCEPT_MOST and starts over after a client is
+/// accepted, and a failure is logged when it starts a run, differs from
+/// the last, or a minute passed since the last line. Out of descriptors,
+/// a pending client failed every accept at once, so a fixed 100 ms woke
+/// and logged ten times a second until one freed (plan 024, L24).
+struct AcceptBackoff {
+    wait: Duration,
+    last_err: Option<i32>,
+    last_log: Option<Instant>,
+}
+
+impl AcceptBackoff {
+    fn new() -> Self {
+        AcceptBackoff {
+            wait: ACCEPT_FIRST,
+            last_err: None,
+            last_log: None,
+        }
+    }
+
+    /// The wait before the next accept after a failure with `errno`, and
+    /// whether to log it.
+    fn failed(&mut self, errno: i32, now: Instant) -> (Duration, bool) {
+        let say = self.last_err != Some(errno)
+            || self
+                .last_log
+                .is_none_or(|t| now.saturating_duration_since(t) >= ACCEPT_LOG_EVERY);
+        if say {
+            self.last_log = Some(now);
+        }
+        self.last_err = Some(errno);
+        let wait = self.wait;
+        self.wait = (self.wait * 2).min(ACCEPT_MOST);
+        (wait, say)
+    }
+
+    fn accepted(&mut self) {
+        *self = AcceptBackoff::new();
     }
 }
 
@@ -1935,6 +1989,35 @@ mod tests {
         assert!(!prune_due(1_000_000, 1_000_000 + 3599));
         assert!(prune_due(1_000_000, 1_000_000 + 3600));
         assert!(prune_due(1_000_000, 1_000_000 - 1));
+    }
+
+    #[test]
+    fn accept_failures_back_off_and_are_logged_once_a_minute() {
+        // Plan 024, L24: out of descriptors the loop woke and logged every
+        // 100 ms.
+        let mut b = AcceptBackoff::new();
+        let t0 = Instant::now();
+        let s = Duration::from_secs;
+        let ms = Duration::from_millis;
+        let mut waits = Vec::new();
+        let mut said = Vec::new();
+        for i in 0..7 {
+            let (wait, say) = b.failed(libc::EMFILE, t0 + s(i));
+            waits.push(wait);
+            said.push(say);
+        }
+        assert_eq!(
+            waits,
+            [ms(100), ms(200), ms(400), ms(800), ms(1600), s(2), s(2)]
+        );
+        assert_eq!(said, [true, false, false, false, false, false, false]);
+        // Another error is said at once; the same one again after a minute.
+        assert_eq!(b.failed(libc::ENFILE, t0 + s(8)), (s(2), true));
+        assert_eq!(b.failed(libc::ENFILE, t0 + s(67)), (s(2), false));
+        assert_eq!(b.failed(libc::ENFILE, t0 + s(68)), (s(2), true));
+        // A client accepted starts over.
+        b.accepted();
+        assert_eq!(b.failed(libc::ENFILE, t0 + s(69)), (ms(100), true));
     }
 
     #[test]
