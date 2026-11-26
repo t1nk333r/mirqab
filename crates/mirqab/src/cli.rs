@@ -356,7 +356,13 @@ pub fn run(command: &str, args: Args) -> ExitCode {
     };
     let req = match command {
         "status" => Request::new(1, "status"),
-        "load" | "sensors" => Request::new(1, "get").with_stream("system"),
+        "load" => Request::new(1, "get").with_stream("system"),
+        // Every temperature and GPU: the disk sensors and a fresh
+        // `nvidia-smi` are read only for a reader that asks (plan 024
+        // C18, C19).
+        "sensors" => Request::new(1, "get")
+            .with_stream("system")
+            .with_params(json!({"disks": true, "gpus": true})),
         "history" if list => Request::new(1, "history.list"),
         "history" => {
             Request::new(1, "history.query").with_params(json!({"series": series, "range": range}))

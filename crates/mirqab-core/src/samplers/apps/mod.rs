@@ -532,7 +532,7 @@ impl Sampler for Apps {
 
     fn probe(&mut self, root: &Root) -> Result<(), String> {
         root.read_dir("proc")
-            .map_err(|e| format!("proc cannot be listed: {e}"))?;
+            .map_err(|e| strings::proc_unlisted(&e.to_string()))?;
         // The daemon's own uid through Root, so a fixture tree says whose
         // processes are "ours" (its proc/self/status), as the live machine
         // does.

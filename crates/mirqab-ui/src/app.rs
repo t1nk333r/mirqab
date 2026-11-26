@@ -150,6 +150,10 @@ impl Ctx {
         // (plan 006, decision 2).
         ctx.client
             .set_merge(stream::APPS, mirqab_view::tabs::apps::merge_params);
+        // The System page or a Home card that shows the disks or the GPUs
+        // keeps its flags beside a graph's live handle (plan 024).
+        ctx.client
+            .set_merge(stream::SYSTEM, mirqab_view::tabs::system::merge_params);
         let weak = Rc::downgrade(&ctx);
         ctx.client.on_state(move |client| {
             let Some(ctx) = weak.upgrade() else { return };

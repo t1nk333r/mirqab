@@ -13,7 +13,9 @@
 //! read for it; `history.query` is clamped and its series capped; the
 //! history file, its directory and the locks are private; the minute
 //! writer replaces a file found corrupt while open, and retries one found
-//! corrupt at start that could not be moved then (plan 024, C13).
+//! corrupt at start that could not be moved then (plan 024, C13). Plan
+//! 024: a `system` subscriber or `get` has the disk sensors read only when
+//! it asks.
 
 use mirqab_core::proto::{Request, ServerFrame, frame};
 use mirqab_core::root::Root;
@@ -354,7 +356,13 @@ fn the_system_stream_matches_its_golden_file() {
     let d = start("system");
     let mut c = Client::connect(&d);
     c.hello();
-    c.call("subscribe", Some("system"), json!({})).unwrap();
+    // Everything the stream can show, as the System page asks.
+    c.call(
+        "subscribe",
+        Some("system"),
+        json!({"disks": true, "gpus": true}),
+    )
+    .unwrap();
     // The first sample has no previous reading, so no CPU percent yet.
     let golden: Value =
         serde_json::from_str(include_str!("../../../tests/golden/system.json")).unwrap();
@@ -374,6 +382,33 @@ fn the_system_stream_matches_its_golden_file() {
         }
     }
     assert_eq!(got, golden);
+}
+
+#[test]
+fn a_system_subscriber_has_the_disks_read_only_when_it_asks() {
+    // Plan 024 C18: every sampler is told its subscribers' params, not
+    // only one with a view, so a bar's plain subscription reads no disk
+    // sensor; the System page's `disks` does, and so does a `get` that
+    // asks, whatever the subscribers want.
+    let d = start("sysdisks");
+    let mut c = Client::connect(&d);
+    c.hello();
+    let disks = |v: &Value| {
+        v["temps"]
+            .as_array()
+            .map_or(0, |t| t.iter().filter(|t| t["kind"] == "disk").count())
+    };
+    c.call("subscribe", Some("system"), json!({})).unwrap();
+    assert_eq!(disks(&c.event("system").unwrap()), 0, "a bar's params");
+    c.call("subscribe", Some("system"), json!({"disks": true}))
+        .unwrap();
+    assert_eq!(disks(&c.event("system").unwrap()), 2, "the page's");
+    let get = c.call("get", Some("system"), json!({})).unwrap();
+    assert_eq!(disks(&get), 0);
+    let get = c
+        .call("get", Some("system"), json!({"disks": true}))
+        .unwrap();
+    assert_eq!(disks(&get), 2);
 }
 
 #[test]

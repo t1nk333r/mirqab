@@ -84,7 +84,8 @@ struct Sub {
     floor_ms: u64,
     live: bool,
     /// The subscription's params, for a stream whose sampler shapes each
-    /// subscriber's view (`Sampler::view`).
+    /// subscriber's view (`Sampler::view`) or reads what they name
+    /// (`Sampler::wants`).
     params: Value,
 }
 
@@ -874,12 +875,13 @@ fn sampler_loop(inner: Arc<Inner>, name: String, slot: Arc<Slot>) {
         run.idle = false;
         // The params each subscriber shapes its view with, taken while the
         // lock is held anyway; the views are made after it is released.
+        // Every sampler is told them (`Sampler::wants`), with a view or
+        // not: `system` reads the disk sensors and runs `nvidia-smi` only
+        // when one asks (plan 024 C18, C19).
         let mut wanted: Vec<Value> = Vec::new();
-        if slot.view.is_some() {
-            for s in state.clients.values().filter_map(|c| c.subs.get(&name)) {
-                if !wanted.contains(&s.params) {
-                    wanted.push(s.params.clone());
-                }
+        for s in state.clients.values().filter_map(|c| c.subs.get(&name)) {
+            if !wanted.contains(&s.params) {
+                wanted.push(s.params.clone());
             }
         }
         drop(state);
@@ -1282,13 +1284,9 @@ impl Inner {
             FLOOR_MS
         };
         let interval_ms = asked.max(floor);
-        let params = if slot.view.is_some() {
-            view_params(&req.params)
-        } else {
-            Value::Null
-        };
+        let params = view_params(&req.params);
         if let Some(accepts) = slot.accepts
-            && let Err(why) = accepts(&view_params(&req.params))
+            && let Err(why) = accepts(&params)
         {
             return Ok(Reply::err(req.id, Code::BadRequest, why));
         }

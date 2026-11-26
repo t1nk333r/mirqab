@@ -2299,6 +2299,16 @@ pub fn ports_unavailable(why: &str) -> String {
     format!("proc/net/tcp cannot be read: {why}")
 }
 
+/// `status`'s reason when `proc/stat` has no aggregate `cpu` line (the
+/// `system` stream).
+pub const SYSTEM_UNAVAILABLE: &str = "proc/stat has no cpu line";
+
+/// `status`'s reason when `proc` cannot be listed (the `apps` and
+/// `process` streams).
+pub fn proc_unlisted(why: &str) -> String {
+    format!("proc cannot be listed: {why}")
+}
+
 /// What a scope means, in a sentence: `mirqab port`, the page's Reach
 /// line. mirqab reads bind addresses, never firewall rules.
 pub fn reach_sentence(scope: &str) -> &'static str {

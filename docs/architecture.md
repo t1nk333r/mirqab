@@ -401,11 +401,26 @@ Streams: `system`, `apps`, `process`, `ports`, `agents`, `awake`, `disk`,
   the oldest that fits it and is 250 ms to 10 s old, leaving younger
   ones to the gets still in their gap), and the server sleeps it
   without the lock before
-  `snapshot`; a query may answer
+  `snapshot`. The `system` sampler waits 200 ms, takes a reading 150 ms
+  old or more, and gives no rate when none fits, never sleeping; a
+  baseline 1–90 s old needs no wait. A query may answer
   `Answer::Later(closure)`, which the server runs after it released the
   lock (the inspector's `pacman`). Once a minute `Sampler::minute_events`
   gives the `event` rows to write, with the effective config, and
   `Sampler::status` adds keys to `status` (plan 006, part 4).
+- `system` (plan 002, every 2 s, `live`): `params.disks` and
+  `params.gpus`, each a boolean, true when any subscriber (or the `get`)
+  says so. The disk temperature sensors are read, at most every 10 s,
+  only for `disks`: on some drives a drivetemp read keeps the disk from
+  spinning down. `nvidia-smi` runs, at most every 2 s, only for `gpus`;
+  otherwise the minute's reading is repeated while under 90 s old, so the
+  thermal word still counts an NVIDIA card while history is on, and
+  nothing is run; with history off and no `gpus` reader, it counts none.
+  Those rows carry no age, and a `get` without `gpus` (`mirqab load
+  --json`, MCP) answers with them too. The
+  System page asks for both, a Home card for what it shows, `mirqab
+  sensors` for both, and a bar item for `gpus` only when it shows a GPU.
+  The minute reads the GPUs and never the disks (plan 024).
 - `apps` (plan 006, every 2 s, never `live`): `params.sort` (`cpu`,
   `mem`, `name`), `params.limit` (groups, default 50; the System group
   comes last, outside it, and `totals.groups` counts the groups before
@@ -519,7 +534,13 @@ Streams: `system`, `apps`, `process`, `ports`, `agents`, `awake`, `disk`,
   a timeout, `LC_ALL=C`. Output that is not UTF-8 is kept lossily. After
   the child exits its pipes are read only until the same deadline (plus a
   100 ms grace), and the result is the child's status with what was read:
-  a process it left running holding the pipes cannot stall the call. Tests
+  a process it left running holding the pipes cannot stall the call. A
+  child killed at the timeout that does not die within 100 ms (stuck in
+  uninterruptible sleep, as `nvidia-smi` in a hung driver call) is reaped
+  on a thread of its own, so the timeout stays the call's bound; until
+  that thread has reaped it, a run of the same program is refused with
+  the timeout error and nothing is started, so a hung driver costs one
+  stuck process, not one per try. Tests
   put stubs first on `PATH`.
 
 ### 5.4 Actions and the dry-run contract
