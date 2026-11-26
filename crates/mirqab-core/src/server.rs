@@ -582,6 +582,11 @@ pub fn listen(opts: Options) -> Result<Server, ListenError> {
                         aside.display()
                     ));
                 }
+                // Off until the minute writer's `recover` gets past it
+                // (plan 024, C13).
+                if let Some(why) = &h.broken {
+                    log(&format!("history is off: {why}"));
+                }
                 (Some(Mutex::new(h)), None)
             }
             Err(e) => {

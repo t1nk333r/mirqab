@@ -797,6 +797,9 @@ pub fn interface_did_not_attach() -> &'static str {
     "mirqab-ui.service started but the interface did not connect within 5 s; if journalctl --user -u mirqab-ui.service says it cannot open the display, run: systemctl --user import-environment WAYLAND_DISPLAY"
 }
 
+/// Why `config.json` is broken when it parses but is not an object.
+pub const CONFIG_NOT_OBJECT: &str = "not a JSON object";
+
 pub fn config_broken(why: &str) -> String {
     format!("config.json could not be read ({why}); using defaults and leaving the file untouched")
 }
@@ -872,6 +875,10 @@ pub fn history_damaged_again(hours: i64) -> String {
     format!(
         "history was damaged again within {hours} hours of being replaced; it is off and the file is left in place until then"
     )
+}
+
+pub fn history_move_aside_failed(first: &str, why: &str) -> String {
+    format!("{first}; and moving it aside failed: {why}")
 }
 
 pub fn history_schema_newer(found: &str, ours: &str) -> String {

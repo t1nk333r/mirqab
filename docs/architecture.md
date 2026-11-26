@@ -630,7 +630,9 @@ is noticed at the next read (a request that reads the config, a
 wakeup) and treated the same way: open live subscriptions take a new
 `live.intervalMs` and `ui` gets `config-changed`. A config the
 daemon cannot parse is left untouched, reported in `status`, and defaults
-are used: the app never rewrites a file the user broke by hand.
+are used: the app never rewrites a file the user broke by hand. A write
+replaces the file atomically and keeps its mode; a symlink (a config kept
+in a dotfiles repository) stays, and the file it points to is replaced.
 `theme.accent` and `units.clock` are reserved keys: accepted and checked,
 so a config that sets them stays valid, but read by nothing yet. No clock
 is shown before plan 016, which decides the clock format's key; its
@@ -730,7 +732,9 @@ file in `movedAside`. If the move fails, history is off with the reason in
 `status.history.error`, and the writer tries again each minute. Damage met
 again within six hours of a replacement is left in place and history is off
 until the six hours have passed, so failing storage adds at most one
-`.broken-*` file every six hours.
+`.broken-*` file every six hours. A damaged file deleted by hand is not
+waited for: the next try moves aside any `-wal` or `-shm` left behind and
+makes a new file.
 
 Rejected: one wide row per minute (every new series is a migration), a
 round-robin file format (a second storage engine for no gain), keeping
