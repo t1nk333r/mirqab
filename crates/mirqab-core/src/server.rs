@@ -392,8 +392,10 @@ impl Sampler for SelfSampler {
     /// first reading, whose CPU is 0.
     fn snapshot(&mut self, root: &Root, now: Instant) -> Value {
         let (subscribers, ui_pid) = self.shared();
-        // Older ones are left over from gets answered otherwise; a younger
-        // one belongs to a later get.
+        // Older ones are left over from gets answered otherwise; younger
+        // ones are skipped, not a stop: they belong to later gets, and a
+        // subscriber's copy queued behind a fresh reading may serve now
+        // (plan 024, L23).
         while self
             .primed
             .front()
@@ -401,10 +403,11 @@ impl Sampler for SelfSampler {
         {
             self.primed.pop_front();
         }
-        let primed = match self.primed.front() {
-            Some((m, _)) if serves(m, now) => self.primed.pop_front(),
-            _ => None,
-        };
+        let primed = self
+            .primed
+            .iter()
+            .position(|(m, _)| serves(m, now))
+            .and_then(|i| self.primed.remove(i));
         let pick = |own: Option<&Meter>, sub: Option<&Meter>| {
             own.filter(|m| serves(m, now))
                 .or(sub.filter(|m| serves(m, now)))
@@ -2002,6 +2005,31 @@ mod tests {
         assert_eq!(cpu(&s.snapshot(&root, t1)), 100.0);
         // The next tick still reads from t0: 100 ticks in 2 s.
         assert_eq!(cpu(&s.sample(&root, t0 + Duration::from_secs(2))), 50.0);
+        let _ = crate::act::remove_path(&d, false);
+    }
+
+    #[test]
+    fn a_get_of_self_finds_its_copy_behind_a_younger_reading() {
+        // Plan 024, L23: only the front of the queue was tried, so a get
+        // whose copy sat behind another get's fresh reading read 0 % once a
+        // tick had moved the subscribers' baseline.
+        let (d, root) = self_root("queue");
+        let mut s = SelfSampler::new(Arc::default(), Instant::now());
+        let t0 = Instant::now();
+        let ms = Duration::from_millis;
+        s.sample(&root, t0);
+        // A: the subscribers' baseline is too young, so a fresh reading.
+        assert_eq!(s.prime(&root, t0 + ms(100)), Some(SELF_GAP));
+        // B: it serves now, so a copy of it, and no wait.
+        assert_eq!(s.prime(&root, t0 + ms(300)), None);
+        // A tick before B's snapshot moves the subscribers' baseline.
+        set_ticks(&d, 130);
+        s.sample(&root, t0 + ms(300));
+        // B reads against its copy, 30 ticks in 0.3 s.
+        assert_eq!(cpu(&s.snapshot(&root, t0 + ms(300))), 100.0);
+        // A, after its gap, still has its own: 50 ticks in 0.5 s.
+        set_ticks(&d, 150);
+        assert_eq!(cpu(&s.snapshot(&root, t0 + ms(600))), 100.0);
         let _ = crate::act::remove_path(&d, false);
     }
 }
