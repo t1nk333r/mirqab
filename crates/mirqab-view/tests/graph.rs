@@ -81,6 +81,45 @@ fn live_seconds_one_stamp_apart_through_rounding_stay_one_line() {
     assert_eq!(g.runs.len(), 2, "three seconds is a gap");
 }
 
+/// Plan 024, C4: `live.intervalMs` at 3000, or the inspector's group graph
+/// fed every 2 s. The live window takes the samples' own spacing, so they
+/// draw as one line instead of a row of one-point dashes, while a real hole
+/// still breaks it.
+#[test]
+fn live_samples_slower_than_a_second_stay_one_line() {
+    let live = |pts: &[(i64, f64)]| Window {
+        from: 0,
+        to: 120,
+        step: graph::live_step(pts.iter().map(|&(t, _)| t)),
+    };
+    let every_three: Vec<(i64, f64)> = (0..10).map(|i| (i * 3, 1.0)).collect();
+    assert_eq!(graph::live_step(every_three.iter().map(|&(t, _)| t)), 3);
+    let g = geometry(&every_three, live(&every_three), PCT, 120.0, 10.0);
+    assert_eq!(g.runs.len(), 1);
+    // Frames 2.0x s apart, floored to whole seconds: 2 and 3 apart in turn.
+    let two_or_three = [(0, 1.0), (2, 1.0), (5, 1.0), (7, 1.0), (10, 1.0), (12, 1.0)];
+    let g = geometry(&two_or_three, live(&two_or_three), PCT, 120.0, 10.0);
+    assert_eq!(g.runs.len(), 1);
+    // A ten-second hole among samples 3 s apart is still a gap.
+    let holed = [
+        (0, 1.0),
+        (3, 1.0),
+        (6, 1.0),
+        (16, 1.0),
+        (19, 1.0),
+        (22, 1.0),
+    ];
+    assert_eq!(graph::live_step(holed.iter().map(|&(t, _)| t)), 3);
+    let g = geometry(&holed, live(&holed), PCT, 120.0, 10.0);
+    assert_eq!(g.runs.len(), 2, "a real hole breaks the line");
+    // One sample a second, a lone sample or none: the step stays 1; a
+    // stalled feed does not stretch it past the slowest live interval.
+    assert_eq!(graph::live_step([1, 2, 3, 5, 6]), 1);
+    assert_eq!(graph::live_step([7]), 1);
+    assert_eq!(graph::live_step([]), 1);
+    assert_eq!(graph::live_step([0, 60, 120]), 5);
+}
+
 #[test]
 fn an_empty_series_draws_nothing() {
     let g = geometry(&[], win(), PCT, 600.0, 100.0);

@@ -105,6 +105,25 @@ fn a_card_moves_past_a_pinned_id_that_is_not_shown() {
             "system.memory"
         ])
     );
+    // Plan 024, L34: dragged onto a card, a repeated id lands there too;
+    // its repeats fold into the one moved entry.
+    let after = home::dropped(&twice, "system.cpu", "system.overview");
+    let ids: Vec<&str> = home::visible(&after, &caps).iter().map(|c| c.id).collect();
+    assert_eq!(ids, ["system.memory", "system.overview", "system.cpu"]);
+    assert_eq!(
+        after,
+        v(&["system.memory", "system.overview", "system.cpu"])
+    );
+    let back = v(&[
+        "system.overview",
+        "system.memory",
+        "system.cpu",
+        "system.cpu",
+    ]);
+    assert_eq!(
+        home::dropped(&back, "system.cpu", "system.overview"),
+        v(&["system.cpu", "system.overview", "system.memory"])
+    );
     // Before the daemon says what it serves: every known pinned card.
     let ids: Vec<&str> = home::visible(&pinned, &[]).iter().map(|c| c.id).collect();
     assert_eq!(ids, ["system.cpu", "system.memory"]);

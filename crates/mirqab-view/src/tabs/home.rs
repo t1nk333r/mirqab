@@ -46,17 +46,24 @@ pub fn moved(pinned: &[String], shown: &[&str], id: &str, up: bool) -> Vec<Strin
 }
 
 /// `id` dropped onto `onto`: it takes `onto`'s place, and the cards
-/// between shift by one. Unchanged when either is absent.
+/// between shift by one. Repeats of `id`, which Home never shows, fold
+/// into the one moved entry; a repeat left behind would become the shown
+/// one and the card would seem to move one place (plan 024, L34, as audit
+/// 2026-11-21, L51 for `moved`). Unchanged when either is absent.
 pub fn dropped(pinned: &[String], id: &str, onto: &str) -> Vec<String> {
-    let mut out = pinned.to_vec();
     let (Some(i), Some(j)) = (
-        out.iter().position(|p| p == id),
-        out.iter().position(|p| p == onto),
+        pinned.iter().position(|p| p == id),
+        pinned.iter().position(|p| p == onto),
     ) else {
-        return out;
+        return pinned.to_vec();
     };
-    let item = out.remove(i);
-    out.insert(j, item);
+    if i == j {
+        return pinned.to_vec();
+    }
+    let mut out: Vec<String> = pinned.iter().filter(|p| *p != id).cloned().collect();
+    let k = out.iter().position(|p| p == onto).unwrap_or(out.len());
+    // Moving forward it lands after `onto`, which shifted back by one.
+    out.insert(if i < j { k + 1 } else { k }, id.to_string());
     out
 }
 
