@@ -163,14 +163,20 @@ fn fold(s: &str) -> String {
         .collect()
 }
 
-/// `{"pid": N}` for a number, else the one app whose name is `name`.
-fn subject(socket: &Path, target: &str) -> Result<Value, ExitCode> {
-    if target.bytes().all(|b| b.is_ascii_digit()) {
-        return match target.parse::<u32>() {
-            Ok(n) if n > 0 => Ok(json!({ "pid": n })),
-            _ => Err(usage(&strings::bad_pid(target))),
-        };
+/// The pid `target` names when it is a number: `None` for a name, an
+/// error for 0 or a number too large to be a pid.
+fn pid_of(target: &str) -> Result<Option<u32>, ExitCode> {
+    if !target.bytes().all(|b| b.is_ascii_digit()) {
+        return Ok(None);
     }
+    match target.parse::<u32>() {
+        Ok(n) if n > 0 => Ok(Some(n)),
+        _ => Err(usage(&strings::bad_pid(target))),
+    }
+}
+
+/// The one app whose name is `target`.
+fn subject(socket: &Path, target: &str) -> Result<Value, ExitCode> {
     // Every group, not the first 50: a name further down must be found.
     let req = Request::new(1, "get")
         .with_stream(APPS)
@@ -221,19 +227,25 @@ pub fn run(args: Args) -> ExitCode {
     if target.is_some() == group.is_some() {
         return usage_error();
     }
+    // A pid that is not one is a usage error too (plan 024 L30).
+    let pid = match target.map(pid_of).transpose() {
+        Ok(p) => p.flatten(),
+        Err(code) => return code,
+    };
     // The arguments first: a usage error is 64 even with no socket to
     // name (audit 2026-11-21).
     let socket = match socket_or_exit(&args) {
         Ok(s) => s,
         Err(code) => return code,
     };
-    let subject = match (target, group) {
-        (None, Some(id)) => json!({ "group": id }),
-        (Some(target), _) => match subject(&socket, target) {
+    let subject = match (pid, target, group) {
+        (Some(n), _, _) => json!({ "pid": n }),
+        (None, None, Some(id)) => json!({ "group": id }),
+        (None, Some(target), _) => match subject(&socket, target) {
             Ok(s) => s,
             Err(code) => return code,
         },
-        (None, None) => return usage_error(),
+        (None, None, None) => return usage_error(),
     };
     let name = if force { APPS_KILL } else { APPS_QUIT };
     let header = if force {
@@ -519,6 +531,13 @@ mod tests {
             EXIT_FAILED
         );
         assert_eq!(reply(json!([d]), json!([]), json!([]), json!([d])), 0);
+        // One target had exited and the other was left alone: nothing was
+        // quit, so it is a failure, as plan 006 and the help say (plan 024
+        // L6).
+        assert_eq!(
+            reply(json!([]), json!([d]), json!([]), json!([d])),
+            EXIT_FAILED
+        );
         assert_eq!(
             reply(json!([]), json!([]), json!([d]), json!([])),
             EXIT_FAILED

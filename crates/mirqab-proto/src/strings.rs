@@ -106,7 +106,7 @@ pub const CLI_COMMANDS: &[CliCommand] = &[
                 "quit an app by its id, when apps share a name",
             ),
         ],
-        help: "Asks a process to quit (SIGTERM), or with --force ends it (SIGKILL). A number is a pid; anything else is an app's name as mirqab apps shows it, matched whole and ignoring case (a long name it shows cut, ending in …, matches as shown; every app shown the same way matches too), and quits every process of that app, its main process first. When several apps have that name, they are listed with their ids and nothing is done; --group ID quits the one with that id. A user service is stopped with systemctl --user, so it does not restart; the list names the other services the stop takes with it, and warns before the sound server or a desktop portal is stopped. The stop is refused when one of those services holds a process mirqab never signals, and at the confirmation when a service that was not listed would now stop too; when systemd cannot say what depends on a service, the list says so. It prints what it will do and asks; -y goes ahead without asking; without a terminal and without -y it does nothing and exits 3; --dry-run prints the list and stops. With --json the list goes to stderr and stdout holds the daemon's answer. It exits 1 when anything failed, or when nothing was done because everything was left alone; a process that had already exited counts as done. Never stopped or signalled: pid 1, another user's processes, kernel threads, anything outside your user's session, the daemon, the session's compositor, your user manager, the session bus (also any process named dbus-daemon, dbus-broker or dbus-broker-launch), and the program asking and its parents. A rootless container is not quit; stop it with its runtime. When the action could not be written to mirqab's history, it is still done and a warning says so.",
+        help: "Asks a process to quit (SIGTERM), or with --force ends it (SIGKILL). A number is a pid; anything else is an app's name as mirqab apps shows it, matched whole and ignoring case (a long name it shows cut, ending in …, matches as shown; every app shown the same way matches too), and quits every process of that app, its main process first. When several apps have that name, they are listed with their ids and nothing is done; --group ID quits the one with that id. A user service is stopped with systemctl --user, so it does not restart; the list names the other services the stop takes with it, and warns before the sound server or a desktop portal is stopped. The stop is refused when one of those services holds a process mirqab never signals, and at the confirmation when a service that was not listed would now stop too; when systemd cannot say what depends on a service, the list says so. It prints what it will do and asks; -y goes ahead without asking; without a terminal and without -y it does nothing and exits 3; --dry-run prints the list and stops. With --json the list goes to stderr and stdout holds the daemon's answer. It exits 1 when anything failed, or when it quit nothing and left something alone, even if another process had already exited; otherwise it exits 0, so a process that had already exited is not by itself a failure. Never stopped or signalled: pid 1, another user's processes, kernel threads, anything outside your user's session, the daemon, the session's compositor, your user manager, the session bus (also any process named dbus-daemon, dbus-broker or dbus-broker-launch), and the program asking and its parents. A rootless container is not quit; stop it with its runtime. When the action could not be written to mirqab's history, it is still done and a warning says so.",
     },
     CliCommand {
         name: "ports",
@@ -1535,15 +1535,19 @@ pub fn apps_container(name: &str, id: &str) -> String {
     format!("{} (container {})", plain(name), plain(id))
 }
 
-/// `s` safe to print: every control character (C0, DEL, C1) and the
-/// bidirectional overrides and isolates (U+202A–202E, U+2066–2069) become
-/// U+FFFD. A process names itself, and an escape sequence or a newline in
-/// its name would rewrite the terminal or forge rows in `mirqab apps` and
-/// in the text an MCP client reads (review of PR #16). JSON needs none of
+/// `s` safe to print: every control character (C0, DEL, C1), the line and
+/// paragraph separators (U+2028, U+2029) and the bidirectional overrides
+/// and isolates (U+202A–202E, U+2066–2069) become U+FFFD. A process names
+/// itself, and an escape sequence or a newline in its name would rewrite
+/// the terminal or forge rows in `mirqab apps`, in the text an MCP client
+/// reads and in the window's labels, which break a line at U+2028 and
+/// U+2029 as well (review of PR #16; plan 024 L18). JSON needs none of
 /// this: serde escapes.
 pub fn plain(s: &str) -> std::borrow::Cow<'_, str> {
-    let bad =
-        |c: char| c.is_control() || matches!(c, '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}');
+    let bad = |c: char| {
+        c.is_control()
+            || matches!(c, '\u{2028}' | '\u{2029}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
+    };
     if !s.chars().any(bad) {
         return std::borrow::Cow::Borrowed(s);
     }
@@ -2584,6 +2588,11 @@ mod tests {
         assert_eq!(apps_row("x\ny", "1%", "1 MB", 1).lines().count(), 1);
         assert_eq!(what_line("command", "a\rb"), "command     a\u{fffd}b");
         assert_eq!(proc_ref("a\x1bb", 1), "a\u{fffd}b (1)");
+        // A label breaks a line at the Unicode line and paragraph
+        // separators as it does at a newline, so a name holding one would
+        // add a forged line to the Quit confirmation (audit, plan 024 L18).
+        let p = plain("helper\u{2028}Left alone:\u{2029}x");
+        assert_eq!(p, "helper\u{fffd}Left alone:\u{fffd}x");
     }
 
     #[test]

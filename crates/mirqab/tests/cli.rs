@@ -2,11 +2,14 @@
 //! window commands reaching an attached interface as `ui` events (plan 001,
 //! "Tests": `open system` produces a `ui` event).
 
+use serde_json::{Value, json};
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::fs::PermissionsExt;
-use std::os::unix::net::UnixStream;
+use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 const BIN: &str = env!("CARGO_BIN_EXE_mirqab");
@@ -687,4 +690,85 @@ fn a_socket_systemd_passes_on_fd_3_is_adopted() {
     let status: serde_json::Value = serde_json::from_slice(&out.stdout)
         .unwrap_or_else(|_| panic!("{}", String::from_utf8_lossy(&out.stderr)));
     assert_eq!(status["activated"], true, "{status}");
+}
+
+/// A daemon that plans a quit of pid 2001 and, asked to go ahead, answers
+/// that its signal failed: a real test daemon's recording sender never
+/// fails. Returns how many confirmed calls it has had.
+fn failing_quit_daemon(socket: &std::path::Path) -> Arc<AtomicUsize> {
+    let listener = UnixListener::bind(socket).unwrap();
+    let acts = Arc::new(AtomicUsize::new(0));
+    let seen = acts.clone();
+    std::thread::spawn(move || {
+        // The CLI opens one connection per request.
+        for stream in listener.incoming() {
+            let Ok(stream) = stream else { return };
+            let mut line = String::new();
+            if BufReader::new(&stream).read_line(&mut line).is_err() {
+                continue;
+            }
+            let req: Value = serde_json::from_str(&line).unwrap_or_default();
+            let reply = if req["params"]["confirm"] == true {
+                seen.fetch_add(1, Ordering::SeqCst);
+                json!({"type": "reply", "id": req["id"], "result": {
+                    "done": [], "gone": [], "skipped": [], "recorded": true,
+                    "failed": [{"pid": 2001, "name": "browser", "error": "boom"}]}})
+            } else {
+                json!({"type": "reply", "id": req["id"], "error": {
+                    "code": "needs-confirm", "message": "confirm first", "data": {
+                        "plan": "p1", "skipped": [],
+                        "wouldDo": [{"signal": "TERM", "pid": 2001, "start": 5010,
+                                     "name": "browser"}]}}})
+            };
+            let _ = writeln!(&stream, "{reply}");
+        }
+    });
+    acts
+}
+
+#[test]
+fn a_failed_quit_into_a_broken_pipe_still_exits_1_and_says_what_failed() {
+    // Audit 2026-11-21, L40, and plan 024 L31: a reader that went away
+    // neither ends the command before it acts nor hides what failed. In
+    // --json mode the first stdout write follows the act, so only a
+    // failure tells the fix from an exit 0 there.
+    // Under /tmp, not $TMPDIR: a socket path must stay under 108 bytes.
+    let dir = PathBuf::from("/tmp").join(format!("mqc-qfail-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let socket = dir.join("daemon.sock");
+    let acts = failing_quit_daemon(&socket);
+    let quit = |extra: &[&str], closed: bool| {
+        let mut cmd = mirqab_cmd();
+        cmd.arg("--socket")
+            .arg(&socket)
+            .args(["quit", "2001", "-y"])
+            .args(extra)
+            .stdin(Stdio::null());
+        if closed {
+            let (reader, writer) = std::io::pipe().unwrap();
+            drop(reader);
+            cmd.stdout(writer);
+        }
+        // Not output_within: that pipes stdout. The stub answers at once.
+        cmd.output().unwrap()
+    };
+    let failed = "failed 2001 browser: boom";
+    for extra in [&[][..], &["--json"][..]] {
+        let out = quit(extra, true);
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(out.status.code(), Some(1), "{extra:?}: {err}");
+        assert!(err.contains(failed), "{extra:?}: {err}");
+    }
+    assert_eq!(acts.load(Ordering::SeqCst), 2, "both went ahead");
+    // With its reader there, the failure is printed once, on stdout.
+    let out = quit(&[], false);
+    let (stdout, err) = (
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
+    );
+    assert_eq!(out.status.code(), Some(1), "{err}");
+    assert!(stdout.contains(failed), "{stdout}");
+    assert!(!err.contains(failed), "{err}");
+    let _ = std::fs::remove_dir_all(&dir);
 }
