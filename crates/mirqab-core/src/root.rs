@@ -9,6 +9,9 @@ use std::path::{Component, Path, PathBuf};
 /// path under it is a GPU client's (plan 006, part 4, decision 13).
 pub const DRM_DIR: &str = "/dev/dri/";
 
+/// A file's device and inode numbers: the same pair is the same file.
+pub type FileId = (u64, u64);
+
 #[derive(Debug, Clone)]
 pub struct Root {
     base: PathBuf,
@@ -168,6 +171,84 @@ impl Root {
         let mut buf = Vec::with_capacity(n.min(64 * 1024));
         file.take(n as u64).read_to_end(&mut buf)?;
         Ok(buf)
+    }
+
+    /// At most the first `n` bytes of `rel` and the file's device and
+    /// inode, when it resolves to a regular file on a mount `clear` accepts
+    /// by id. Links are followed (a Flatpak export is one, and
+    /// `proc/<pid>/exe` is the reason for this function), and nothing on an
+    /// uncleared mount is opened (plan 024, C5, C7 and C10):
+    ///
+    /// 1. `rel` is opened with O_PATH, which runs no filesystem's open; a
+    ///    FIFO or a device opened so does not block either. Following
+    ///    `proc/<pid>/exe` jumps to the executable's dentry and looks
+    ///    nothing up.
+    /// 2. Its mount id goes to `clear`, which reads its state after the
+    ///    pin, as in `read_regular_prefix_in`.
+    /// 3. Only then is it checked to be a regular file (fstat on FUSE may
+    ///    ask its server, so not before) and reopened for reading through
+    ///    the pinned descriptor, with O_NONBLOCK and O_NOCTTY as in
+    ///    `read_regular_prefix`.
+    ///
+    /// A path walk that crosses a mount still looks each name up, so this
+    /// guards the file a link names, not every directory on the way to it.
+    /// On a fixture root a link that leaves the tree is refused, as in
+    /// `read_prefix`.
+    pub fn read_regular_prefix_cleared(
+        &self,
+        rel: &str,
+        n: usize,
+        clear: impl Fn(u64) -> bool,
+    ) -> io::Result<(Vec<u8>, FileId)> {
+        use std::io::Read;
+        use std::os::fd::AsRawFd;
+        use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+        let path = self.path(rel)?;
+        if !self.is_host() {
+            let real = std::fs::canonicalize(&path)?;
+            let base = std::fs::canonicalize(&self.base)?;
+            if !real.starts_with(&base) {
+                return Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    format!("link leaves the root: {rel}"),
+                ));
+            }
+        }
+        let open = |p: &Path, flags: libc::c_int| {
+            std::fs::OpenOptions::new()
+                .read(true)
+                .custom_flags(flags)
+                .open(p)
+        };
+        let pinned = open(&path, libc::O_PATH)?;
+        if !clear(pinned_mount_id(&pinned)?) {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                format!("{rel} is not on a cleared mount"),
+            ));
+        }
+        let meta = pinned.metadata()?;
+        if !meta.is_file() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("not a regular file: {rel}"),
+            ));
+        }
+        let reader = open(
+            Path::new(&format!("/proc/self/fd/{}", pinned.as_raw_fd())),
+            libc::O_NONBLOCK | libc::O_NOCTTY,
+        )?;
+        let mut buf = Vec::with_capacity(n.min(64 * 1024));
+        reader.take(n as u64).read_to_end(&mut buf)?;
+        Ok((buf, (meta.dev(), meta.ino())))
+    }
+
+    /// The device and inode `rel` resolves to, or None when it cannot be
+    /// read: whether two paths name one file.
+    pub fn file_id(&self, rel: &str) -> Option<FileId> {
+        use std::os::unix::fs::MetadataExt;
+        let m = std::fs::metadata(self.path(rel).ok()?).ok()?;
+        Some((m.dev(), m.ino()))
     }
 
     /// At most the first `n` bytes of `name` inside the directory `dir`
@@ -402,6 +483,62 @@ mod tests {
                 .unwrap_err();
             assert_eq!(e.kind(), std::io::ErrorKind::InvalidInput, "{name}: {e}");
         }
+    }
+
+    #[test]
+    fn a_cleared_read_opens_nothing_on_a_refused_mount() {
+        // Plan 024, C5 and C7: the link is pinned with O_PATH and its
+        // mount refused before anything is opened. A plain open of a FIFO
+        // with no writer blocks, so an answer at all proves it was not
+        // opened; with the mount cleared it is still no regular file.
+        let s = scratch("cleared-fifo");
+        let dir = s.0.join("proc/1");
+        let fifo = s.0.join("fifo");
+        let made = crate::exec::run(
+            &["mkfifo", &fifo.to_string_lossy()],
+            None,
+            std::time::Duration::from_secs(5),
+        )
+        .unwrap();
+        assert!(made.success(), "{made:?}");
+        std::os::unix::fs::symlink(&fifo, dir.join("exe")).unwrap();
+        let r = Root::new(&s.0);
+        let mnt = r.mount_id("proc/1").unwrap();
+        let asked = std::cell::RefCell::new(Vec::new());
+        let e = r
+            .read_regular_prefix_cleared("proc/1/exe", 20, |id| {
+                asked.borrow_mut().push(id);
+                false
+            })
+            .unwrap_err();
+        assert_eq!(e.kind(), std::io::ErrorKind::PermissionDenied, "{e}");
+        assert_eq!(*asked.borrow(), [mnt]);
+        let e = r
+            .read_regular_prefix_cleared("proc/1/exe", 20, |_| true)
+            .unwrap_err();
+        assert_eq!(e.kind(), std::io::ErrorKind::InvalidInput, "{e}");
+    }
+
+    #[test]
+    fn a_cleared_read_follows_a_link_to_a_regular_file() {
+        let s = scratch("cleared-read");
+        std::fs::write(s.0.join("program"), "abcdef").unwrap();
+        std::os::unix::fs::symlink(s.0.join("program"), s.0.join("proc/1/exe")).unwrap();
+        let r = Root::new(&s.0);
+        let (head, id) = r
+            .read_regular_prefix_cleared("proc/1/exe", 4, |_| true)
+            .unwrap();
+        assert_eq!(head, b"abcd");
+        assert_eq!(Some(id), r.file_id("program"));
+        assert_ne!(Some(id), r.file_id("proc/1"));
+        // A link out of a fixture tree is not followed.
+        let out = scratch("cleared-out");
+        std::fs::write(out.0.join("program"), "x").unwrap();
+        std::os::unix::fs::symlink(out.0.join("program"), s.0.join("proc/2")).unwrap();
+        let e = r
+            .read_regular_prefix_cleared("proc/2", 4, |_| true)
+            .unwrap_err();
+        assert_eq!(e.kind(), std::io::ErrorKind::PermissionDenied, "{e}");
     }
 
     #[test]

@@ -12,7 +12,7 @@ use crate::proto::stream::{
     Arch, GpuMemory, GroupRef, Inspect, OpenFiles, Package, ProcMemory, ProcRef, Sandbox, Verdict,
 };
 use crate::proto::{Code, strings};
-use crate::root::Root;
+use crate::root::{FileId, Root};
 use std::collections::HashMap;
 use std::time::Duration;
 
@@ -199,12 +199,24 @@ fn machine_name(m: u16) -> String {
     }
 }
 
-fn arch(root: &Root, pid: u32) -> Option<Arch> {
-    let (machine, bits) = root
-        .read_prefix(&format!("proc/{pid}/exe"), 20)
-        .ok()
-        .as_deref()
-        .and_then(elf)?;
+/// The first 20 bytes of the executable of the process at `dir`
+/// (`proc/<pid>`), and its device and inode. It is read only from a local
+/// filesystem (plan 024, C5 and C7): the inspector runs under the sampler
+/// lock, and an open on a FUSE or NFS mount waits on its server, so an
+/// executable on a hung one would hold every `apps` reader. As for
+/// `.flatpak-info`, a fixture without a mountinfo clears every mount.
+fn exe_head(root: &Root, dir: &str) -> Option<(Vec<u8>, FileId)> {
+    let rel = format!("{dir}/exe");
+    if root.is_host() || root.exists(&format!("{dir}/mountinfo")) {
+        root.read_regular_prefix_cleared(&rel, 20, procfs::local_now(root, dir))
+    } else {
+        root.read_regular_prefix_cleared(&rel, 20, |_| true)
+    }
+    .ok()
+}
+
+fn arch(root: &Root, head: &[u8]) -> Option<Arch> {
+    let (machine, bits) = elf(head)?;
     let own = root
         .read_prefix("proc/self/exe", 20)
         .ok()
@@ -402,6 +414,9 @@ pub struct Pending {
     out: Inspect,
     exe: String,
     in_home: bool,
+    /// For a process in another mount namespace, the file it runs: the
+    /// host's file at `exe` is asked about only when it is that file.
+    runs: Option<(Root, FileId)>,
 }
 
 /// The first half of the inspector: everything read from `proc/`.
@@ -521,7 +536,10 @@ pub fn read(root: &Root, pid: u32, ctx: &Ctx) -> Result<Read, (Code, String)> {
     if out.flatpak.is_none() {
         out.flatpak = procfs::read_flatpak_info(root, &dir);
     }
-    out.arch = arch(root, pid);
+    let exe_file = exe_head(root, &dir);
+    out.arch = exe_file.as_ref().and_then(|(head, _)| arch(root, head));
+    let namespaces = namespaces(root, pid);
+    let other_mnt = namespaces.iter().any(|n| n == "mnt");
     out.sandbox = Some(Sandbox {
         seccomp: status.seccomp.map(|s| {
             match s {
@@ -533,7 +551,7 @@ pub fn read(root: &Root, pid: u32, ctx: &Ctx) -> Result<Read, (Code, String)> {
         }),
         no_new_privs: status.no_new_privs.unwrap_or(false),
         capabilities: status.cap_eff.map(caps).unwrap_or_default(),
-        namespaces: namespaces(root, pid),
+        namespaces,
     });
     if let Some(m) = &mut out.memory {
         let (pss, swap) = root
@@ -548,8 +566,17 @@ pub fn read(root: &Root, pid: u32, ctx: &Ctx) -> Result<Read, (Code, String)> {
     out.gpu = fds.as_deref().and_then(|f| gpu(root, pid, f));
 
     // A path inside a sandbox or a container names a file of its own
-    // tree, which the host's package database knows nothing about.
-    let sandboxed = out.flatpak.is_some() || out.container.is_some();
+    // tree, which the host's package database knows nothing about. So may
+    // a path seen from any other mount namespace (bubblewrap, a user
+    // namespace with a bind mount over `/usr/bin/bash`): there the host's
+    // file at that path is asked about only when it is the file the
+    // process runs (plan 024, C11). `finish` compares the two, with no
+    // sampler lock held; a file that could not be read is no match.
+    let runs = exe_file
+        .filter(|_| other_mnt)
+        .map(|(_, id)| (root.clone(), id));
+    let sandboxed =
+        out.flatpak.is_some() || out.container.is_some() || (other_mnt && runs.is_none());
     let home = user
         .map(|u| u.home.as_str())
         .or(ctx.own_home)
@@ -560,7 +587,12 @@ pub fn read(root: &Root, pid: u32, ctx: &Ctx) -> Result<Read, (Code, String)> {
     };
     same(st.start)?;
     match out.exe.clone() {
-        Some(exe) if !sandboxed => Ok(Read::Owner(Box::new(Pending { out, exe, in_home }))),
+        Some(exe) if !sandboxed => Ok(Read::Owner(Box::new(Pending {
+            out,
+            exe,
+            in_home,
+            runs,
+        }))),
         _ => {
             out.verdict = verdict_for(&out, Owner::Unknown, in_home);
             Ok(Read::Done(Box::new(out)))
@@ -574,7 +606,14 @@ pub fn finish(p: Pending, owners: &mut Owners) -> Inspect {
         mut out,
         exe,
         in_home,
+        runs,
     } = p;
+    if let Some((root, id)) = runs
+        && root.file_id(exe.trim_start_matches('/')) != Some(id)
+    {
+        out.verdict = verdict_for(&out, Owner::Unknown, in_home);
+        return out;
+    }
     let owner = owners.owner(&exe);
     if let Owner::Package(pkg) = &owner {
         out.package = Some(pkg.clone());

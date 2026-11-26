@@ -19,7 +19,12 @@
 //! baseline a tick replaced, or whose subscriber left in its gap, does not
 //! wait under the lock, never takes a reading another get is still
 //! waiting on, and leaves none queued; nor does a `process` get take one
-//! for the same pids that is still too young to use.
+//! for the same pids that is still too young to use. Plan 024: the
+//! executable's header is read only from a local mount (C5, C7); a process
+//! in another mount namespace is asked about only when the host's file at
+//! its path is the one it runs (C11); a desktop entry that is a FIFO or
+//! too large is skipped without waiting (C10); and `idle` drops the
+//! process cache (L27).
 
 use mirqab_core::Root;
 use mirqab_core::desktop::{Focus, FocusedSince, focused_since};
@@ -1491,6 +1496,195 @@ fn the_flatpak_info_mount_check_reads_mountinfo_when_asked() {
     assert!(clear(21));
     std::fs::write(p.join("mountinfo"), "").unwrap();
     assert!(!clear(21));
+}
+
+/// An ELF header for `machine`, 64-bit little-endian.
+fn elf_header(machine: u8) -> Vec<u8> {
+    let mut h = vec![0u8; 64];
+    h[..4].copy_from_slice(b"\x7fELF");
+    h[4] = 2;
+    h[5] = 1;
+    h[18] = machine;
+    h
+}
+
+#[test]
+fn the_executable_is_read_only_from_a_local_mount() {
+    // Plan 024, C5 and C7: the inspector runs under the apps sampler's
+    // lock, and an open on a hung FUSE or NFS mount waits on its server,
+    // so the ELF header is read only when the process's mountinfo lists
+    // the executable's mount as a local filesystem.
+    let s = bare_root("exe-mount");
+    let root = Root::new(&s.0);
+    std::fs::create_dir_all(s.0.join("usr/bin")).unwrap();
+    std::fs::write(s.0.join("usr/bin/program"), elf_header(183)).unwrap();
+    let mnt = root.mount_id("usr/bin/program").unwrap();
+    let rows = [
+        (
+            9700,
+            format!("{mnt} 1 0:40 / / rw - fuse.sshfs example:/ rw\n"),
+            false,
+        ),
+        (
+            9701,
+            format!("{mnt} 1 0:40 / / rw - fuse.squashfuse x rw\n"),
+            false,
+        ),
+        (
+            9702,
+            format!("{mnt} 1 0:45 / / rw - overlay overlay rw\n"),
+            false,
+        ),
+        (
+            9703,
+            format!("{mnt} 1 0:46 / / rw - nfs4 example:/ rw\n"),
+            false,
+        ),
+        (9704, String::new(), false),
+        (
+            9705,
+            format!("{mnt} 1 254:1 / / rw - ext4 /dev/x rw\n"),
+            true,
+        ),
+        (
+            9706,
+            format!("{mnt} 1 254:1 / / rw - btrfs /dev/x rw\n"),
+            true,
+        ),
+    ];
+    for (pid, mounts, _) in &rows {
+        let p = own_proc(&s.0, *pid, "program");
+        std::fs::write(p.join("mountinfo"), mounts).unwrap();
+        std::os::unix::fs::symlink(s.0.join("usr/bin/program"), p.join("exe")).unwrap();
+    }
+    let mut a = Apps::with_pacman(s.0.join("pacman").to_string_lossy());
+    a.probe(&root).unwrap();
+    for (pid, _, read) in rows {
+        let v = inspect(&mut a, &root, pid);
+        assert_eq!(v.get("arch").is_some(), read, "{pid}: {v}");
+        assert_eq!(
+            v["exe"],
+            s.0.join("usr/bin/program").to_string_lossy().as_ref()
+        );
+    }
+}
+
+#[test]
+fn a_process_in_another_mount_namespace_is_asked_about_only_for_the_hosts_file() {
+    // Plan 024, C11: `proc/<pid>/exe` names the path in the process's own
+    // mount namespace. A bind mount there over `/usr/bin/bash` reads as
+    // that path, so the host's package database is asked about it only
+    // when the host's file at that path is the file the process runs.
+    let s = bare_root("ns");
+    let p = pacman(&s.0);
+    // The text of the exe link is the path the host is asked about, here
+    // a path of the scratch tree, which `Root` finds below its own base
+    // (`host`). What the link resolves to is the file the process runs.
+    let host = s.0.join(s.0.strip_prefix("/").unwrap());
+    std::fs::create_dir_all(host.join("usr/bin")).unwrap();
+    std::fs::create_dir_all(s.0.join("usr/bin")).unwrap();
+    // bash: the process runs the host's very file (a hard link of it).
+    std::fs::write(s.0.join("usr/bin/bash"), elf_header(62)).unwrap();
+    std::fs::hard_link(s.0.join("usr/bin/bash"), host.join("usr/bin/bash")).unwrap();
+    // zsh: the namespace's `/usr/bin/zsh` is a payload, as a bind mount
+    // over it would make it, and the host's is another file.
+    std::fs::write(s.0.join("usr/bin/payload"), elf_header(62)).unwrap();
+    std::os::unix::fs::symlink(s.0.join("usr/bin/payload"), s.0.join("usr/bin/zsh")).unwrap();
+    std::fs::write(host.join("usr/bin/zsh"), elf_header(62)).unwrap();
+    std::fs::create_dir_all(s.0.join("proc/self/ns")).unwrap();
+    std::os::unix::fs::symlink("mnt:[4026531841]", s.0.join("proc/self/ns/mnt")).unwrap();
+    for (pid, ns, shown) in [
+        (9710, "4026532901", "usr/bin/bash"),
+        (9711, "4026532902", "usr/bin/zsh"),
+        // The daemon's own namespace: its path is the host's.
+        (9712, "4026531841", "usr/bin/zsh"),
+    ] {
+        let d = own_proc(&s.0, pid, "shell");
+        std::fs::create_dir_all(d.join("ns")).unwrap();
+        std::os::unix::fs::symlink(format!("mnt:[{ns}]"), d.join("ns/mnt")).unwrap();
+        std::os::unix::fs::symlink(s.0.join(shown), d.join("exe")).unwrap();
+    }
+    let root = Root::new(&s.0);
+    let mut a = Apps::with_pacman(p.to_string_lossy());
+    a.probe(&root).unwrap();
+    let code = |a: &mut Apps, pid: u32| inspect(a, &root, pid)["verdict"]["code"].clone();
+    let log = || std::fs::read_to_string(s.0.join("pacman.log")).unwrap();
+    assert_ne!(code(&mut a, 9711), "packaged");
+    assert_eq!(code(&mut a, 9711), "unknown");
+    assert_eq!(log(), "", "pacman was asked about another file");
+    code(&mut a, 9710);
+    assert!(log().contains("usr/bin/bash\n"), "{}", log());
+    code(&mut a, 9712);
+    assert!(log().contains("usr/bin/zsh\n"), "{}", log());
+}
+
+#[test]
+fn a_desktop_entry_that_is_not_a_regular_file_is_skipped() {
+    // Plan 024, C10: any process of the user can put a FIFO, or a link to
+    // a device, among the desktop entries. A plain read blocks on the
+    // FIFO, under the sampler lock, for good; the entries are opened only
+    // once each is known to be a regular file, and no larger than 256 KiB.
+    let s = bare_root("entries");
+    std::fs::create_dir_all(s.0.join("etc")).unwrap();
+    std::fs::write(
+        s.0.join("etc/passwd"),
+        "user:x:1000:1000:User:/home/user:/bin/sh\n",
+    )
+    .unwrap();
+    let apps = s.0.join("home/user/.local/share/applications");
+    std::fs::create_dir_all(&apps).unwrap();
+    let entry =
+        |name: &str| format!("[Desktop Entry]\nType=Application\nName={name}\nExec={name}\n");
+    std::fs::write(apps.join("org.example.Good.desktop"), entry("Good")).unwrap();
+    std::fs::write(s.0.join("linked.desktop"), entry("Linked")).unwrap();
+    std::os::unix::fs::symlink(
+        s.0.join("linked.desktop"),
+        apps.join("org.example.Linked.desktop"),
+    )
+    .unwrap();
+    let big = format!("{}X-Pad={}\n", entry("Big"), "x".repeat(256 * 1024));
+    std::fs::write(apps.join("org.example.Big.desktop"), big).unwrap();
+    let st = std::process::Command::new("mkfifo")
+        .arg(apps.join("org.example.Fifo.desktop"))
+        .status()
+        .expect("mkfifo runs");
+    assert!(st.success());
+    let base = s.0.clone();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let root = Root::new(&base);
+        let mut d = mirqab_core::samplers::apps::desktop::Desktop::new(Some("/home/user"));
+        d.refresh(&root);
+        let found = ["Good", "Linked", "Big", "Fifo"]
+            .map(|n| d.by_id(&format!("org.example.{n}")).map(|e| e.name.clone()));
+        tx.send(found).unwrap();
+    });
+    let found = rx
+        .recv_timeout(Duration::from_secs(10))
+        .expect("the entries are read without waiting on the FIFO");
+    assert_eq!(
+        found,
+        [
+            Some("Good".to_string()),
+            Some("Linked".to_string()),
+            None,
+            None
+        ]
+    );
+}
+
+#[test]
+fn idle_drops_the_process_cache_and_its_command_lines() {
+    // Plan 024, L27: a `get` with no subscriber, or the last subscriber
+    // leaving, calls `idle`, which drops what the walk kept: the process
+    // cache (every process's command line) and the subscriber baseline.
+    let s = scratch("idle-cache");
+    let mut a = probed(&pacman(&s.0));
+    let root = fixture("root-desktop");
+    a.sample(&root, Instant::now());
+    assert!(a.cached() > 0);
+    a.idle();
+    assert_eq!(a.cached(), 0);
 }
 
 fn cargo_cpu(v: Value) -> f64 {
