@@ -580,6 +580,9 @@ pub const MCP_ARG_SORT: &str = "cpu (default), mem or name";
 pub const MCP_ARG_LIMIT: &str =
     "how many apps, 1 to 50 (default 10); the System group comes on top of them";
 pub const MCP_ARG_PID: &str = "the process id";
+/// `mirqab mcp` with no socket to name: the client started it without
+/// `$XDG_RUNTIME_DIR` (plan 024 C15).
+pub const MCP_NO_SOCKET: &str = "mirqab: no daemon socket to dial, because XDG_RUNTIME_DIR is not set in this MCP server's environment; add XDG_RUNTIME_DIR to the server's env in the client's MCP settings, or register it as: mirqab --socket PATH mcp";
 pub const MCP_PID_REQUIRED: &str = "pid is required: a process id (a positive whole number)";
 
 pub fn mcp_bad_argument(name: &str, expected: &str) -> String {

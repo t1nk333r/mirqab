@@ -41,7 +41,7 @@ fn server_info() -> Value {
 }
 
 /// The answer to one request.
-pub fn handle(socket: &Path, id: Value, method: &str, params: &Value) -> Value {
+pub fn handle(socket: Option<&Path>, id: Value, method: &str, params: &Value) -> Value {
     // A modern request names its version; one this server does not serve
     // is refused with the list it does (MCP 2026-07-28, -32022). It must
     // also carry its capabilities (-32602 without them). A request with no
@@ -176,7 +176,7 @@ fn read_line(r: &mut impl BufRead, max: usize) -> std::io::Result<Option<Line>> 
 }
 
 /// The reply to one line, if it needs one.
-fn reply_to(socket: &Path, line: Line) -> Option<Value> {
+fn reply_to(socket: Option<&Path>, line: Line) -> Option<Value> {
     let text = match line {
         Line::TooLong => {
             return Some(rpc::error(
@@ -210,7 +210,8 @@ fn reply_to(socket: &Path, line: Line) -> Option<Value> {
     }
 }
 
-pub fn run(socket: &Path) -> ExitCode {
+/// `socket` is None when none can be named; each tool then says so.
+pub fn run(socket: Option<&Path>) -> ExitCode {
     let mut input = std::io::stdin().lock();
     let mut out = std::io::stdout();
     // A read error is the client's end failing: nothing left to serve.
@@ -245,13 +246,12 @@ mod tests {
             Some(Line::Text(b"last".to_vec()))
         );
         assert_eq!(read_line(&mut r, 5).unwrap(), None);
-        let none = Path::new("");
         assert_eq!(
-            reply_to(none, bad).unwrap()["error"]["code"],
+            reply_to(None, bad).unwrap()["error"]["code"],
             rpc::PARSE_ERROR
         );
         assert_eq!(
-            reply_to(none, Line::TooLong).unwrap()["error"]["code"],
+            reply_to(None, Line::TooLong).unwrap()["error"]["code"],
             rpc::INVALID_REQUEST
         );
     }
@@ -259,6 +259,6 @@ mod tests {
     #[test]
     fn a_response_from_the_client_is_not_answered() {
         let line = Line::Text(br#"{"jsonrpc":"2.0","id":9,"result":{}}"#.to_vec());
-        assert!(reply_to(Path::new(""), line).is_none());
+        assert!(reply_to(None, line).is_none());
     }
 }
