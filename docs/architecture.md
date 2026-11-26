@@ -337,7 +337,7 @@ DankMaterialShell (MIT); `NOTICE.md` carries both notices.
 | `subscribe` | `stream`, `params.interval` (ms, optional), `params.live` (bool, optional; §5.3). Any other `params` key belongs to the stream (the `apps` stream's `sort`, `limit`, `expand`; the `process` stream's `pid` and `start`; the `ports` stream's `udp` and `lite`). One sample is taken per tick and each subscriber gets its own view of it, shaped by its own params. Subscribing again to the same stream replaces the params. A stream that reads only what its subscribers name (`process`, `ports`) sends a subscriber whose params arrived during a sample nothing from that sample; the next, taken for it at once, is its first. Params a stream cannot serve are `bad-request` | The effective interval; then events |
 | `unsubscribe` | `stream` | — |
 | `get` | `stream`, `params` | One snapshot, no subscription, shaped by `params` as a subscription's view is. `stream` may be `<stream>.<query>` (`apps.inspect` with `params.pid` and optionally `params.start`, which answers `failed` "pid N is another process now" when the pid holds another process), answered by that stream's sampler; an unknown query is `unknown-stream` |
-| `history.query` | `series[]` (at most 64 distinct; a repeat counts once), `range` (`1h`, `24h`, `7d`, `30d`) or `from`/`to` (unix seconds, clamped to the 30 days kept and a minute ahead; a span with nothing kept is `bad-request`) | `from`, `to` and `bucketSec` as used (for `from`/`to`, the smallest range bucket that covers the span in 360 points, the span trimmed at its oldest end to the 360 epoch-aligned buckets that end it; a span wholly in the future is `bad-request` too); per series its `unit` and `points`, each `[unixSeconds, avg, max]` unscaled; empty buckets omitted |
+| `history.query` | `series[]` (at most 64 distinct; a repeat counts once), `range` (`1h`, `24h`, `7d`, `30d`) or `from`/`to` (unix seconds, clamped to the 30 days kept and a minute ahead; a span with nothing kept is `bad-request`) | `from`, `to` and `bucketSec` as used (for `from`/`to`, the smallest range bucket that covers the span in 360 points; a `from`/`to` span or a range's is trimmed at its oldest end to the 360 epoch-aligned buckets that end it; a span wholly in the future is `bad-request` too); per series its `unit` and `points`, each `[unixSeconds, avg, max]` unscaled; empty buckets omitted |
 | `history.events` | `kind`, `from`, `to` (clamped as for `history.query`) | Event rows |
 | `history.list` | — | The series history keeps: key, unit, scale |
 | `action` | `name`, `args`, `dryRun`; for a destructive action `confirm` (a boolean) and `plan` | What was done, or `wouldDo`. A destructive action without `confirm: true` and a plan is the error `needs-confirm`, whose `data` holds `plan`, `wouldDo`, `skipped` and `warnings` (§5.4) |
@@ -780,6 +780,10 @@ only in part.
 | 24 h | `sample` | 4 min | 360 |
 | 7 d | `sample` | 30 min | 336 |
 | 30 d | `sample` | 2 h | 360 |
+
+The points are for a query made on a bucket boundary. At any other moment
+the span starts inside a bucket: 7 d then touches 337, and 24 h and 30 d,
+which would touch 361, are trimmed at their oldest end to 360.
 
 `history.query` returns `avg` and `max` per bucket, so a short spike stays
 visible at 30 d. The 2 min range arrives on the live stream itself (each

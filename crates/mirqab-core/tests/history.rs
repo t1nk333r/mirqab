@@ -3,8 +3,9 @@
 //! pruning, a broken file moved aside, and 30 days × 64 series under 40 MB,
 //! with a `top-apps` event every minute (plan 006, part 4: the worst case).
 //! Audit fixes: the file and its directory are private (0600, 0700), a
-//! `from`/`to` span is clamped and bucketed, and a file found corrupt while
-//! open is moved aside and replaced.
+//! `from`/`to` span is clamped and bucketed, a range off a bucket boundary
+//! is trimmed to 360 points, and a file found corrupt while open is moved
+//! aside and replaced.
 
 use mirqab_core::history::{self, History};
 use mirqab_core::root::Root;
@@ -175,6 +176,32 @@ fn each_range_returns_its_bucket_count() {
         h.query(&["no.such"], NOW - 60, NOW, 60).unwrap()["series"]["no.such"],
         serde_json::Value::Null
     );
+}
+
+#[test]
+fn a_range_off_a_bucket_boundary_still_gives_at_most_360_points() {
+    // Plan 024, L3: the server's range span was not trimmed, so at a `now`
+    // off a 2-hour boundary 30 d touched 361 buckets, the oldest partial.
+    let d = scratch("unaligned");
+    let h = History::open(&d.0.join("history.db"), NOW).unwrap();
+    let now = NOW + 61 * 60 + 17;
+    // Every minute up to the one running at `now`, and more than 30 days
+    // back, so each bucket the span touches holds data.
+    fill_range(&h, &[1], 30 * 1440 + 200, -62);
+    // Untrimmed, 24 h and 30 d gave 361. 7 d touches 337 buckets here, one
+    // more than at a boundary, which is still under 360.
+    for (name, points) in [("1h", 60), ("24h", 360), ("7d", 337), ("30d", 360)] {
+        let (from, to, bucket) = history::range_span(name, now).unwrap();
+        assert_eq!(bucket, history::range(name).unwrap().1, "{name}");
+        assert_eq!(to, now + 1, "{name}");
+        let v = h.query(&["cpu.total"], from, to, bucket).unwrap();
+        assert_eq!(
+            v["series"]["cpu.total"]["points"].as_array().unwrap().len(),
+            points,
+            "{name}"
+        );
+    }
+    assert_eq!(history::range_span("2h", now), None);
 }
 
 #[test]

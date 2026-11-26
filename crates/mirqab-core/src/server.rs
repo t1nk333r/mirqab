@@ -1556,7 +1556,8 @@ impl Inner {
 
     /// `history.query`: `series[]` with `range` (1h, 24h, 7d, 30d) or
     /// `from`/`to` in unix seconds, clamped to what is kept and bucketed so
-    /// a series has at most `history::MAX_POINTS` points (`history::span`).
+    /// a series has at most `history::MAX_POINTS` points (`history::span`;
+    /// a range is trimmed the same way, `history::range_span`).
     /// A series named twice is answered once, and no more series than
     /// history holds are taken: each is one scan under the history lock,
     /// which the minute writer waits for (plan 001, deferred to plan 005).
@@ -1576,8 +1577,8 @@ impl Inner {
         }
         let now = unix_now();
         let (from, to, bucket) = match req.param("range").and_then(Value::as_str) {
-            Some(name) => match history::range(name) {
-                Some((span, bucket)) => (now - span, now + 1, bucket),
+            Some(name) => match history::range_span(name, now) {
+                Some(s) => s,
                 None => {
                     return Reply::err(req.id, Code::BadRequest, strings::unknown_range(name));
                 }
