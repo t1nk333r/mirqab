@@ -2,7 +2,9 @@
 //! `LC_ALL=C`, stdin closed unless given, and a timeout after which the child
 //! is killed. Output that is not UTF-8 is kept, lossily; once the child has
 //! exited, its pipes are read only until the same deadline, so a process it
-//! left running cannot hold the call. Tests put stubs first on `PATH`.
+//! left running cannot hold the call. A killed child that cannot die at
+//! once (stuck in uninterruptible sleep) is reaped on a thread of its own,
+//! so it cannot hold the call either. Tests put stubs first on `PATH`.
 
 use crate::proto::strings;
 use std::io::{Read, Write};
@@ -85,7 +87,7 @@ pub fn run(argv: &[&str], input: Option<&[u8]>, timeout: Duration) -> Result<Out
             Ok(Some(st)) => break st,
             Ok(None) if Instant::now() >= deadline => {
                 let _ = child.kill();
-                let _ = child.wait();
+                reap_or_detach(child, GRACE);
                 return Err(ExecError::Timeout);
             }
             Ok(None) => std::thread::sleep(POLL),
@@ -122,6 +124,40 @@ pub fn run(argv: &[&str], input: Option<&[u8]>, timeout: Duration) -> Result<Out
 
 /// How long output is still collected after a child exits at its deadline.
 const GRACE: Duration = Duration::from_millis(100);
+
+/// Reaping a killed child: a check that does not block, and a wait that
+/// does. `Child`, and a fake in the tests.
+trait Reap: Send + 'static {
+    /// Whether the child is gone: reaped, or no longer ours to wait for.
+    fn reaped(&mut self) -> bool;
+    fn wait(&mut self);
+}
+
+impl Reap for std::process::Child {
+    fn reaped(&mut self) -> bool {
+        !matches!(self.try_wait(), Ok(None))
+    }
+
+    fn wait(&mut self) {
+        let _ = std::process::Child::wait(self);
+    }
+}
+
+/// Waits up to `grace` for a killed child to die, then leaves it to a
+/// thread of its own. SIGKILL takes effect only once a task leaves
+/// uninterruptible sleep (`nvidia-smi` inside a hung driver call), and the
+/// timeout is the call's bound; the thread reaps the child whenever it
+/// dies, so no zombie stays (plan 024 L1).
+fn reap_or_detach(mut child: impl Reap, grace: Duration) {
+    let until = Instant::now() + grace;
+    while !child.reaped() {
+        if Instant::now() >= until {
+            std::thread::spawn(move || child.wait());
+            return;
+        }
+        std::thread::sleep(POLL);
+    }
+}
 
 /// What a reader thread sends: bytes from stream 0 (stdout) or 1 (stderr),
 /// or the end of its stream.
@@ -193,6 +229,33 @@ mod tests {
         let r = run(&["sleep", "5"], None, Duration::from_millis(100));
         assert!(matches!(r, Err(ExecError::Timeout)));
         assert!(t.elapsed() < Duration::from_secs(2));
+    }
+
+    #[test]
+    fn a_killed_child_that_cannot_die_is_reaped_on_its_own_thread() {
+        // Plan 024 L1: SIGKILL waits for a task in uninterruptible sleep,
+        // which no test can make, so a fake stands in: it never dies until
+        // released, and its wait reports when it ran.
+        struct Stuck(mpsc::Receiver<()>, mpsc::Sender<()>);
+        impl Reap for Stuck {
+            fn reaped(&mut self) -> bool {
+                false
+            }
+            fn wait(&mut self) {
+                let _ = self.0.recv();
+                let _ = self.1.send(());
+            }
+        }
+        let (release, released) = mpsc::channel();
+        let (reaped_tx, reaped) = mpsc::channel();
+        let t = Instant::now();
+        reap_or_detach(Stuck(released, reaped_tx), GRACE);
+        assert!(t.elapsed() < Duration::from_secs(1), "{:?}", t.elapsed());
+        assert!(reaped.try_recv().is_err(), "still stuck");
+        release.send(()).unwrap();
+        reaped
+            .recv_timeout(Duration::from_secs(5))
+            .expect("reaped once it could die");
     }
 
     #[test]

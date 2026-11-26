@@ -519,7 +519,10 @@ Streams: `system`, `apps`, `process`, `ports`, `agents`, `awake`, `disk`,
   a timeout, `LC_ALL=C`. Output that is not UTF-8 is kept lossily. After
   the child exits its pipes are read only until the same deadline (plus a
   100 ms grace), and the result is the child's status with what was read:
-  a process it left running holding the pipes cannot stall the call. Tests
+  a process it left running holding the pipes cannot stall the call. A
+  child killed at the timeout that does not die within 100 ms (stuck in
+  uninterruptible sleep, as `nvidia-smi` in a hung driver call) is reaped
+  on a thread of its own, so the timeout stays the call's bound. Tests
   put stubs first on `PATH`.
 
 ### 5.4 Actions and the dry-run contract
