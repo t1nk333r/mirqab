@@ -12,7 +12,7 @@ use crate::proto::stream::{
     Arch, GpuMemory, GroupRef, Inspect, OpenFiles, Package, ProcMemory, ProcRef, Sandbox, Verdict,
 };
 use crate::proto::{Code, strings};
-use crate::root::Root;
+use crate::root::{FileId, Root};
 use std::collections::HashMap;
 use std::time::Duration;
 
@@ -199,12 +199,24 @@ fn machine_name(m: u16) -> String {
     }
 }
 
-fn arch(root: &Root, pid: u32) -> Option<Arch> {
-    let (machine, bits) = root
-        .read_prefix(&format!("proc/{pid}/exe"), 20)
-        .ok()
-        .as_deref()
-        .and_then(elf)?;
+/// The first 20 bytes of the executable of the process at `dir`
+/// (`proc/<pid>`), and its device and inode. It is read only from a local
+/// filesystem (plan 024, C5 and C7): the inspector runs under the sampler
+/// lock, and an open on a FUSE or NFS mount waits on its server, so an
+/// executable on a hung one would hold every `apps` reader. As for
+/// `.flatpak-info`, a fixture without a mountinfo clears every mount.
+fn exe_head(root: &Root, dir: &str) -> Option<(Vec<u8>, FileId)> {
+    let rel = format!("{dir}/exe");
+    if root.is_host() || root.exists(&format!("{dir}/mountinfo")) {
+        root.read_regular_prefix_cleared(&rel, 20, procfs::local_now(root, dir))
+    } else {
+        root.read_regular_prefix_cleared(&rel, 20, |_| true)
+    }
+    .ok()
+}
+
+fn arch(root: &Root, head: &[u8]) -> Option<Arch> {
+    let (machine, bits) = elf(head)?;
     let own = root
         .read_prefix("proc/self/exe", 20)
         .ok()
@@ -402,6 +414,9 @@ pub struct Pending {
     out: Inspect,
     exe: String,
     in_home: bool,
+    /// For a process in another mount namespace, the file it runs: the
+    /// host's file at `exe` is asked about only when it is that file.
+    runs: Option<(Root, FileId)>,
 }
 
 /// The first half of the inspector: everything read from `proc/`.
@@ -521,7 +536,10 @@ pub fn read(root: &Root, pid: u32, ctx: &Ctx) -> Result<Read, (Code, String)> {
     if out.flatpak.is_none() {
         out.flatpak = procfs::read_flatpak_info(root, &dir);
     }
-    out.arch = arch(root, pid);
+    let exe_file = exe_head(root, &dir);
+    out.arch = exe_file.as_ref().and_then(|(head, _)| arch(root, head));
+    let namespaces = namespaces(root, pid);
+    let other_mnt = namespaces.iter().any(|n| n == "mnt");
     out.sandbox = Some(Sandbox {
         seccomp: status.seccomp.map(|s| {
             match s {
@@ -533,7 +551,7 @@ pub fn read(root: &Root, pid: u32, ctx: &Ctx) -> Result<Read, (Code, String)> {
         }),
         no_new_privs: status.no_new_privs.unwrap_or(false),
         capabilities: status.cap_eff.map(caps).unwrap_or_default(),
-        namespaces: namespaces(root, pid),
+        namespaces,
     });
     if let Some(m) = &mut out.memory {
         let (pss, swap) = root
@@ -548,8 +566,18 @@ pub fn read(root: &Root, pid: u32, ctx: &Ctx) -> Result<Read, (Code, String)> {
     out.gpu = fds.as_deref().and_then(|f| gpu(root, pid, f));
 
     // A path inside a sandbox or a container names a file of its own
-    // tree, which the host's package database knows nothing about.
-    let sandboxed = out.flatpak.is_some() || out.container.is_some();
+    // tree, which the host's package database knows nothing about. So may
+    // a path seen from any other mount namespace (bubblewrap, a user
+    // namespace with a bind mount over `/usr/bin/bash`): there the host's
+    // file at that path is asked about only when it is the file the
+    // process runs (plan 024, C11). `finish` compares the two, with no
+    // lock held, through the daemon's local mounts only (`host_file_id`);
+    // a file that could not be reached is no match.
+    let runs = exe_file
+        .filter(|_| other_mnt)
+        .map(|(_, id)| (root.clone(), id));
+    let sandboxed =
+        out.flatpak.is_some() || out.container.is_some() || (other_mnt && runs.is_none());
     let home = user
         .map(|u| u.home.as_str())
         .or(ctx.own_home)
@@ -560,7 +588,12 @@ pub fn read(root: &Root, pid: u32, ctx: &Ctx) -> Result<Read, (Code, String)> {
     };
     same(st.start)?;
     match out.exe.clone() {
-        Some(exe) if !sandboxed => Ok(Read::Owner(Box::new(Pending { out, exe, in_home }))),
+        Some(exe) if !sandboxed => Ok(Read::Owner(Box::new(Pending {
+            out,
+            exe,
+            in_home,
+            runs,
+        }))),
         _ => {
             out.verdict = verdict_for(&out, Owner::Unknown, in_home);
             Ok(Read::Done(Box::new(out)))
@@ -569,18 +602,47 @@ pub fn read(root: &Root, pid: u32, ctx: &Ctx) -> Result<Read, (Code, String)> {
 }
 
 /// The second half: asks who owns the executable and forms the verdict.
-pub fn finish(p: Pending, owners: &mut Owners) -> Inspect {
+/// `owner` is the one call that takes the `Owners` lock (pacman, up to
+/// 5 s), and it runs only after the host's file was found to be the one
+/// the process runs, so that check never holds the lock (plan 024, review
+/// of C11).
+pub fn finish(p: Pending, owner: impl FnOnce(&str) -> Owner) -> Inspect {
     let Pending {
         mut out,
         exe,
         in_home,
+        runs,
     } = p;
-    let owner = owners.owner(&exe);
+    if let Some((root, id)) = runs
+        && host_file_id(&root, &exe) != Some(id)
+    {
+        out.verdict = verdict_for(&out, Owner::Unknown, in_home);
+        return out;
+    }
+    let owner = owner(&exe);
     if let Owner::Package(pkg) = &owner {
         out.package = Some(pkg.clone());
     }
     out.verdict = verdict_for(&out, owner, in_home);
     out
+}
+
+/// The device and inode of the host's file at `exe`, the text of another
+/// mount namespace's `proc/<pid>/exe`, which that process chooses. It is
+/// walked one component at a time, and no name is looked up on a mount the
+/// daemon's own mountinfo does not list as a local filesystem
+/// (`Root::file_id_cleared`, `procfs::local_now`): a plain `stat` of a path
+/// through a hung FUSE mount would wait for good. None, no match, for
+/// anything else. A fixture without `proc/self/mountinfo` clears every
+/// mount, as for the executable's read.
+fn host_file_id(root: &Root, exe: &str) -> Option<FileId> {
+    let rel = exe.trim_start_matches('/');
+    if root.is_host() || root.exists("proc/self/mountinfo") {
+        root.file_id_cleared(rel, procfs::local_now(root, "proc/self"))
+    } else {
+        root.file_id_cleared(rel, |_| true)
+    }
+    .ok()
 }
 
 /// The verdict from fixed rules, in order.
@@ -637,5 +699,53 @@ mod tests {
         assert_eq!(fdinfo_bytes("2 MiB"), Some(2 << 20));
         assert_eq!(fdinfo_bytes("100"), Some(100));
         assert_eq!(fdinfo_bytes("x"), None);
+    }
+
+    #[test]
+    fn the_owner_is_asked_only_after_the_hosts_file_is_checked() {
+        // Plan 024, review of C11: `owner` is the call that takes the
+        // `Owners` lock (mod.rs), so the check of the host's file runs
+        // before it and a refusal or a mismatch never reaches it. The check
+        // itself looks nothing up on a mount the daemon's mountinfo does
+        // not list as local: here the scratch tree reads as a FUSE mount.
+        let d = std::env::temp_dir().join(format!(
+            "mirqab-finish-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = crate::act::remove_path(&d, false);
+        std::fs::create_dir_all(d.join("usr/bin")).unwrap();
+        std::fs::create_dir_all(d.join("proc/self")).unwrap();
+        std::fs::write(d.join("usr/bin/tool"), "x").unwrap();
+        std::fs::write(d.join("usr/bin/other"), "y").unwrap();
+        let root = Root::new(&d);
+        let id = root.file_id("usr/bin/tool").unwrap();
+        let mnt = root.mount_id("usr/bin/tool").unwrap();
+        let pending = |file: &str| Pending {
+            out: Inspect::default(),
+            exe: format!("/usr/bin/{file}"),
+            in_home: false,
+            runs: Some((root.clone(), id)),
+        };
+        let run = |file: &str, fstype: &str| {
+            std::fs::write(
+                d.join("proc/self/mountinfo"),
+                format!("{mnt} 1 0:40 / / rw - {fstype} x rw\n"),
+            )
+            .unwrap();
+            let asked = std::cell::RefCell::new(Vec::new());
+            let out = finish(pending(file), |exe| {
+                asked.borrow_mut().push(exe.to_string());
+                Owner::NotOwned
+            });
+            (out.verdict.code, asked.into_inner())
+        };
+        assert_eq!(run("tool", "fuse.example"), ("unknown".into(), vec![]));
+        assert_eq!(run("other", "ext4"), ("unknown".into(), vec![]));
+        assert_eq!(
+            run("tool", "ext4"),
+            ("unowned".into(), vec!["/usr/bin/tool".to_string()])
+        );
+        let _ = crate::act::remove_path(&d, false);
     }
 }

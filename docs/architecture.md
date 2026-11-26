@@ -492,9 +492,11 @@ Streams: `system`, `apps`, `process`, `ports`, `agents`, `awake`, `disk`,
   `rssBytes` sums them. Root's and other users' sockets keep their uid,
   with `pid` null and `pids` empty: mirqab never guesses.
   The owner map is rebuilt only when the user's listening inodes change,
-  when a mapped pid is gone or is another process, or on every `get` that
-  does not ask for `lite`. Between rebuilds, a tick reads `stat` and
-  `statm` of the mapped pids.
+  when a mapped pid is gone or is another process, when the map is 30 s
+  old (a worker forked after the build holds a mapped socket without
+  changing either), or on every `get` that does not ask for `lite`.
+  Between rebuilds, a tick reads `stat` and `statm` of the mapped pids.
+  While the user has no listening socket, a rebuild walks no process.
   While every subscriber is `lite`, no process is read: only the socket
   tables are read, plus the interface table when a bind address needs it.
   A lite subscriber gets `{lite, total, exposedCount, leftBehindCount,

@@ -9,6 +9,9 @@ use std::path::{Component, Path, PathBuf};
 /// path under it is a GPU client's (plan 006, part 4, decision 13).
 pub const DRM_DIR: &str = "/dev/dri/";
 
+/// A file's device and inode numbers: the same pair is the same file.
+pub type FileId = (u64, u64);
+
 #[derive(Debug, Clone)]
 pub struct Root {
     base: PathBuf,
@@ -168,6 +171,149 @@ impl Root {
         let mut buf = Vec::with_capacity(n.min(64 * 1024));
         file.take(n as u64).read_to_end(&mut buf)?;
         Ok(buf)
+    }
+
+    /// At most the first `n` bytes of `rel` and the file's device and
+    /// inode, when it resolves to a regular file on a mount `clear` accepts
+    /// by id. Links are followed (a Flatpak export is one, and
+    /// `proc/<pid>/exe` is the reason for this function), and nothing on an
+    /// uncleared mount is opened (plan 024, C5, C7 and C10):
+    ///
+    /// 1. `rel` is opened with O_PATH, which runs no filesystem's open; a
+    ///    FIFO or a device opened so does not block either. Following
+    ///    `proc/<pid>/exe` jumps to the executable's dentry and looks
+    ///    nothing up.
+    /// 2. Its mount id goes to `clear`, which reads its state after the
+    ///    pin, as in `read_regular_prefix_in`.
+    /// 3. Only then is it checked to be a regular file (fstat on FUSE may
+    ///    ask its server, so not before) and reopened for reading through
+    ///    the pinned descriptor, with O_NONBLOCK and O_NOCTTY as in
+    ///    `read_regular_prefix`.
+    ///
+    /// A path walk that crosses a mount still looks each name up, so this
+    /// guards the file a link names, not every directory on the way to it.
+    /// On a fixture root a link that leaves the tree is refused, as in
+    /// `read_prefix`.
+    pub fn read_regular_prefix_cleared(
+        &self,
+        rel: &str,
+        n: usize,
+        clear: impl Fn(u64) -> bool,
+    ) -> io::Result<(Vec<u8>, FileId)> {
+        use std::io::Read;
+        use std::os::fd::AsRawFd;
+        use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+        let path = self.path(rel)?;
+        if !self.is_host() {
+            let real = std::fs::canonicalize(&path)?;
+            let base = std::fs::canonicalize(&self.base)?;
+            if !real.starts_with(&base) {
+                return Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    format!("link leaves the root: {rel}"),
+                ));
+            }
+        }
+        let open = |p: &Path, flags: libc::c_int| {
+            std::fs::OpenOptions::new()
+                .read(true)
+                .custom_flags(flags)
+                .open(p)
+        };
+        let pinned = open(&path, libc::O_PATH)?;
+        if !clear(pinned_mount_id(&pinned)?) {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                format!("{rel} is not on a cleared mount"),
+            ));
+        }
+        let meta = pinned.metadata()?;
+        if !meta.is_file() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("not a regular file: {rel}"),
+            ));
+        }
+        let reader = open(
+            Path::new(&format!("/proc/self/fd/{}", pinned.as_raw_fd())),
+            libc::O_NONBLOCK | libc::O_NOCTTY,
+        )?;
+        let mut buf = Vec::with_capacity(n.min(64 * 1024));
+        reader.take(n as u64).read_to_end(&mut buf)?;
+        Ok((buf, (meta.dev(), meta.ino())))
+    }
+
+    /// The device and inode `rel` resolves to, or None when it cannot be
+    /// read: whether two paths name one file.
+    pub fn file_id(&self, rel: &str) -> Option<FileId> {
+        use std::os::unix::fs::MetadataExt;
+        let m = std::fs::metadata(self.path(rel).ok()?).ok()?;
+        Some((m.dev(), m.ino()))
+    }
+
+    /// The device and inode of `rel`, found one component at a time so
+    /// that no name is looked up in a directory on a mount `clear` does not
+    /// accept by id (plan 024, review of C11). The path can come from a
+    /// process in another mount namespace, which chooses it, and a lookup
+    /// or a `stat` on a FUSE mount waits on its server for as long as it
+    /// likes:
+    ///
+    /// 1. The root is opened with O_PATH and its mount id goes to `clear`.
+    /// 2. Each component is opened O_PATH|O_NOFOLLOW through the pinned
+    ///    descriptor of the directory before it (`/proc/self/fd/N/name`),
+    ///    which was cleared already; its own mount id is cleared next,
+    ///    since a lookup may cross onto a mount placed on it.
+    /// 3. Only a cleared descriptor is asked for its metadata. A component
+    ///    before the last must be a directory, so a symlink there is
+    ///    refused, not followed; a symlink as the last gives its own id.
+    ///
+    /// O_DIRECTORY is not passed, so an automount point is not triggered.
+    /// `clear` reads its state at each call, for the reason
+    /// `read_regular_prefix_in` gives.
+    pub fn file_id_cleared(&self, rel: &str, clear: impl Fn(u64) -> bool) -> io::Result<FileId> {
+        use std::os::fd::AsRawFd;
+        use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+        let invalid = |what: String| io::Error::new(io::ErrorKind::InvalidInput, what);
+        let mut parts = Vec::new();
+        for c in Path::new(rel).components() {
+            match c {
+                Component::Normal(part) => parts.push(part),
+                Component::CurDir => {}
+                _ => return Err(invalid(format!("not a plain path: {rel}"))),
+            }
+        }
+        if parts.is_empty() {
+            return Err(invalid(format!("no name: {rel:?}")));
+        }
+        let open = |p: &Path, flags: libc::c_int| {
+            std::fs::OpenOptions::new()
+                .read(true)
+                .custom_flags(flags)
+                .open(p)
+        };
+        let check = |f: &std::fs::File| -> io::Result<()> {
+            if clear(pinned_mount_id(f)?) {
+                Ok(())
+            } else {
+                Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    format!("{rel} crosses an uncleared mount"),
+                ))
+            }
+        };
+        let mut cur = open(&self.base, libc::O_PATH | libc::O_DIRECTORY)?;
+        check(&cur)?;
+        let mut meta = cur.metadata()?;
+        for part in parts {
+            if !meta.is_dir() {
+                return Err(invalid(format!("not a directory on the way to {rel}")));
+            }
+            let at = PathBuf::from(format!("/proc/self/fd/{}", cur.as_raw_fd())).join(part);
+            cur = open(&at, libc::O_PATH | libc::O_NOFOLLOW)?;
+            check(&cur)?;
+            meta = cur.metadata()?;
+        }
+        Ok((meta.dev(), meta.ino()))
     }
 
     /// At most the first `n` bytes of `name` inside the directory `dir`
@@ -402,6 +548,112 @@ mod tests {
                 .unwrap_err();
             assert_eq!(e.kind(), std::io::ErrorKind::InvalidInput, "{name}: {e}");
         }
+    }
+
+    #[test]
+    fn a_cleared_read_opens_nothing_on_a_refused_mount() {
+        // Plan 024, C5 and C7: the link is pinned with O_PATH and its
+        // mount refused before anything is opened. A plain open of a FIFO
+        // with no writer blocks, so an answer at all proves it was not
+        // opened; with the mount cleared it is still no regular file.
+        let s = scratch("cleared-fifo");
+        let dir = s.0.join("proc/1");
+        let fifo = s.0.join("fifo");
+        let made = crate::exec::run(
+            &["mkfifo", &fifo.to_string_lossy()],
+            None,
+            std::time::Duration::from_secs(5),
+        )
+        .unwrap();
+        assert!(made.success(), "{made:?}");
+        std::os::unix::fs::symlink(&fifo, dir.join("exe")).unwrap();
+        let r = Root::new(&s.0);
+        let mnt = r.mount_id("proc/1").unwrap();
+        let asked = std::cell::RefCell::new(Vec::new());
+        let e = r
+            .read_regular_prefix_cleared("proc/1/exe", 20, |id| {
+                asked.borrow_mut().push(id);
+                false
+            })
+            .unwrap_err();
+        assert_eq!(e.kind(), std::io::ErrorKind::PermissionDenied, "{e}");
+        assert_eq!(*asked.borrow(), [mnt]);
+        let e = r
+            .read_regular_prefix_cleared("proc/1/exe", 20, |_| true)
+            .unwrap_err();
+        assert_eq!(e.kind(), std::io::ErrorKind::InvalidInput, "{e}");
+    }
+
+    #[test]
+    fn a_cleared_read_follows_a_link_to_a_regular_file() {
+        let s = scratch("cleared-read");
+        std::fs::write(s.0.join("program"), "abcdef").unwrap();
+        std::os::unix::fs::symlink(s.0.join("program"), s.0.join("proc/1/exe")).unwrap();
+        let r = Root::new(&s.0);
+        let (head, id) = r
+            .read_regular_prefix_cleared("proc/1/exe", 4, |_| true)
+            .unwrap();
+        assert_eq!(head, b"abcd");
+        assert_eq!(Some(id), r.file_id("program"));
+        assert_ne!(Some(id), r.file_id("proc/1"));
+        // A link out of a fixture tree is not followed.
+        let out = scratch("cleared-out");
+        std::fs::write(out.0.join("program"), "x").unwrap();
+        std::os::unix::fs::symlink(out.0.join("program"), s.0.join("proc/2")).unwrap();
+        let e = r
+            .read_regular_prefix_cleared("proc/2", 4, |_| true)
+            .unwrap_err();
+        assert_eq!(e.kind(), std::io::ErrorKind::PermissionDenied, "{e}");
+    }
+
+    #[test]
+    fn a_cleared_file_id_asks_about_each_mount_before_looking_inside() {
+        // Plan 024, review of C11: the host's path comes from another mount
+        // namespace, and a lookup on a hung FUSE mount waits for good, so
+        // each directory's mount is cleared before a name is looked up in
+        // it. A refused root is refused before the (missing) name is looked
+        // up: the error is a refusal, not "not found", and only the root's
+        // mount was asked about.
+        let s = scratch("id-order");
+        std::fs::create_dir_all(s.0.join("usr/bin")).unwrap();
+        std::fs::write(s.0.join("usr/bin/tool"), "x").unwrap();
+        let r = Root::new(&s.0);
+        let mnt = r.mount_id("usr").unwrap();
+        let asked = std::cell::RefCell::new(Vec::new());
+        let e = r
+            .file_id_cleared("absent/tool", |id| {
+                asked.borrow_mut().push(id);
+                false
+            })
+            .unwrap_err();
+        assert_eq!(e.kind(), std::io::ErrorKind::PermissionDenied, "{e}");
+        assert_eq!(*asked.borrow(), [mnt]);
+        // Cleared, every component is asked about: the root, usr, bin and
+        // tool, and the id is the file's.
+        asked.borrow_mut().clear();
+        let got = r.file_id_cleared("usr/bin/tool", |id| {
+            asked.borrow_mut().push(id);
+            true
+        });
+        assert_eq!(got.unwrap(), r.file_id("usr/bin/tool").unwrap());
+        assert_eq!(asked.borrow().len(), 4);
+    }
+
+    #[test]
+    fn a_cleared_file_id_follows_no_symlink_on_the_way() {
+        let s = scratch("id-link");
+        std::fs::create_dir_all(s.0.join("usr/bin")).unwrap();
+        std::fs::write(s.0.join("usr/bin/tool"), "x").unwrap();
+        std::os::unix::fs::symlink("usr/bin", s.0.join("bin")).unwrap();
+        std::os::unix::fs::symlink("tool", s.0.join("usr/bin/alias")).unwrap();
+        let r = Root::new(&s.0);
+        let tool = r.file_id("usr/bin/tool").unwrap();
+        let e = r.file_id_cleared("bin/tool", |_| true).unwrap_err();
+        assert_eq!(e.kind(), std::io::ErrorKind::InvalidInput, "{e}");
+        // The last component names itself, so a link there is not the file.
+        assert_ne!(r.file_id_cleared("usr/bin/alias", |_| true).unwrap(), tool);
+        assert!(r.file_id_cleared("usr/../usr/bin/tool", |_| true).is_err());
+        assert!(r.file_id_cleared("/usr/bin/tool", |_| true).is_err());
     }
 
     #[test]

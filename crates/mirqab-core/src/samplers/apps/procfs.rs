@@ -206,10 +206,41 @@ pub fn tmpfs_now<'a>(root: &'a Root, dir: &str) -> impl Fn(u64) -> bool + 'a {
 /// fields are escaped as `\040`, so neither split can be fooled by a name.
 /// A mount that is not listed, or a line without a type, is not cleared.
 pub fn tmpfs_mount(mountinfo: &str, id: u64) -> bool {
-    mountinfo.lines().any(|l| {
+    mount_type(mountinfo, id) == Some("tmpfs")
+}
+
+/// The type `mountinfo` gives the mount with id `id`, as `tmpfs_mount`
+/// reads it; None when it is not listed or has no type.
+fn mount_type(mountinfo: &str, id: u64) -> Option<&str> {
+    mountinfo.lines().find_map(|l| {
         let mine = l.split(' ').next().and_then(|v| v.parse::<u64>().ok()) == Some(id);
-        mine && l.split(" - ").nth(1).and_then(|r| r.split(' ').next()) == Some("tmpfs")
+        mine.then(|| l.split(" - ").nth(1).and_then(|r| r.split(' ').next()))
+            .flatten()
     })
+}
+
+/// Filesystems whose open waits on no server: block-device and memory
+/// filesystems. FUSE, NFS, SMB, 9p, Ceph and virtiofs are left out, and so
+/// is an overlay, whose lower layer may be FUSE.
+const LOCAL_TYPES: &[&str] = &[
+    "ext2", "ext3", "ext4", "btrfs", "xfs", "f2fs", "bcachefs", "zfs", "jfs", "nilfs2", "tmpfs",
+    "ramfs", "squashfs", "erofs", "iso9660", "udf", "vfat", "exfat", "ntfs3",
+];
+
+/// Whether `mountinfo` lists the mount with id `id` as a local filesystem
+/// (`LOCAL_TYPES`).
+pub fn local_mount(mountinfo: &str, id: u64) -> bool {
+    mount_type(mountinfo, id).is_some_and(|t| LOCAL_TYPES.contains(&t))
+}
+
+/// The `clear` of the inspector's executable read (plan 024, C5 and C7):
+/// whether the process at `dir` (`proc/<pid>`) has the mount with id `id`
+/// as a local filesystem, by its mountinfo read anew on each call, for the
+/// reason `tmpfs_now` gives. A mountinfo that cannot be read clears
+/// nothing.
+pub fn local_now<'a>(root: &'a Root, dir: &str) -> impl Fn(u64) -> bool + 'a {
+    let rel = format!("{dir}/mountinfo");
+    move |id| read_text(root, &rel).is_some_and(|t| local_mount(&t, id))
 }
 
 /// One account of `etc/passwd`.
@@ -278,7 +309,8 @@ pub fn is_kernel(st: &Stat) -> bool {
 }
 
 /// The command name, or the program's file name when the kernel cut the
-/// name short (`devserver-worke` → `devserver-worker`).
+/// name short (`devserver-worke` → `devserver-worker`) and that file name
+/// is a plain name (`plain_name`).
 ///
 /// The kernel cuts at byte 15, which may split a UTF-8 character;
 /// `read_text` turns its 1 to 3 stray bytes into one U+FFFD, so one
@@ -294,12 +326,31 @@ pub fn display_name(comm: &str, cmdline: &[String]) -> String {
     };
     if long
         && !prefix.contains('\u{FFFD}')
-        && let Some(base) = cmdline.first().map(|a| basename(a))
+        && let Some(base) = cmdline.first().and_then(|a| plain_name(a))
         && base.starts_with(prefix)
     {
         return base.to_string();
     }
     comm.to_string()
+}
+
+/// The longest name taken from a command line.
+const NAME_MAX: usize = 64;
+
+/// The file name of `arg`, a command-line argument, when it is one name:
+/// not empty, at most `NAME_MAX` bytes, and nothing in `arg` whitespace
+/// or a control character. A name taken from a command line reaches the
+/// top-apps history row and agents, which never hold a command line
+/// (audit of plan 006): a title a program wrote over its argv[0] (`npm
+/// install --save-dev x`) is not one (plan 024, C12). Any other character
+/// may be in a command name (audit 2026-11-21, L5); a job's script name
+/// is held to fewer (`group::script_and_rest`).
+pub(crate) fn plain_name(arg: &str) -> Option<&str> {
+    let name = basename(arg);
+    (!name.is_empty()
+        && name.len() <= NAME_MAX
+        && !arg.chars().any(|c| c.is_whitespace() || c.is_control()))
+    .then_some(name)
 }
 
 pub fn basename(path: &str) -> &str {
@@ -345,6 +396,17 @@ struct Known {
 #[derive(Default)]
 pub struct Cache {
     known: HashMap<u32, Known>,
+}
+
+impl Cache {
+    /// The processes it knows.
+    pub fn len(&self) -> usize {
+        self.known.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.known.is_empty()
+    }
 }
 
 /// Every process now, kernel threads included (the caller hides them).
@@ -493,6 +555,41 @@ mod tests {
         let cut = ["/usr/bin/devserver-worker".to_string()];
         assert_eq!(display_name("devserver-worke", &cut), "devserver-worker");
         assert_eq!(display_name("short", &cut), "short");
+    }
+
+    #[test]
+    fn display_name_takes_no_title_with_arguments() {
+        // Plan 024, C12: libuv's process.title and setproctitle write one
+        // title over argv[0] and cut comm to its first 15 bytes. The title
+        // holds the arguments, which a group's name must never carry.
+        let title = ["npm install --save-dev typescript".to_string()];
+        assert_eq!(display_name("npm install --s", &title), "npm install --s");
+        for arg in ["devserver-worker\tx", "devserver-worker\nx"] {
+            assert_eq!(
+                display_name("devserver-worke", &[arg.to_string()]),
+                "devserver-worke",
+                "{arg:?}"
+            );
+        }
+        let long = format!("devserver-worke{}", "r".repeat(60));
+        assert_eq!(display_name("devserver-worke", &[long]), "devserver-worke");
+        let cut = ["/usr/bin/devserver-worker".to_string()];
+        assert_eq!(display_name("devserver-worke", &cut), "devserver-worker");
+    }
+
+    #[test]
+    fn mount_types_are_read_by_id() {
+        let info = "21 1 254:1 / / rw - ext4 /dev/x rw\n\
+                    22 21 0:40 / /mnt/a rw - fuse.sshfs example:/ rw\n\
+                    23 21 0:41 / /srv\\040x rw shared:3 - tmpfs tmpfs rw\n\
+                    24 21 0:42 / /c rw - overlay overlay rw\n\
+                    25 21 0:43 / /d rw\n";
+        assert!(local_mount(info, 21));
+        assert!(local_mount(info, 23));
+        assert!(tmpfs_mount(info, 23) && !tmpfs_mount(info, 21));
+        for id in [22, 24, 25, 26] {
+            assert!(!local_mount(info, id), "{id}");
+        }
     }
 
     #[test]

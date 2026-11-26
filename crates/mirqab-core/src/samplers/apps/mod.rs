@@ -219,6 +219,11 @@ impl Apps {
         self.windows.len()
     }
 
+    /// Processes whose command line the cache holds (tests).
+    pub fn cached(&self) -> usize {
+        self.cache.len()
+    }
+
     fn walk(&mut self, root: &Root) -> Vec<Proc> {
         self.walks += 1;
         self.desktop.refresh(root);
@@ -605,9 +610,13 @@ impl Sampler for Apps {
         data
     }
 
-    /// The last subscriber left: the focus source stops (no thread, no
-    /// socket while the window is closed), and the windows and the last
-    /// frame go, so a page opened later counts afresh. The primed readings
+    /// The last subscriber left, or a `get` ended with none: the focus
+    /// source stops (no thread, no socket while the window is closed), and
+    /// the windows, the last frame, the subscriber baseline and the process
+    /// cache (every process's command line) go, so a page opened later
+    /// counts afresh (plan 024, L27; the minute walk, while `top-apps` is
+    /// on, fills the cache again at its cost of one full read of each
+    /// process). The primed readings
     /// are the pending gets', not the subscribers': they stay, or a get in
     /// its gap would find none and sleep under the lock (plan 023's
     /// follow-up). Its `snapshot` takes each, and drops any past 10 s.
@@ -616,6 +625,8 @@ impl Sampler for Apps {
         self.focus_retry = None;
         self.windows.clear();
         self.last = None;
+        self.live = None;
+        self.cache = Cache::default();
     }
 
     /// `get`: the first reading, here under the lock, and half a second
@@ -711,10 +722,11 @@ impl Sampler for Apps {
             Ok(inspect::Read::Done(i)) => Answer::Ready(Ok(to_value(&i))),
             Ok(inspect::Read::Owner(p)) => {
                 // pacman, up to 5 s a call, after the server let go of
-                // this sampler's lock.
+                // this sampler's lock. The `Owners` lock is taken only for
+                // that call, after `finish` has checked the host's file.
                 let owners = Arc::clone(&self.owners);
                 Answer::Later(Box::new(move || {
-                    let i = inspect::finish(*p, &mut lock(&owners));
+                    let i = inspect::finish(*p, |exe| lock(&owners).owner(exe));
                     Ok(to_value(&i))
                 }))
             }
