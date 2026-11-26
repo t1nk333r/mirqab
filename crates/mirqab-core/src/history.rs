@@ -269,7 +269,7 @@ fn open_private(path: &Path) -> Result<Connection, HistoryError> {
     private_file(path)?;
     let conn = open_conn(path)?;
     for suffix in ["-wal", "-shm"] {
-        let side = PathBuf::from(format!("{}{suffix}", path.display()));
+        let side = beside(path, suffix);
         if side.exists() {
             private_file(&side)?;
         }
@@ -310,38 +310,50 @@ fn open_conn(path: &Path) -> Result<Connection, HistoryError> {
     Ok(conn)
 }
 
-/// `path` with `suffix` added to its file name (`-wal`, `-shm`).
+/// `path` with `suffix` added to its file name (`-wal`, `-shm`). Built
+/// from the path's bytes: `display()` turns a byte that is not UTF-8 into
+/// U+FFFD, and a log then named wrongly was never moved aside with its file
+/// (plan 024, L14).
 fn beside(path: &Path, suffix: &str) -> PathBuf {
-    PathBuf::from(format!("{}{suffix}", path.display()))
+    let mut s = path.as_os_str().to_owned();
+    s.push(suffix);
+    PathBuf::from(s)
 }
 
 /// Renames a file SQLite called corrupt, with its log and shared memory,
 /// to `<name>.broken-<now>`, or `.broken-<now>.1` and on when that or its
 /// log is there already: an earlier one is never overwritten. Returns the
-/// new name. A log or shared memory that cannot be moved puts back what
-/// moved and fails: left beside a new file, an old log would be replayed
-/// into it (review of PR #26).
-fn move_aside(path: &Path, now_unix: i64) -> std::io::Result<PathBuf> {
+/// new name, or None when the file itself was gone (deleted by hand to
+/// start over; plan 024, L2): a log or shared memory left behind is still
+/// moved. A log or shared memory that cannot be moved puts back what moved
+/// and fails: left beside a new file, an old log would be replayed into it
+/// (review of PR #26).
+fn move_aside(path: &Path, now_unix: i64) -> std::io::Result<Option<PathBuf>> {
     const SIDES: [&str; 2] = ["-wal", "-shm"];
-    let name = path
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_default();
+    let name = path.file_name().unwrap_or_default();
     let taken = |p: &Path| {
         ["", SIDES[0], SIDES[1]]
             .iter()
             .any(|s| std::fs::symlink_metadata(beside(p, s)).is_ok())
     };
     let aside = (0..1000)
-        .map(|n| match n {
-            0 => path.with_file_name(format!("{name}.broken-{now_unix}")),
-            n => path.with_file_name(format!("{name}.broken-{now_unix}.{n}")),
+        .map(|n| {
+            let mut s = name.to_owned();
+            s.push(format!(".broken-{now_unix}"));
+            if n > 0 {
+                s.push(format!(".{n}"));
+            }
+            path.with_file_name(s)
         })
         .find(|p| !taken(p))
         .ok_or_else(|| {
             std::io::Error::new(ErrorKind::AlreadyExists, strings::HISTORY_ASIDE_TAKEN)
         })?;
-    std::fs::rename(path, &aside)?;
+    let main = match std::fs::rename(path, &aside) {
+        Ok(()) => true,
+        Err(e) if e.kind() == ErrorKind::NotFound => false,
+        Err(e) => return Err(e),
+    };
     let mut moved: Vec<&str> = Vec::new();
     for s in SIDES {
         let side = beside(path, s);
@@ -352,12 +364,14 @@ fn move_aside(path: &Path, now_unix: i64) -> std::io::Result<PathBuf> {
             for m in moved.iter().rev() {
                 let _ = std::fs::rename(beside(&aside, m), beside(path, m));
             }
-            let _ = std::fs::rename(&aside, path);
+            if main {
+                let _ = std::fs::rename(&aside, path);
+            }
             return Err(e);
         }
         moved.push(s);
     }
-    Ok(aside)
+    Ok(main.then_some(aside))
 }
 
 impl History {
@@ -375,7 +389,10 @@ impl History {
 
     /// Opens or creates the file. One that cannot be opened is renamed
     /// `history.db.broken-<unix time>` and a new one is made; `moved_aside`
-    /// says so for `status`.
+    /// says so for `status`. When that move or the new file fails, the
+    /// History returned is off (`broken` says why) and `recover` tries
+    /// again, as for damage found while open (plan 024, C13: history stayed
+    /// off until a restart).
     pub fn open(path: &Path, now_unix: i64) -> Result<History, HistoryError> {
         History::open_with(path, now_unix, true)
     }
@@ -391,12 +408,16 @@ impl History {
             // aside. A newer schema, a permission error, a full disk or a
             // lock leaves the file alone and history off (review of phase C:
             // each of those hid thirty days of data).
-            Err(first) if first.1 && may_move => {
-                let aside = move_aside(path, now_unix).map_err(|e| {
-                    HistoryError::msg(format!("{first}; and moving it aside failed: {e}"))
-                })?;
-                (open_private(path)?, Some(aside))
-            }
+            Err(first) if first.1 && may_move => match move_aside(path, now_unix) {
+                Err(e) => {
+                    let why = strings::history_move_aside_failed(&first.0, &e.to_string());
+                    return History::off(path, why, true, None, now_unix);
+                }
+                Ok(aside) => match open_private(path) {
+                    Ok(c) => (c, aside),
+                    Err(e) => return History::off(path, e.0, e.1, aside, now_unix),
+                },
+            },
             Err(other) => return Err(other),
         };
         let mut h = History {
@@ -423,6 +444,27 @@ impl History {
             h.register(key, unit, *scale)?;
         }
         Ok(h)
+    }
+
+    /// A History that is off for `why`, for `recover` to finish: the file
+    /// is still corrupt in place when `corrupt`, and `aside` is where it
+    /// was moved when it was.
+    fn off(
+        path: &Path,
+        why: String,
+        corrupt: bool,
+        aside: Option<PathBuf>,
+        now_unix: i64,
+    ) -> Result<History, HistoryError> {
+        Ok(History {
+            conn: Connection::open_in_memory()?,
+            path: path.to_path_buf(),
+            ids: BTreeMap::new(),
+            last_replaced: aside.as_ref().map(|_| now_unix),
+            moved_aside: aside,
+            broken: Some(why),
+            corrupt_in_place: corrupt,
+        })
     }
 
     pub fn path(&self) -> &Path {
@@ -456,8 +498,14 @@ impl History {
             Connection::open_in_memory()?,
         ));
         if self.corrupt_in_place {
+            // A file deleted since it was found corrupt (the user starting
+            // over) is nothing to wait for or move (plan 024, L2: the
+            // rename failed every minute until a restart).
+            let gone = std::fs::symlink_metadata(&self.path)
+                .is_err_and(|e| e.kind() == ErrorKind::NotFound);
             // A clock set back counts as past the backoff.
-            if let Some(t) = self.last_replaced
+            if !gone
+                && let Some(t) = self.last_replaced
                 && (0..RECOVER_BACKOFF_SECS).contains(&(now_unix - t))
             {
                 return Err(HistoryError::msg(strings::history_damaged_again(
@@ -467,8 +515,10 @@ impl History {
             let aside = move_aside(&self.path, now_unix)
                 .map_err(|e| HistoryError::msg(format!("{}: {e}", self.path.display())))?;
             self.corrupt_in_place = false;
-            self.moved_aside = Some(aside);
-            self.last_replaced = Some(now_unix);
+            if aside.is_some() {
+                self.moved_aside = aside;
+                self.last_replaced = Some(now_unix);
+            }
         }
         // Every move goes through the backoff above: a new file that is
         // corrupt at once is left for the next try, not moved by `open`
@@ -657,7 +707,7 @@ impl History {
     pub fn size_bytes(&self) -> u64 {
         ["", "-wal"]
             .iter()
-            .filter_map(|s| std::fs::metadata(format!("{}{s}", self.path.display())).ok())
+            .filter_map(|s| std::fs::metadata(beside(&self.path, s)).ok())
             .map(|m| m.len())
             .sum()
     }
@@ -781,7 +831,7 @@ mod tests {
         ] {
             std::fs::write(dir.join(name), body).unwrap();
         }
-        let aside = move_aside(&path, 100).unwrap();
+        let aside = move_aside(&path, 100).unwrap().unwrap();
         let read = |n: &str| std::fs::read_to_string(dir.join(n)).ok();
         assert_eq!(aside, dir.join("history.db.broken-100.2"));
         assert_eq!(read("history.db.broken-100.2").as_deref(), Some("db"));
@@ -796,5 +846,37 @@ mod tests {
             assert!(read(gone).is_none(), "{gone}");
         }
         let _ = crate::act::remove_path(&dir, false);
+    }
+
+    #[test]
+    fn a_log_in_a_directory_not_named_in_utf8_moves_with_its_file() {
+        // Plan 024, L14: the log's name was built through `display()`, so
+        // in a directory whose name is not UTF-8 it named a file that is
+        // not there, and the old log stayed beside the new file.
+        use std::os::unix::ffi::OsStrExt;
+        let top = std::env::temp_dir().join(format!("mirqab-latin1-{}", std::process::id()));
+        let _ = crate::act::remove_path(&top, false);
+        let dir = top.join(std::ffi::OsStr::from_bytes(b"caf\xe9"));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("history.db");
+        for (name, body) in [
+            ("history.db", "db"),
+            ("history.db-wal", "wal"),
+            ("history.db-shm", "shm"),
+            ("history.db.broken-100", "first"),
+        ] {
+            std::fs::write(dir.join(name), body).unwrap();
+        }
+        let aside = move_aside(&path, 100).unwrap().unwrap();
+        let read = |n: &str| std::fs::read_to_string(dir.join(n)).ok();
+        assert_eq!(aside, dir.join("history.db.broken-100.1"));
+        assert_eq!(read("history.db.broken-100").as_deref(), Some("first"));
+        assert_eq!(read("history.db.broken-100.1").as_deref(), Some("db"));
+        assert_eq!(read("history.db.broken-100.1-wal").as_deref(), Some("wal"));
+        assert_eq!(read("history.db.broken-100.1-shm").as_deref(), Some("shm"));
+        for gone in ["history.db", "history.db-wal", "history.db-shm"] {
+            assert!(read(gone).is_none(), "{gone}");
+        }
+        let _ = crate::act::remove_path(&top, false);
     }
 }

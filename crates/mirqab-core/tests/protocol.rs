@@ -12,7 +12,8 @@
 //! subscriber that joins a narrowed stream mid-sample waits for a sample
 //! read for it; `history.query` is clamped and its series capped; the
 //! history file, its directory and the locks are private; the minute
-//! writer replaces a file found corrupt while open.
+//! writer replaces a file found corrupt while open, and retries one found
+//! corrupt at start that could not be moved then (plan 024, C13).
 
 use mirqab_core::proto::{Request, ServerFrame, frame};
 use mirqab_core::root::Root;
@@ -1869,6 +1870,83 @@ fn the_minute_writer_replaces_a_file_found_corrupt_while_open() {
     assert!(std::path::Path::new(aside).exists());
     assert_eq!(status["history"]["enabled"], true, "{status}");
     assert_eq!(status["history"]["error"], Value::Null, "{status}");
+    assert!(
+        c.call(
+            "history.query",
+            None,
+            json!({"series": ["cpu.total"], "range": "1h"})
+        )
+        .is_ok()
+    );
+}
+
+#[test]
+fn a_file_corrupt_at_start_that_cannot_be_moved_is_retried_each_minute() {
+    // Plan 024, C13: a failed move at start turned history off until a
+    // restart, though §6.2 says the writer tries again each minute.
+    use std::os::unix::fs::PermissionsExt;
+    let dir = PathBuf::from("/tmp").join(format!("mqp-startmove-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let state = dir.join("state");
+    std::fs::create_dir_all(&state).unwrap();
+    let history = state.join("history.db");
+    std::fs::write(
+        &history,
+        b"this is not a database, it is a sentence long enough to be read",
+    )
+    .unwrap();
+    // The lock is there already, so a read-only directory refuses only
+    // the move.
+    std::fs::write(state.join("history.db.lock"), b"").unwrap();
+    std::fs::set_permissions(&state, std::fs::Permissions::from_mode(0o500)).unwrap();
+    let socket = dir.join("run/daemon.sock");
+    let server = server::listen(Options {
+        socket: socket.clone(),
+        root: Root::new(fixture("root-desktop")),
+        config_path: dir.join("config/mirqab/config.json"),
+        samplers: Vec::new(),
+        history: Some(history.clone()),
+        minute_period: Some(Duration::from_secs(1)),
+    })
+    .expect("listens");
+    std::thread::spawn(move || server.serve());
+    let d = Daemon { socket, dir };
+    let mut c = Client::connect(&d);
+    let caps = c.hello();
+    let status = c.call("status", None, Value::Null).unwrap();
+    let query = c.call(
+        "history.query",
+        None,
+        json!({"series": ["cpu.total"], "range": "1h"}),
+    );
+    // Writable again before any assertion, so the scratch tree goes.
+    std::fs::set_permissions(&state, std::fs::Permissions::from_mode(0o700)).unwrap();
+    assert!(caps.contains(&"history".to_string()), "{caps:?}");
+    if status["history"]["enabled"] == true {
+        // Running as root: the directory's mode is no obstacle.
+        return;
+    }
+    assert!(
+        status["history"]["error"]
+            .as_str()
+            .is_some_and(|e| e.contains("moving it aside failed")),
+        "{status}"
+    );
+    assert_eq!(query, Err("unavailable".into()));
+    let until = Instant::now() + Duration::from_secs(5);
+    let status = loop {
+        let s = c.call("status", None, Value::Null).unwrap();
+        if s["history"]["enabled"] == true || Instant::now() > until {
+            break s;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    };
+    assert_eq!(status["history"]["enabled"], true, "{status}");
+    assert_eq!(status["history"]["error"], Value::Null, "{status}");
+    let aside = status["history"]["movedAside"]
+        .as_str()
+        .expect("moved aside");
+    assert!(std::path::Path::new(aside).exists(), "{status}");
     assert!(
         c.call(
             "history.query",

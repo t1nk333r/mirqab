@@ -595,6 +595,11 @@ pub fn listen(opts: Options) -> Result<Server, ListenError> {
                 if let Some(aside) = &h.moved_aside {
                     log(&strings::history_moved_aside(&aside.display().to_string()));
                 }
+                // Off until the minute writer's `recover` gets past it
+                // (plan 024, C13).
+                if let Some(why) = &h.broken {
+                    log(&format!("history is off: {why}"));
+                }
                 (Some(Mutex::new(h)), None)
             }
             Err(e) => {

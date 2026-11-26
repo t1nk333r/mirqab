@@ -5,7 +5,8 @@
 //! Audit fixes: the file and its directory are private (0600, 0700), a
 //! `from`/`to` span is clamped and bucketed, a range off a bucket boundary
 //! is trimmed to 360 points, and a file found corrupt while open is moved
-//! aside and replaced.
+//! aside and replaced. Plan 024: one corrupt at open that cannot be moved
+//! is retried, and one deleted by hand is replaced at once.
 
 use mirqab_core::history::{self, History};
 use mirqab_core::root::Root;
