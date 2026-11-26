@@ -1156,8 +1156,13 @@ default in the health report.
 
 Never commit: a real hostname, address, interface name, MAC, SSID, serial
 number, coordinates more precise than a city, a token, or anything copied
-from a live `~/.config`. Fixtures are synthetic or scrubbed, and
-`tools/secrets.sh` checks patterns for all of these.
+from a live `~/.config`. Fixtures are synthetic or scrubbed.
+`tools/secrets.sh` runs gitleaks and checks for IPv4 and IPv6 addresses
+outside the documentation ranges, MAC addresses, coordinates, token
+shapes, home paths, private keys, personal e-mail addresses, and a
+machine's own hostnames through the local deny list named by
+`MIRQAB_SECRETS_DENY`. Interface names, SSIDs and serial numbers have no
+pattern: review them by hand, or add them to the local deny list.
 
 ## 11. CLI and MCP
 
