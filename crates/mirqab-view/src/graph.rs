@@ -54,13 +54,15 @@ pub struct Window {
     pub from: i64,
     /// Right edge, unix seconds.
     pub to: i64,
-    /// Seconds between points (1 for live, the bucket for a stored range).
+    /// Seconds between points (the live spacing, `live_step`, for live;
+    /// the bucket for a stored range).
     pub step: i64,
 }
 
 impl Window {
     /// The window of a stored range ending at `now`: `1h`, `24h`, `7d`,
-    /// `30d` (architecture §6.4), or the 2-minute live range, `2m`.
+    /// `30d` (architecture §6.4), or the 2-minute live range, `2m`, whose
+    /// step of 1 the `Graph` widget replaces with `live_step` of its ring.
     pub fn for_range(range: &str, now: i64) -> Option<Window> {
         let (span, step) = match range {
             "2m" => (120, 1),
@@ -76,6 +78,32 @@ impl Window {
             step,
         })
     }
+}
+
+/// The spacing of live samples, in whole seconds: the median distance
+/// between neighbouring stamps, from 1 to 5. Live samples are not always a
+/// second apart: `live.intervalMs` goes up to 5000 and the daemon raises
+/// every live subscription to it, and the inspector feeds a group's graph
+/// from `apps` frames every 2 s. With a step of 1 those points would all
+/// break apart into dashes (plan 024, C4). The median keeps a real hole
+/// from widening the step; 5 s is the slowest live interval the daemon
+/// accepts.
+pub fn live_step(stamps: impl IntoIterator<Item = i64>) -> i64 {
+    let mut last = None;
+    let mut gaps: Vec<i64> = Vec::new();
+    for t in stamps {
+        if let Some(l) = last
+            && t > l
+        {
+            gaps.push(t - l);
+        }
+        last = Some(t);
+    }
+    if gaps.is_empty() {
+        return 1;
+    }
+    gaps.sort_unstable();
+    gaps[(gaps.len() - 1) / 2].clamp(1, 5)
 }
 
 /// The ranges a graph's picker offers, in order.
@@ -129,7 +157,8 @@ pub fn geometry(
     let mut runs = Vec::new();
     let mut current: Vec<(i64, f64)> = Vec::new();
     // One and a half steps, and always more than one: live samples are
-    // stamped in whole seconds, so ticks 1.002 s apart can read 2 s apart.
+    // stamped in whole seconds, so ticks 1.002 s apart can read 2 s apart
+    // (and ticks 2.002 s apart, 3 s).
     let gap = (window.step * 3 / 2).max(window.step + 1);
     for p in visible {
         if let Some(&(last, _)) = current.last()

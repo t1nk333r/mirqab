@@ -35,7 +35,9 @@ pub type Extract = Rc<dyn Fn(&Value) -> Option<f64>>;
 pub type Format = Rc<dyn Fn(f64) -> String>;
 
 /// The stream a graph follows live at `2m`, with the stream's params
-/// (`Value::Null` for none; the `process` stream's pid and start).
+/// (`Value::Null` for none; the `process` stream's pid and start). The
+/// client hands every event of the stream to every handle on it, so with
+/// params the extract rejects data that is not for them.
 #[derive(Clone)]
 pub struct Live {
     pub source: Rc<dyn Source>,
@@ -208,7 +210,11 @@ impl State {
         } else {
             self.end.unwrap_or_else(now)
         };
-        Window::for_range(&self.range, end)
+        let mut w = Window::for_range(&self.range, end)?;
+        if self.range == "2m" {
+            w.step = graph::live_step(self.ring.iter().map(|&(t, _)| t));
+        }
+        Some(w)
     }
 }
 
@@ -394,17 +400,19 @@ impl Graph {
 
     /// Adds a live sample and keeps the ring to two minutes. Samples are
     /// stamped in whole seconds, so a second arrival in the same second
-    /// replaces the first rather than drawing a vertical step. Stamps are
-    /// wall-clock time: when the clock steps back by more than a second the
-    /// ring starts again, since the later stamps left in it would stall the
-    /// trim and the ring would grow without bound (audit 2026-11-21, L53).
+    /// replaces the first rather than drawing a vertical step; so does one
+    /// a second back, which replaces every sample at or after it (plan 024,
+    /// L35). Stamps are wall-clock time: when the clock steps back by more
+    /// than a second the ring starts again, since the later stamps left in
+    /// it would stall the trim and the ring would grow without bound (audit
+    /// 2026-11-21, L53).
     pub fn push_live(&self, t: i64, v: f64) {
         {
             let mut st = self.imp().state.borrow_mut();
             if st.ring.back().is_some_and(|&(last, _)| last > t + 1) {
                 st.ring.clear();
             }
-            if st.ring.back().is_some_and(|&(last, _)| last >= t) {
+            while st.ring.back().is_some_and(|&(last, _)| last >= t) {
                 st.ring.pop_back();
             }
             st.ring.push_back((t, v));

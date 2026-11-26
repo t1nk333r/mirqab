@@ -342,9 +342,33 @@ fn a_clock_stepped_back_keeps_the_live_ring_to_two_minutes() {
     }
     // Two minutes of whole seconds, both ends included.
     assert!(g.ring_len() <= 121, "ring holds {}", g.ring_len());
-    // A stamp one second back is the same sample again, not a new start.
+    // A stamp one second back is the same sample again, not a new start,
+    // and it leaves no two samples with one stamp (plan 024, L35): 1100
+    // goes and 1099 is replaced.
+    let n = g.ring_len();
     g.push_live(1099, 3.0);
-    assert!(g.ring_len() > 100, "ring holds {}", g.ring_len());
+    assert_eq!(g.ring_len(), n - 1);
+}
+
+/// Plan 024, C4: live samples 3 s apart (`live.intervalMs` at 3000) draw
+/// as one line, not a row of one-point dashes; a real hole still breaks it.
+#[gtk::test]
+#[ignore = "needs a display: run tests/test-ui-widgets.sh"]
+fn live_samples_three_seconds_apart_draw_one_line() {
+    let g = Graph::new();
+    g.set_range("2m");
+    let win = shown(&g, 400, 100);
+    for i in 0..20 {
+        g.push_live(1000 + i * 3, 50.0);
+    }
+    let n = all(&g);
+    assert_eq!(count(&n, gsk::RenderNodeType::StrokeNode), 1);
+    assert_eq!(contours(&n), 1);
+    for i in 0..5 {
+        g.push_live(1100 + i * 3, 50.0);
+    }
+    assert_eq!(contours(&all(&g)), 2, "a 40 s hole is a gap");
+    drop(win);
 }
 
 #[gtk::test]
@@ -1007,6 +1031,73 @@ fn a_reused_pid_is_not_explained_and_a_tagged_group_says_why() {
         true,
     );
     assert!(!i.idle.is_visible());
+}
+
+/// Plan 024, L9: a group's first frame has no CPU yet; its graph plots
+/// nothing for it rather than a drop to 0 %. L17: a late `process` event
+/// of the process selected before is not plotted as the new one's.
+#[gtk::test]
+#[ignore = "needs a display: run tests/test-ui-widgets.sh"]
+fn the_inspector_graph_plots_only_the_selections_known_cpu() {
+    use mirqab_ui::tabs::apps::inspector::Inspector;
+    use mirqab_view::tabs::apps::{self as model, Key};
+    let fake = Rc::new(Fake::new());
+    let i = Inspector::new(
+        fake.clone(),
+        Rc::new(|| true),
+        Rc::new(|| {}),
+        Rc::new(|_| {}),
+    );
+    let _win = shown(&i.root, 400, 600);
+
+    let golden = || -> mirqab_proto::stream::AppsData {
+        serde_json::from_str(include_str!("../../../tests/golden/apps.json")).unwrap()
+    };
+    let mut st = model::AppsState::default();
+    let mut first = golden();
+    for g in &mut first.groups {
+        g.cpu = None;
+    }
+    let frame = st.take(first).0;
+    let key = |f: &model::Frame| {
+        f.groups
+            .iter()
+            .find(|(_, g)| g.name == "Example Browser")
+            .unwrap()
+            .0
+    };
+    let k = key(&frame);
+    i.show(model::selection(&frame, Key::Group(k), 1), &frame, true);
+    assert_eq!(i.graph.ring_len(), 0, "an unknown CPU is no point");
+    let frame = st.take(golden()).0;
+    assert_eq!(key(&frame), k);
+    i.show(model::selection(&frame, Key::Group(k), 1), &frame, true);
+    assert_eq!(i.graph.ring_len(), 1);
+
+    // Process A, then process B: an event for A that arrives on B's
+    // handle is dropped; B's own is plotted.
+    let a = Key::Process {
+        pid: 2001,
+        start: 5010,
+    };
+    let b = Key::Process {
+        pid: 2010,
+        start: 5100,
+    };
+    i.show(model::selection(&frame, a, 1), &frame, false);
+    i.show(model::selection(&frame, b, 1), &frame, false);
+    assert_eq!(
+        fake.live_params.borrow().last(),
+        Some(&json!({"pid": 2010, "start": 5100}))
+    );
+    assert_eq!(i.graph.ring_len(), 0);
+    let cb = fake.on_event.borrow().clone().unwrap();
+    cb(&json!({"pid": 2001, "start": 5010, "cpu": 95.0}));
+    assert_eq!(i.graph.ring_len(), 0, "A's reading is not B's");
+    cb(&json!({"pid": 2010, "start": 5050, "cpu": 95.0}));
+    assert_eq!(i.graph.ring_len(), 0, "nor another process on B's pid");
+    cb(&json!({"pid": 2010, "start": 5100, "cpu": 5.0}));
+    assert_eq!(i.graph.ring_len(), 1);
 }
 
 #[gtk::test]

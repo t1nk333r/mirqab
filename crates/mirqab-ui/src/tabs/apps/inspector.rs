@@ -345,8 +345,13 @@ impl Inspector {
         self.idle.set_visible(sel.idle_heavy);
         self.update_buttons();
         let live = sel.process.is_some() && self.process_served();
-        if !live && (tick || changed) {
-            self.graph.push_live(now(), sel.cpu.unwrap_or(0.0));
+        // A CPU not known yet (a group's first frame) is no point, as the
+        // live extracts skip a null, not a drop to 0 (plan 024, L9).
+        if !live
+            && (tick || changed)
+            && let Some(cpu) = sel.cpu
+        {
+            self.graph.push_live(now(), cpu);
         }
         if tick {
             let mut watch = self.watch.borrow_mut();
@@ -432,8 +437,15 @@ impl Inspector {
                     source: Rc::clone(&self.source),
                     stream: stream::PROCESS.to_string(),
                     params: json!({"pid": pid, "start": start}),
-                    extract: Rc::new(|v: &Value| {
-                        if v["gone"] == Value::Bool(true) {
+                    // The client routes events by stream name only, so a
+                    // late reading of the process selected before is
+                    // dropped here, not plotted as this one's (plan 024,
+                    // L17). `gone` and `capped` carry no start.
+                    extract: Rc::new(move |v: &Value| {
+                        if v["pid"].as_u64() != Some(u64::from(pid))
+                            || v["start"].as_u64().is_some_and(|s| s != start)
+                            || v["gone"] == Value::Bool(true)
+                        {
                             return None;
                         }
                         v["cpu"].as_f64()
