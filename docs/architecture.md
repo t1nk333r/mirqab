@@ -630,7 +630,9 @@ is noticed at the next read (a request that reads the config, a
 wakeup) and treated the same way: open live subscriptions take a new
 `live.intervalMs` and `ui` gets `config-changed`. A config the
 daemon cannot parse is left untouched, reported in `status`, and defaults
-are used: the app never rewrites a file the user broke by hand.
+are used: the app never rewrites a file the user broke by hand. A write
+replaces the file atomically and keeps its mode; a symlink (a config kept
+in a dotfiles repository) stays, and the file it points to is replaced.
 `theme.accent` and `units.clock` are reserved keys: accepted and checked,
 so a config that sets them stays valid, but read by nothing yet. No clock
 is shown before plan 016, which decides the clock format's key; its
