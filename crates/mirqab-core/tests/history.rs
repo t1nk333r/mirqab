@@ -571,6 +571,118 @@ fn damage_found_again_soon_after_a_replacement_leaves_history_off() {
 }
 
 #[test]
+fn a_file_corrupt_at_open_that_cannot_be_moved_is_retried() {
+    // Plan 024, C13: `open` returned Err and nothing opened history again
+    // until a restart; now it is off with the reason and `recover` retries.
+    use std::os::unix::fs::PermissionsExt;
+    let d = scratch("openmove");
+    let ro = d.0.join("ro");
+    std::fs::create_dir_all(&ro).unwrap();
+    let path = ro.join("history.db");
+    std::fs::write(
+        &path,
+        b"this is not a database, it is a sentence long enough to be read",
+    )
+    .unwrap();
+    std::fs::set_permissions(&ro, std::fs::Permissions::from_mode(0o500)).unwrap();
+    let mut h = match History::open(&path, NOW) {
+        Ok(h) => h,
+        Err(e) => {
+            std::fs::set_permissions(&ro, std::fs::Permissions::from_mode(0o700)).unwrap();
+            panic!("open failed: {e}");
+        }
+    };
+    let blocked = h.broken.clone();
+    let again = h.recover(NOW + 60);
+    // Writable again before any assertion, so the scratch tree goes.
+    std::fs::set_permissions(&ro, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let Some(why) = blocked else {
+        // Running as root: the directory's mode is no obstacle.
+        return;
+    };
+    assert!(why.contains("moving it aside failed"), "{why}");
+    assert!(h.moved_aside.is_none());
+    assert!(again.is_err(), "still read-only");
+    assert!(h.write_minute(NOW, &[("cpu.total", 1)]).is_err());
+    // Writable again: the next minute's try moves it and opens a new one.
+    h.recover(NOW + 120).unwrap();
+    assert!(h.broken.is_none());
+    let aside = h.moved_aside.clone().expect("moved aside");
+    assert!(aside.ends_with(format!("history.db.broken-{}", NOW + 120)));
+    assert!(aside.exists());
+    h.write_minute(NOW + 120, &[("cpu.total", 1)]).unwrap();
+    assert_eq!(h.list().as_array().unwrap().len(), history::SERIES.len());
+}
+
+#[test]
+fn a_corrupt_file_deleted_by_hand_is_replaced_at_once() {
+    // Plan 024, L2: once the damaged file was gone, its rename failed with
+    // ENOENT every minute and history stayed off until a restart.
+    let d = scratch("deleted");
+    let path = d.0.join("history.db");
+    History::open(&path, NOW).unwrap();
+    damage_sample(&path);
+    let mut h = History::open(&path, NOW).unwrap();
+    assert!(h.write_minute(NOW, &[("cpu.total", 1)]).unwrap_err().1);
+    h.recover(NOW).unwrap();
+    h.write_minute(NOW, &[("cpu.total", 1)]).unwrap();
+    h.checkpoint().unwrap();
+    damage_sample(&path);
+    h.conn().execute_batch("PRAGMA shrink_memory").unwrap();
+    assert!(h.write_minute(NOW + 60, &[("cpu.total", 1)]).unwrap_err().1);
+    assert!(h.recover(NOW + 60).unwrap_err().0.contains("again"));
+    assert_eq!(broken_files(&path).len(), 1);
+    // The user starts over within the backoff. A log left behind would be
+    // replayed into the new file: it goes aside too.
+    std::fs::remove_file(&path).unwrap();
+    let _ = std::fs::remove_file(d.0.join("history.db-shm"));
+    std::fs::write(d.0.join("history.db-wal"), b"an old log").unwrap();
+    h.recover(NOW + 120).unwrap();
+    assert!(h.broken.is_none());
+    assert_ne!(
+        std::fs::read(d.0.join("history.db-wal")).unwrap_or_default(),
+        b"an old log"
+    );
+    assert_eq!(
+        std::fs::read(d.0.join(format!("history.db.broken-{}-wal", NOW + 120))).unwrap(),
+        b"an old log"
+    );
+    // Nothing was moved as a file: `movedAside` names the earlier one.
+    let named = h.moved_aside.clone().unwrap();
+    assert!(named.exists(), "{named:?}");
+    assert!(
+        !d.0.join(format!("history.db.broken-{}", NOW + 120))
+            .exists()
+    );
+    h.write_minute(NOW + 120, &[("cpu.total", 1)]).unwrap();
+    let v = h.query(&["cpu.total"], NOW, NOW + 180, 60).unwrap();
+    assert_eq!(
+        v["series"]["cpu.total"]["points"].as_array().unwrap().len(),
+        1,
+        "only the new minute: {v}"
+    );
+
+    // Past the backoff, with no log left, the same.
+    h.checkpoint().unwrap();
+    damage_sample(&path);
+    h.conn().execute_batch("PRAGMA shrink_memory").unwrap();
+    assert!(
+        h.write_minute(NOW + 180, &[("cpu.total", 1)])
+            .unwrap_err()
+            .1
+    );
+    let late = NOW + history::RECOVER_BACKOFF_SECS + 60;
+    let before = broken_files(&path).len();
+    for side in ["", "-wal", "-shm"] {
+        let _ = std::fs::remove_file(d.0.join(format!("history.db{side}")));
+    }
+    h.recover(late).unwrap();
+    assert!(h.broken.is_none());
+    assert_eq!(broken_files(&path).len(), before, "nothing to move aside");
+    h.write_minute(late, &[("cpu.total", 1)]).unwrap();
+}
+
+#[test]
 fn a_file_moved_aside_never_overwrites_an_earlier_one() {
     // Review of PR #26: a second move in the same second overwrote the
     // first, and a log left behind could be replayed into the new file.
