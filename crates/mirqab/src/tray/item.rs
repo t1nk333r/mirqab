@@ -2,7 +2,7 @@
 
 use crate::bar::items;
 use crate::cli::{CallError, call};
-use mirqab_core::proto::stream::{self, SystemData};
+use mirqab_core::proto::stream;
 use mirqab_core::proto::{Request, strings};
 use mirqab_core::server;
 use serde_json::{Value, json};
@@ -37,21 +37,16 @@ impl Item {
         send(&self.socket, name, req);
     }
 
-    /// `CPU 12% · Mem 41% · 52°` from one `get system`.
+    /// `CPU 12% · Mem 41% · 52°` from one `get system`; the app's name when
+    /// there is no answer.
     fn tip_line(&self) -> String {
-        let Ok(v) = call(
+        match call(
             &self.socket,
             Request::new(1, "get").with_stream(stream::SYSTEM),
-        ) else {
-            return strings::APP_NAME.to_string();
-        };
-        let d: SystemData = serde_json::from_value(v).unwrap_or_default();
-        let text = |item: &str| {
-            items::read(item, &d, &[])
-                .map(|r| r.text)
-                .unwrap_or_else(|| strings::NO_VALUE.to_string())
-        };
-        strings::tray_tooltip(&text("cpu"), &text("mem"), &text("temp"))
+        ) {
+            Ok(v) => tip_text(&v),
+            Err(_) => strings::APP_NAME.to_string(),
+        }
     }
 
     /// The tooltip line, from the cache when it is under 10 s old.
@@ -155,4 +150,39 @@ pub(super) fn hidden(socket: &Path) -> Vec<String> {
                 .collect()
         })
         .unwrap_or_default()
+}
+
+/// The tooltip line for a `get system` answer; the app's name, with the
+/// error logged, for one this mirqab cannot read, which would otherwise
+/// show as no readings (plan 024 L32).
+fn tip_text(v: &Value) -> String {
+    let d = match crate::cli::system(v) {
+        Ok(d) => d,
+        Err(msg) => {
+            crate::out::err(&msg);
+            return strings::APP_NAME.to_string();
+        }
+    };
+    let text = |item: &str| {
+        items::read(item, &d, &[])
+            .map(|r| r.text)
+            .unwrap_or_else(|| strings::NO_VALUE.to_string())
+    };
+    strings::tray_tooltip(&text("cpu"), &text("mem"), &text("temp"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_frame_this_mirqab_cannot_read_gives_the_name_not_empty_readings() {
+        assert_eq!(tip_text(&json!({"cpu": "x"})), strings::APP_NAME);
+        // A frame that reads but has no readings yet still shows dashes.
+        let none = strings::NO_VALUE;
+        assert_eq!(
+            tip_text(&json!({})),
+            strings::tray_tooltip(none, none, none)
+        );
+    }
 }

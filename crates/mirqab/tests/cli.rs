@@ -2,11 +2,14 @@
 //! window commands reaching an attached interface as `ui` events (plan 001,
 //! "Tests": `open system` produces a `ui` event).
 
+use serde_json::{Value, json};
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::fs::PermissionsExt;
-use std::os::unix::net::UnixStream;
+use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 const BIN: &str = env!("CARGO_BIN_EXE_mirqab");
@@ -62,12 +65,14 @@ fn start_on(name: &str, at: Sock) -> Daemon {
     let fixture =
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/root-desktop");
     // `open` runs `systemctl --user start mirqab-ui.service`; a stub records
-    // the call, and fails when the file `fail` exists in the scratch dir.
+    // the call, takes a second when the file `slow` exists in the scratch
+    // dir, and fails when the file `fail` does.
     let bin = dir.join("bin");
     std::fs::create_dir_all(&bin).unwrap();
     std::fs::write(
         bin.join("systemctl"),
         "#!/bin/sh\nprintf '%s\\n' \"$*\" >>\"$STUB_LOG\"\n\
+         if [ -f \"$STUB_SLOW\" ]; then sleep 1; fi\n\
          if [ -f \"$STUB_FAIL\" ]; then echo 'Unit mirqab-ui.service not found.' >&2; exit 5; fi\n",
     )
     .unwrap();
@@ -112,6 +117,7 @@ fn start_on(name: &str, at: Sock) -> Daemon {
         .env("PATH", path)
         .env("STUB_LOG", dir.join("systemctl.log"))
         .env("STUB_FAIL", dir.join("fail"))
+        .env("STUB_SLOW", dir.join("slow"))
         .env("MIRQAB_TEST", "1")
         .env("MIRQAB_UI_START_MS", "2000")
         .env_remove("NOTIFY_SOCKET")
@@ -417,6 +423,30 @@ fn a_unit_that_fails_to_start_is_reported() {
 }
 
 #[test]
+fn an_open_joining_a_failed_start_reports_the_failure() {
+    // Plan 024, C1: B joined A's start, which failed; B said the unit
+    // started and the display timed out, at once and as `unavailable`.
+    let d = start("joinfail");
+    std::fs::write(d.dir.join("fail"), "").unwrap();
+    std::fs::write(d.dir.join("slow"), "").unwrap();
+    let a = spawn_cli(&d, &["open", "system"]);
+    wait_for_starts(&d, 1);
+    let b = spawn_cli(&d, &["toggle"]);
+    for (who, out) in [("A", a), ("B", b)] {
+        let out = out.wait_with_output().unwrap();
+        assert_eq!(out.status.code(), Some(1), "{who}");
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            err.contains("mirqab: failed: could not start"),
+            "{who}: {err}"
+        );
+        assert!(!err.contains("did not connect"), "{who}: {err}");
+        assert!(!err.contains("WAYLAND_DISPLAY"), "{who}: {err}");
+    }
+    assert_eq!(stub_log(&d).lines().count(), 1, "started once");
+}
+
+#[test]
 fn a_fixture_daemon_keeps_history_beside_its_socket() {
     let d = start("fixturehist");
     let out = mirqab(&d, &["status", "--json"]);
@@ -660,4 +690,85 @@ fn a_socket_systemd_passes_on_fd_3_is_adopted() {
     let status: serde_json::Value = serde_json::from_slice(&out.stdout)
         .unwrap_or_else(|_| panic!("{}", String::from_utf8_lossy(&out.stderr)));
     assert_eq!(status["activated"], true, "{status}");
+}
+
+/// A daemon that plans a quit of pid 2001 and, asked to go ahead, answers
+/// that its signal failed: a real test daemon's recording sender never
+/// fails. Returns how many confirmed calls it has had.
+fn failing_quit_daemon(socket: &std::path::Path) -> Arc<AtomicUsize> {
+    let listener = UnixListener::bind(socket).unwrap();
+    let acts = Arc::new(AtomicUsize::new(0));
+    let seen = acts.clone();
+    std::thread::spawn(move || {
+        // The CLI opens one connection per request.
+        for stream in listener.incoming() {
+            let Ok(stream) = stream else { return };
+            let mut line = String::new();
+            if BufReader::new(&stream).read_line(&mut line).is_err() {
+                continue;
+            }
+            let req: Value = serde_json::from_str(&line).unwrap_or_default();
+            let reply = if req["params"]["confirm"] == true {
+                seen.fetch_add(1, Ordering::SeqCst);
+                json!({"type": "reply", "id": req["id"], "result": {
+                    "done": [], "gone": [], "skipped": [], "recorded": true,
+                    "failed": [{"pid": 2001, "name": "browser", "error": "boom"}]}})
+            } else {
+                json!({"type": "reply", "id": req["id"], "error": {
+                    "code": "needs-confirm", "message": "confirm first", "data": {
+                        "plan": "p1", "skipped": [],
+                        "wouldDo": [{"signal": "TERM", "pid": 2001, "start": 5010,
+                                     "name": "browser"}]}}})
+            };
+            let _ = writeln!(&stream, "{reply}");
+        }
+    });
+    acts
+}
+
+#[test]
+fn a_failed_quit_into_a_broken_pipe_still_exits_1_and_says_what_failed() {
+    // Audit 2026-11-21, L40, and plan 024 L31: a reader that went away
+    // neither ends the command before it acts nor hides what failed. In
+    // --json mode the first stdout write follows the act, so only a
+    // failure tells the fix from an exit 0 there.
+    // Under /tmp, not $TMPDIR: a socket path must stay under 108 bytes.
+    let dir = PathBuf::from("/tmp").join(format!("mqc-qfail-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let socket = dir.join("daemon.sock");
+    let acts = failing_quit_daemon(&socket);
+    let quit = |extra: &[&str], closed: bool| {
+        let mut cmd = mirqab_cmd();
+        cmd.arg("--socket")
+            .arg(&socket)
+            .args(["quit", "2001", "-y"])
+            .args(extra)
+            .stdin(Stdio::null());
+        if closed {
+            let (reader, writer) = std::io::pipe().unwrap();
+            drop(reader);
+            cmd.stdout(writer);
+        }
+        // Not output_within: that pipes stdout. The stub answers at once.
+        cmd.output().unwrap()
+    };
+    let failed = "failed 2001 browser: boom";
+    for extra in [&[][..], &["--json"][..]] {
+        let out = quit(extra, true);
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(out.status.code(), Some(1), "{extra:?}: {err}");
+        assert!(err.contains(failed), "{extra:?}: {err}");
+    }
+    assert_eq!(acts.load(Ordering::SeqCst), 2, "both went ahead");
+    // With its reader there, the failure is printed once, on stdout.
+    let out = quit(&[], false);
+    let (stdout, err) = (
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
+    );
+    assert_eq!(out.status.code(), Some(1), "{err}");
+    assert!(stdout.contains(failed), "{stdout}");
+    assert!(!err.contains(failed), "{err}");
+    let _ = std::fs::remove_dir_all(&dir);
 }

@@ -2,7 +2,7 @@
 # generated docs and completions, output into a closed pipe, and
 # `status --json` against a daemon on a fixture root. The window commands
 # reaching an interface are tested in crates/mirqab/tests/cli.rs.
-# mirqab:covers crates/mirqab/src/{main,cli,daemon,out,apps,quit,ports}.rs crates/mirqab-proto/src/strings.rs docs/cli.md
+# mirqab:covers crates/mirqab/src/{main,cli,daemon,out,apps,quit,ports,confirm}.rs crates/mirqab-proto/src/strings.rs docs/cli.md
 # mirqab:covers tests/fixtures/root-desktop/** tests/fixtures/bin/pacman
 # mirqab:covers crates/mirqab-core/src/samplers/ports/** crates/mirqab-core/src/samplers/apps/**
 # mirqab:covers-shared
@@ -50,6 +50,12 @@ like "--mcp --help prints mcp's usage" "$OUTPUT" "usage: mirqab mcp"
 for c in history apps ports quit; do
     capture env -u XDG_RUNTIME_DIR -u MIRQAB_SOCKET "$BIN/mirqab" "$c" --bogus
     status_is "$c --bogus with no runtime dir exits 64" 64 "$STATUS"
+done
+# So is a pid that is not one (audit, plan 024 L30).
+for p in 0 99999999999; do
+    capture env -u XDG_RUNTIME_DIR -u MIRQAB_SOCKET "$BIN/mirqab" quit "$p"
+    status_is "quit $p with no runtime dir exits 64" 64 "$STATUS"
+    like "and says it is not a pid" "$OUTPUT" "not a process id: $p"
 done
 
 # The daemon refuses a runtime dir that is missing.
@@ -104,11 +110,14 @@ capture "$BIN/mirqab" load --json
 status_is "load --json exits 0" 0 "$STATUS"
 is "load --json has the cores" 16 "$(jq '.cpu.cores | length' <<<"$OUTPUT")"
 is "and the thermal word" '"cool"' "$(jq -c '.thermal.state' <<<"$OUTPUT")"
+# It shows no disk temperature, so it reads no disk sensor (plan 024 C18).
+is "load reads no disk sensor" 0 "$(jq '[.temps[] | select(.kind == "disk")] | length' <<<"$OUTPUT")"
 capture "$BIN/mirqab" load
 like "load prints memory" "$OUTPUT" "memory    17 GB used of 67 GB"
 like "and the thermal word" "$OUTPUT" "thermal   Cool"
 capture "$BIN/mirqab" sensors --json
 is "sensors --json lists the temperatures" 7 "$(jq '.temps | length' <<<"$OUTPUT")"
+is "the disks among them" 2 "$(jq '[.temps[] | select(.kind == "disk")] | length' <<<"$OUTPUT")"
 capture "$BIN/mirqab" sensors
 like "sensors names the CPU sensor" "$OUTPUT" "Tctl"
 like "and the GPUs" "$OUTPUT" "AMD GPU (card1)"
@@ -301,7 +310,10 @@ is "only the unit asked for is stopped by name" \
 # A reader that went away does not end a command that changes something
 # before it has done what it was told, and its exit code is its own
 # (audit 2026-11-21, L40): -y still quits and exits 0 for what it did; no
-# -y and no terminal still exits 3 and sends nothing.
+# -y and no terminal still exits 3 and sends nothing. The --json case only
+# shows that mode still acts: its first stdout write follows the act. A
+# failed act into a broken pipe is tested in crates/mirqab/tests/cli.rs,
+# against a stub daemon (plan 024 L31).
 code=0
 broken_pipe "$BIN/mirqab" quit 2001 -y 2>"$SANDBOX/pipe.err" || code=$?
 is "quit -y into a broken pipe still quits" "TERM 2001 5010" "$(act_log)"

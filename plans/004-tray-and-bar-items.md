@@ -239,7 +239,20 @@ Part 1 (2026-11-13), where it differs from the plan:
   printed every interval with the text unchanged (audit 2026-11-21, L33).
   A tooltip may lag until the text next changes; a bar redraws only when
   what it shows changes. `a_tooltip_alone_changing_is_no_change` in
-  `crates/mirqab/src/bar/mod.rs`.
+  `crates/mirqab/src/bar/mod.rs`. `--format plain` prints the text alone,
+  so it compares the text alone: a temperature's percentage or thermal
+  word moving under the same rounded degrees printed the same line again
+  (plan 024 L29, `plain_compares_only_the_text_it_prints`).
+- A system frame this mirqab cannot read (an old daemon after an
+  upgrade) is the "answer could not be read" error with the restart
+  hint, on stderr with exit 1, not a `—` that looks like no readings yet,
+  as `mirqab load` does (plan 024 L32). `--watch` exits 1 on the first
+  such frame instead of skipping it: the next frames would be just as
+  unreadable, and a bar that restarts its command tries again. The tray
+  tooltip falls back to the app's name, as it does with no daemon.
+  `tests/test-bar.sh` (a socat stub daemon) and
+  `a_frame_this_mirqab_cannot_read_gives_the_name_not_empty_readings` in
+  `crates/mirqab/src/tray/item.rs`.
 - The haseen widget validates with `haseen plugin validate` against
   haseen's schema on the development machine; its one unmet requirement
   there was `mirqab` not on `PATH` (not installed). `Widget.qml` passes

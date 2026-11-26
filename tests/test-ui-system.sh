@@ -4,6 +4,7 @@
 # without the GPU, pressure and temperature cards, and logs no error.
 # mirqab:covers crates/mirqab-ui/src/tabs/system/** crates/mirqab-ui/src/tabs/mod.rs crates/mirqab-view/src/tabs/system.rs
 # mirqab:covers tests/fixtures/root-desktop/** tests/fixtures/root-minimal/**
+# mirqab:covers crates/mirqab-core/src/samplers/system/**
 # mirqab:covers-shared
 
 sandbox

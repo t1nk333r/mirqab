@@ -4,6 +4,7 @@
 # and exits 3; --write -y runs the client's own command (a recording stub
 # here, never the real client); a client configured by file is print only.
 # mirqab:covers crates/mirqab/src/{mcp_config,confirm}.rs
+# mirqab:covers-shared
 
 sandbox
 build_bins

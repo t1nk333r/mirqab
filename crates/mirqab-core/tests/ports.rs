@@ -12,7 +12,9 @@
 //! binds is two rows, addresses on `lo`, a veth and an alias label get
 //! their scopes, and the interface table is read again when the bind
 //! addresses change. From the audit: a tick maps a worker that joined a
-//! mapped socket once the map is 30 s old.
+//! mapped socket once the map is 30 s old. Plan 024, L5: no process is
+//! walked while the user listens on nothing, and the last walk's process
+//! cache is dropped then.
 
 use mirqab_core::Root;
 use mirqab_core::act::Recording;
@@ -584,6 +586,55 @@ fn a_tick_maps_a_worker_that_joined_a_mapped_socket_within_30_s() {
     );
     p.sample(&root, t0 + Duration::from_secs(35));
     assert_eq!(rebuilds(&p), 2, "the window starts again");
+}
+
+#[test]
+fn no_process_is_walked_while_the_user_listens_on_nothing() {
+    // Plan 024, L5: with no listening socket of the user's there is
+    // nothing to map, so neither the first tick, the 30 s age nor a `get`
+    // walks the processes; a socket of the user's brings the walk back.
+    let s = scratch_copy("none-mine");
+    for table in ["tcp", "tcp6"] {
+        let path = s.0.join("proc/net").join(table);
+        let text = std::fs::read_to_string(&path).unwrap();
+        let kept: String = text
+            .lines()
+            .enumerate()
+            .filter(|(i, l)| *i == 0 || l.split_whitespace().nth(7) != Some("1000"))
+            .map(|(_, l)| format!("{l}\n"))
+            .collect();
+        std::fs::write(&path, kept).unwrap();
+    }
+    let root = Root::new(&s.0);
+    let mut p = probed(&root);
+    let all = [json!({})];
+    p.wants(&all);
+    let t0 = Instant::now();
+    let d = data(ports::view(&p.sample(&root, t0), &json!({})));
+    assert!(!d.ports.is_empty(), "root's sockets are still rows");
+    assert!(d.ports.iter().all(|r| r.pids.is_empty() && r.pid.is_none()));
+    p.sample(&root, t0 + Duration::from_secs(30));
+    get(&mut p, &root, json!({}));
+    assert_eq!(rebuilds(&p), 0, "nothing of yours to map");
+    add_rows(&s.0, "tcp", &[&tcp_row("0100007F:1F41", 1000, 70061)]);
+    p.wants(&all);
+    p.sample(&root, t0 + Duration::from_secs(35));
+    assert_eq!(rebuilds(&p), 1, "a listening socket of yours");
+    assert!(p.cached() > 0, "the walk kept the processes it read");
+    // The socket closes: the map is emptied without a walk, and the cache
+    // of the last walk, every process's command line, is dropped with it.
+    let tcp = s.0.join("proc/net/tcp");
+    let text = std::fs::read_to_string(&tcp).unwrap();
+    let kept: String = text
+        .lines()
+        .filter(|l| !l.contains(" 70061 "))
+        .map(|l| format!("{l}\n"))
+        .collect();
+    std::fs::write(&tcp, kept).unwrap();
+    p.wants(&all);
+    p.sample(&root, t0 + Duration::from_secs(40));
+    assert_eq!(rebuilds(&p), 1, "nothing of yours to map again");
+    assert_eq!(p.cached(), 0);
 }
 
 #[test]

@@ -6,12 +6,17 @@
 //! most every 10 s, and so are the disk sensors for a live reader. From
 //! the audit of 2026-11-21: page counts are per minute whatever the gap
 //! (none under 10 s), and a stub `nvidia-smi`'s temperature reaches the
-//! thermal word and `temp.gpu`.
+//! thermal word and `temp.gpu`. From plan 024: `get` waits for its second
+//! reading outside the lock, the disks are read and `nvidia-smi` run only
+//! for a subscriber that asks, a gap restarts the pressure advice's hour,
+//! and the unavailable reason comes from `strings.rs`.
 
 use mirqab_core::Root;
 use mirqab_core::proto::stream::{SystemData, Temp};
+use mirqab_core::proto::strings;
 use mirqab_core::sampler::Sampler;
 use mirqab_core::samplers::system::{System, temps};
+use serde_json::json;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -152,13 +157,47 @@ fn get_reads_against_the_minute_baseline() {
 #[test]
 fn get_never_averages_over_a_stale_baseline() {
     // History off or after a sleep: the probe's baseline is 600 s old.
-    // `get` takes its own second reading instead (here the same counters,
-    // so no rate), never the 600 s average (review of PR #7).
+    // Without a primed reading of its own `get` gives no rate, never the
+    // 600 s average (review of PR #7), and never sleeps for one.
     let mut s = System::new();
     s.probe(&fixture("root-desktop")).unwrap();
     let late = Instant::now() + Duration::from_secs(600);
     let snap = data(s.snapshot(&fixture("root-desktop.t1"), late));
     assert_eq!(snap.cpu.unwrap().percent, None);
+}
+
+#[test]
+fn get_waits_for_its_second_reading_without_the_lock() {
+    // Plan 024 C6: with no baseline 1-90 s old, `get` slept 200 ms in
+    // `snapshot`, under the sampler's lock, and stamped the second reading
+    // 200 ms on whatever the sleep took. Now `prime` takes the first and
+    // asks the server to wait without the lock; `snapshot` answers at once
+    // against it, stamped with the instant it is given.
+    let mut s = System::new();
+    s.probe(&fixture("root-desktop")).unwrap();
+    let late = Instant::now() + Duration::from_secs(600);
+    assert_eq!(
+        s.prime(&fixture("root-desktop"), late),
+        Some(Duration::from_millis(200))
+    );
+    let t = Instant::now();
+    let snap = data(s.snapshot(
+        &fixture("root-desktop.t1"),
+        late + Duration::from_millis(400),
+    ));
+    assert!(
+        t.elapsed() < Duration::from_millis(150),
+        "{:?}",
+        t.elapsed()
+    );
+    assert_eq!(snap.cpu.unwrap().percent, Some(20.0));
+    // 600 KiB over the 400 ms that passed, not over 200 ms.
+    assert_eq!(snap.mem.unwrap().page_in_per_sec, Some(1500.0));
+    // A minute baseline 30 s old serves: no wait.
+    let fresh = Instant::now() + Duration::from_secs(30);
+    assert_eq!(s.prime(&fixture("root-desktop"), fresh), None);
+    let snap = data(s.snapshot(&fixture("root-desktop.t1"), fresh));
+    assert_eq!(snap.cpu.unwrap().percent, Some(20.0));
 }
 
 #[test]
@@ -249,6 +288,7 @@ fn an_nvidia_smi_temperature_reaches_the_thermal_word_and_temp_gpu() {
     let root = Root::new(&d.0);
     let mut s = System::with_nvidia_smi(stub.to_string_lossy());
     s.probe(&root).unwrap();
+    s.wants(&[json!({"gpus": true})]);
     let t0 = Instant::now();
     let first = data(s.sample(&root, t0));
     assert_eq!(first.gpus[0].celsius, Some(85.0));
@@ -514,6 +554,8 @@ fn the_minute_never_reads_a_disk_sensor() {
         let root = Root::new(&base);
         let mut s = System::new();
         s.probe(&root).unwrap();
+        // Even while a subscriber shows the disks.
+        s.wants(&[json!({"disks": true})]);
         let t0 = Instant::now();
         s.minute_at(&root, WALL, t0);
         tx.send(s.minute_at(&root, WALL + 60, t0 + Duration::from_secs(60)))
@@ -523,10 +565,12 @@ fn the_minute_never_reads_a_disk_sensor() {
         .recv_timeout(Duration::from_secs(10))
         .expect("the minute reads no disk sensor");
     assert!(m.iter().any(|(k, _)| *k == "temp.cpu"));
-    // A live sample or a `get` still shows them: someone is looking.
+    // A live sample or a `get` that asks still shows them: someone is
+    // looking.
     let root = fixture("root-desktop");
     let mut s = System::new();
     s.probe(&root).unwrap();
+    s.wants(&[json!({"disks": true})]);
     let live = data(s.sample(&root, Instant::now()));
     let disks: Vec<&str> = live
         .temps
@@ -537,6 +581,160 @@ fn the_minute_never_reads_a_disk_sensor() {
     assert_eq!(disks, ["nvme/temp1", "nvme.1/temp1"]);
     let snap = data(s.snapshot(&root, Instant::now()));
     assert_eq!(snap.temps.iter().filter(|t| t.kind == "disk").count(), 2);
+}
+
+#[test]
+fn a_subscriber_that_shows_no_disk_never_reads_a_disk_sensor() {
+    // Plan 024 C18: a bar item subscribes to `system` all day and shows
+    // no disk temperature; a read every 10 s still kept a drivetemp disk
+    // from spinning down. Only a subscriber (or a `get`) whose params say
+    // `disks` has them read. The FIFO blocks whoever opens it.
+    let d = scratch("bar-disks", "root-desktop");
+    let sensor = d.0.join("sys/class/hwmon/hwmon1/temp1_input");
+    std::fs::remove_file(&sensor).unwrap();
+    let st = std::process::Command::new("mkfifo")
+        .arg(&sensor)
+        .status()
+        .expect("mkfifo runs");
+    assert!(st.success());
+    let base = d.0.clone();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let root = Root::new(&base);
+        let mut s = System::new();
+        s.probe(&root).unwrap();
+        let t0 = Instant::now();
+        let mut shown = Vec::new();
+        for secs in [0, 5, 11, 22] {
+            // A bar's params, and one that names the flag false.
+            s.wants(&[json!({}), json!({"disks": false})]);
+            shown.push(data(s.sample(&root, t0 + Duration::from_secs(secs))));
+        }
+        s.wants(&[json!({})]);
+        shown.push(data(s.snapshot(&root, t0 + Duration::from_secs(30))));
+        tx.send(shown).unwrap();
+    });
+    let shown = rx
+        .recv_timeout(Duration::from_secs(10))
+        .expect("no disk sensor is read");
+    for d in &shown {
+        assert!(d.temps.iter().all(|t| t.kind != "disk"));
+        assert!(d.temps.iter().any(|t| t.kind == "cpu"), "the rest is read");
+    }
+    // With the System page open beside the bar, they are read.
+    let root = fixture("root-desktop");
+    let mut s = System::new();
+    s.probe(&root).unwrap();
+    s.wants(&[json!({}), json!({"disks": true})]);
+    let both = data(s.sample(&root, Instant::now()));
+    assert_eq!(both.temps.iter().filter(|t| t.kind == "disk").count(), 2);
+}
+
+#[test]
+fn nvidia_smi_runs_only_for_a_gpu_on_screen() {
+    // Plan 024 C19: a `cpu` bar item made the daemon run nvidia-smi every
+    // event. It runs for a subscriber whose params say `gpus` (every 2 s
+    // at most) and for the minute's series; without one the minute's
+    // reading is repeated while under 90 s old, so the thermal word still
+    // counts the card, and nothing is run.
+    use std::os::unix::fs::PermissionsExt;
+    let d = scratch("nv-shown", "root-minimal");
+    let dev = d.0.join("sys/class/drm/card0/device");
+    std::fs::create_dir_all(dev.join("power")).unwrap();
+    std::fs::write(dev.join("vendor"), "0x10de\n").unwrap();
+    std::fs::write(dev.join("power/runtime_status"), "active\n").unwrap();
+    let runs = d.0.join("runs");
+    let stub = d.0.join("nvidia-smi");
+    std::fs::write(
+        &stub,
+        format!(
+            "#!/bin/sh\necho run >> '{}'\nprintf '5, 100, 8192, 85, 40.00\\n'\n",
+            runs.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let count = || {
+        std::fs::read_to_string(&runs)
+            .map(|t| t.lines().count())
+            .unwrap_or(0)
+    };
+    let root = Root::new(&d.0);
+    let mut s = System::with_nvidia_smi(stub.to_string_lossy());
+    s.probe(&root).unwrap();
+    let t0 = Instant::now();
+    let at = |secs: u64| t0 + Duration::from_secs(secs);
+    s.wants(&[json!({})]);
+    for secs in [0, 2, 4] {
+        let bar = data(s.sample(&root, at(secs)));
+        assert_eq!(bar.gpus[0].celsius, None, "nothing read yet");
+    }
+    let get = data(s.snapshot(&root, at(5)));
+    assert_eq!(get.gpus[0].celsius, None);
+    assert_eq!(count(), 0, "no subscriber shows a GPU");
+    s.minute_at(&root, WALL, at(6));
+    assert_eq!(count(), 1, "the minute's series");
+    let held = data(s.sample(&root, at(8)));
+    assert_eq!(held.gpus[0].celsius, Some(85.0), "the minute's reading");
+    assert_eq!(held.thermal.unwrap().hottest.as_deref(), Some("nvidia.0"));
+    assert_eq!(count(), 1);
+    // The GPU card opens: every 2 s at most.
+    s.wants(&[json!({}), json!({"gpus": true})]);
+    s.sample(&root, at(9));
+    assert_eq!(count(), 2);
+    s.sample(&root, at(10));
+    assert_eq!(count(), 2, "under 2 s: repeated");
+    s.sample(&root, at(11));
+    assert_eq!(count(), 3);
+    // It closes; the last reading ages out after 90 s.
+    s.wants(&[json!({})]);
+    assert_eq!(data(s.sample(&root, at(100))).gpus[0].celsius, Some(85.0));
+    assert_eq!(data(s.sample(&root, at(102))).gpus[0].celsius, None);
+    assert_eq!(count(), 3);
+}
+
+#[test]
+fn pressure_advice_restarts_after_a_wall_gap() {
+    // Plan 024 L4: "pressure above 10 % for the last hour" counted the
+    // last 60 minutes sampled, so 59 minutes before a suspend and one
+    // after it made an hour. A minute after a gap starts the hour over.
+    let d = scratch("pressure", "root-desktop");
+    std::fs::write(d.0.join("proc/uptime"), format!("{}.00 0.00\n", 8 * 86_400)).unwrap();
+    std::fs::write(
+        d.0.join("proc/pressure/memory"),
+        "some avg10=20.00 avg60=20.00 avg300=20.00 total=5000\n\
+         full avg10=1.00 avg60=1.00 avg300=1.00 total=2500\n",
+    )
+    .unwrap();
+    let root = Root::new(&d.0);
+    let advice = |last_gap: u64| {
+        let mut s = System::new();
+        s.probe(&root).unwrap();
+        let t0 = Instant::now();
+        let mut wall = WALL;
+        for n in 0..60 {
+            wall += if n == 59 { last_gap } else { 60 };
+            s.minute_at(&root, wall, t0 + Duration::from_secs(wall - WALL));
+        }
+        let after = t0 + Duration::from_secs(wall - WALL + 1);
+        data(s.sample(&root, after)).advice
+    };
+    let hour = advice(60);
+    assert_eq!(hour.len(), 1, "an hour under pressure");
+    assert_eq!(hour[0].reason, "uptime-7d-pressure");
+    assert!(advice(3600).is_empty(), "59 minutes, a sleep, one minute");
+}
+
+#[test]
+fn a_root_without_a_cpu_line_is_unavailable_in_the_strings_words() {
+    // Plan 024 L16: the reason `status` shows comes from strings.rs.
+    let d = scratch("nocpu", "root-minimal");
+    std::fs::write(d.0.join("proc/stat"), "intr 0\nbtime 1700000000\n").unwrap();
+    let mut s = System::new();
+    assert_eq!(
+        s.probe(&Root::new(&d.0)),
+        Err(strings::SYSTEM_UNAVAILABLE.to_string())
+    );
 }
 
 #[test]
@@ -632,6 +830,7 @@ fn disk_sensors_are_read_at_most_every_ten_seconds() {
     };
     let mut s = System::new();
     s.probe(&root).unwrap();
+    s.wants(&[json!({"disks": true})]);
     let t0 = Instant::now();
     // The minute reads no disk and starts no pace.
     s.minute_at(&root, WALL, t0);

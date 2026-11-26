@@ -7,7 +7,7 @@ use crate::app::Ctx;
 use crate::tabs::{self, CardWidget};
 use gtk::prelude::*;
 use mirqab_proto::stream;
-use mirqab_view::tabs::system::CARDS;
+use mirqab_view::tabs::system::{self, CARDS};
 use serde_json::Value;
 use std::any::Any;
 use std::cell::{Cell, RefCell};
@@ -57,7 +57,8 @@ pub fn build(ctx: &Rc<Ctx>) -> gtk::Widget {
     root.add_css_class("mirqab-system");
 
     // The numbers subscribe while the page is on screen, at 2 s; only the
-    // graphs go live (architecture §5.3).
+    // graphs go live (architecture §5.3). The page shows the disk
+    // temperatures and the GPUs, so it asks for them (plan 024).
     let p = Rc::clone(&page);
     let weak_ctx = Rc::downgrade(ctx);
     root.connect_map(move |_| {
@@ -65,17 +66,17 @@ pub fn build(ctx: &Rc<Ctx>) -> gtk::Widget {
             return;
         };
         let weak: Weak<Page> = Rc::downgrade(&p);
-        let sub = crate::client::Source::subscribe(
-            &ctx.client,
+        let sub = ctx.client.subscribe_params(
             stream::SYSTEM,
             2000,
+            system::params(CARDS.iter().map(|c| c.id)),
             Rc::new(move |data: &Value| {
                 if let Some(page) = weak.upgrade() {
                     page.update(data);
                 }
             }),
         );
-        *p.sub.borrow_mut() = Some(sub);
+        *p.sub.borrow_mut() = Some(Box::new(sub));
     });
     let p = Rc::clone(&page);
     root.connect_unmap(move |_| {

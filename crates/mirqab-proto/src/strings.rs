@@ -106,7 +106,7 @@ pub const CLI_COMMANDS: &[CliCommand] = &[
                 "quit an app by its id, when apps share a name",
             ),
         ],
-        help: "Asks a process to quit (SIGTERM), or with --force ends it (SIGKILL). A number is a pid; anything else is an app's name as mirqab apps shows it, matched whole and ignoring case (a long name it shows cut, ending in …, matches as shown; every app shown the same way matches too), and quits every process of that app, its main process first. When several apps have that name, they are listed with their ids and nothing is done; --group ID quits the one with that id. A user service is stopped with systemctl --user, so it does not restart; the list names the other services the stop takes with it, and warns before the sound server or a desktop portal is stopped. The stop is refused when one of those services holds a process mirqab never signals, and at the confirmation when a service that was not listed would now stop too; when systemd cannot say what depends on a service, the list says so. It prints what it will do and asks; -y goes ahead without asking; without a terminal and without -y it does nothing and exits 3; --dry-run prints the list and stops. With --json the list goes to stderr and stdout holds the daemon's answer. It exits 1 when anything failed, or when nothing was done because everything was left alone; a process that had already exited counts as done. Never stopped or signalled: pid 1, another user's processes, kernel threads, anything outside your user's session, the daemon, the session's compositor, your user manager, the session bus (also any process named dbus-daemon, dbus-broker or dbus-broker-launch), and the program asking and its parents. A rootless container is not quit; stop it with its runtime. When the action could not be written to mirqab's history, it is still done and a warning says so.",
+        help: "Asks a process to quit (SIGTERM), or with --force ends it (SIGKILL). A number is a pid; anything else is an app's name as mirqab apps shows it, matched whole and ignoring case (a long name it shows cut, ending in …, matches as shown; every app shown the same way matches too), and quits every process of that app, its main process first. When several apps have that name, they are listed with their ids and nothing is done; --group ID quits the one with that id. A user service is stopped with systemctl --user, so it does not restart; the list names the other services the stop takes with it, and warns before the sound server or a desktop portal is stopped. The stop is refused when one of those services holds a process mirqab never signals, and at the confirmation when a service that was not listed would now stop too; when systemd cannot say what depends on a service, the list says so. It prints what it will do and asks; -y goes ahead without asking; without a terminal and without -y it does nothing and exits 3; --dry-run prints the list and stops. With --json the list goes to stderr and stdout holds the daemon's answer. It exits 1 when anything failed, or when it quit nothing and left something alone, even if another process had already exited; otherwise it exits 0, so a process that had already exited is not by itself a failure. Never stopped or signalled: pid 1, another user's processes, kernel threads, anything outside your user's session, the daemon, the session's compositor, your user manager, the session bus (also any process named dbus-daemon, dbus-broker or dbus-broker-launch), and the program asking and its parents. A rootless container is not quit; stop it with its runtime. When the action could not be written to mirqab's history, it is still done and a warning says so.",
     },
     CliCommand {
         name: "ports",
@@ -580,6 +580,9 @@ pub const MCP_ARG_SORT: &str = "cpu (default), mem or name";
 pub const MCP_ARG_LIMIT: &str =
     "how many apps, 1 to 50 (default 10); the System group comes on top of them";
 pub const MCP_ARG_PID: &str = "the process id";
+/// `mirqab mcp` with no socket to name: the client started it without
+/// `$XDG_RUNTIME_DIR` (plan 024 C15).
+pub const MCP_NO_SOCKET: &str = "mirqab: no daemon socket to dial, because XDG_RUNTIME_DIR is not set in this MCP server's environment; add XDG_RUNTIME_DIR to the server's env in the client's MCP settings, or register it as: mirqab --socket PATH mcp";
 pub const MCP_PID_REQUIRED: &str = "pid is required: a process id (a positive whole number)";
 
 pub fn mcp_bad_argument(name: &str, expected: &str) -> String {
@@ -770,6 +773,32 @@ pub fn socket_busy(path: &str) -> String {
     format!("{path} is a socket that did not refuse a connection; another daemon may be starting")
 }
 
+/// The daemon's start-up failures: a directory, a lock file or the socket
+/// it could not make, and accepting that failed for good.
+pub fn mkdir_failed(path: &str, why: &str) -> String {
+    format!("mkdir {path}: {why}")
+}
+
+pub fn lock_file_failed(path: &str, why: &str) -> String {
+    format!("{path}: {why}")
+}
+
+pub fn chmod_failed(path: &str, why: &str) -> String {
+    format!("chmod {path}: {why}")
+}
+
+pub fn bind_failed(path: &str, why: &str) -> String {
+    format!("bind {path}: {why}")
+}
+
+pub fn daemon_failed(why: &str) -> String {
+    format!("mirqab: {why}")
+}
+
+pub fn accept_failed(why: &str) -> String {
+    format!("mirqab: accept: {why}")
+}
+
 pub fn ready(socket: &str) -> String {
     format!("ready {socket}")
 }
@@ -797,8 +826,45 @@ pub fn interface_did_not_attach() -> &'static str {
     "mirqab-ui.service started but the interface did not connect within 5 s; if journalctl --user -u mirqab-ui.service says it cannot open the display, run: systemctl --user import-environment WAYLAND_DISPLAY"
 }
 
+/// Why `config.json` is broken when it parses but is not an object.
+pub const CONFIG_NOT_OBJECT: &str = "not a JSON object";
+
 pub fn config_broken(why: &str) -> String {
     format!("config.json could not be read ({why}); using defaults and leaving the file untouched")
+}
+
+/// The daemon's journal lines about its history file and its clients.
+pub fn history_moved_aside(path: &str) -> String {
+    format!("history could not be opened; moved it to {path}")
+}
+
+pub fn history_damaged_moved(path: &str) -> String {
+    format!("history was damaged; moved it to {path}")
+}
+
+pub fn history_off(why: &str) -> String {
+    format!("history is off: {why}")
+}
+
+pub const HISTORY_WRITE_FAILED: &str = "history write failed";
+pub const HISTORY_PRUNE_FAILED: &str = "history prune failed";
+pub const HISTORY_COMPACTION_FAILED: &str = "history compaction failed";
+pub const HISTORY_COMPACTION_CHECK_FAILED: &str = "history compaction check failed";
+
+pub fn history_event_not_written(kind: &str) -> String {
+    format!("history: the {kind} event was not written")
+}
+
+pub fn action_not_recorded(why: &str) -> String {
+    format!("history: the action was not recorded: {why}")
+}
+
+pub fn client_spawn_failed(why: &str) -> String {
+    format!("cannot serve a client: {why}")
+}
+
+pub fn accept_retrying(why: &str) -> String {
+    format!("accept: {why}; retrying")
 }
 
 pub fn status_lines(
@@ -872,6 +938,10 @@ pub fn history_damaged_again(hours: i64) -> String {
     format!(
         "history was damaged again within {hours} hours of being replaced; it is off and the file is left in place until then"
     )
+}
+
+pub fn history_move_aside_failed(first: &str, why: &str) -> String {
+    format!("{first}; and moving it aside failed: {why}")
 }
 
 pub fn history_schema_newer(found: &str, ours: &str) -> String {
@@ -1465,15 +1535,19 @@ pub fn apps_container(name: &str, id: &str) -> String {
     format!("{} (container {})", plain(name), plain(id))
 }
 
-/// `s` safe to print: every control character (C0, DEL, C1) and the
-/// bidirectional overrides and isolates (U+202A–202E, U+2066–2069) become
-/// U+FFFD. A process names itself, and an escape sequence or a newline in
-/// its name would rewrite the terminal or forge rows in `mirqab apps` and
-/// in the text an MCP client reads (review of PR #16). JSON needs none of
+/// `s` safe to print: every control character (C0, DEL, C1), the line and
+/// paragraph separators (U+2028, U+2029) and the bidirectional overrides
+/// and isolates (U+202A–202E, U+2066–2069) become U+FFFD. A process names
+/// itself, and an escape sequence or a newline in its name would rewrite
+/// the terminal or forge rows in `mirqab apps`, in the text an MCP client
+/// reads and in the window's labels, which break a line at U+2028 and
+/// U+2029 as well (review of PR #16; plan 024 L18). JSON needs none of
 /// this: serde escapes.
 pub fn plain(s: &str) -> std::borrow::Cow<'_, str> {
-    let bad =
-        |c: char| c.is_control() || matches!(c, '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}');
+    let bad = |c: char| {
+        c.is_control()
+            || matches!(c, '\u{2028}' | '\u{2029}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
+    };
     if !s.chars().any(bad) {
         return std::borrow::Cow::Borrowed(s);
     }
@@ -2229,6 +2303,16 @@ pub fn ports_unavailable(why: &str) -> String {
     format!("proc/net/tcp cannot be read: {why}")
 }
 
+/// `status`'s reason when `proc/stat` has no aggregate `cpu` line (the
+/// `system` stream).
+pub const SYSTEM_UNAVAILABLE: &str = "proc/stat has no cpu line";
+
+/// `status`'s reason when `proc` cannot be listed (the `apps` and
+/// `process` streams).
+pub fn proc_unlisted(why: &str) -> String {
+    format!("proc cannot be listed: {why}")
+}
+
 /// What a scope means, in a sentence: `mirqab port`, the page's Reach
 /// line. mirqab reads bind addresses, never firewall rules.
 pub fn reach_sentence(scope: &str) -> &'static str {
@@ -2504,6 +2588,11 @@ mod tests {
         assert_eq!(apps_row("x\ny", "1%", "1 MB", 1).lines().count(), 1);
         assert_eq!(what_line("command", "a\rb"), "command     a\u{fffd}b");
         assert_eq!(proc_ref("a\x1bb", 1), "a\u{fffd}b (1)");
+        // A label breaks a line at the Unicode line and paragraph
+        // separators as it does at a newline, so a name holding one would
+        // add a forged line to the Quit confirmation (audit, plan 024 L18).
+        let p = plain("helper\u{2028}Left alone:\u{2029}x");
+        assert_eq!(p, "helper\u{fffd}Left alone:\u{fffd}x");
     }
 
     #[test]

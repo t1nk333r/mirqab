@@ -10,7 +10,10 @@
 #      tables, MAC addresses, coordinates finer than a
 #      city, token shapes, home paths, personal e-mail addresses, private keys,
 #      and the literal strings of tools/secrets-deny.txt plus the local file
-#      named by MIRQAB_SECRETS_DENY (a machine's own hostnames).
+#      named by MIRQAB_SECRETS_DENY (a machine's own hostnames), each matched
+#      as a whole word;
+#   3. tools/secrets-deny.txt itself holds nothing but comments, in the tree
+#      and in history: the scans skip it, so a value there would be published.
 # The history scan, messages included, skips the commits
 # tools/secrets-allow.txt lists, each with its reason: commits already pushed whose matches were reviewed and found
 # synthetic. A full 40-character hash per line; nothing else is skippable.
@@ -46,7 +49,8 @@ report() {
 
 # Every line added anywhere in history, read once, outside the allowed
 # commits. This file and the deny list are excluded: they hold the patterns
-# and the denied strings themselves. The allow list is scanned like any file.
+# and the denied strings themselves (the deny list is checked to hold none,
+# below). The allow list is scanned like any file.
 allow="$(sed -n 's/^\([0-9a-f]\{40\}\)\([[:space:]].*\)\{0,1\}$/\1/p' tools/secrets-allow.txt 2>/dev/null || true)"
 added="$(mktemp)"
 trap 'rm -f -- "$found" "$added"' EXIT
@@ -238,7 +242,17 @@ for t in tcp tcp6 udp udp6; do procnet+=(":(glob)tests/fixtures/**/proc/net/$t")
         }
     }' | report "address in a /proc/net table outside the documentation ranges"
 
-# Literal strings: the repository's list and the machine's local one.
+# The tracked deny list stays empty, in the tree and in its history: every
+# scan above skips it, so a hostname written there instead of into the local
+# file would pass them all and be published (plan 024 L19).
+{
+    git grep -nIvE -e '^[[:space:]]*(#|$)' -- tools/secrets-deny.txt || true
+    history_added tools/secrets-deny.txt | grep -vE '^\+[[:space:]]*(#|$)' || true
+} | report "a value in the tracked tools/secrets-deny.txt (keep it empty; list a machine's names in the file MIRQAB_SECRETS_DENY names)"
+
+# Literal strings: the repository's list and the machine's local one, each
+# matched as a whole word, so a short hostname does not flag every longer
+# word that contains it (plan 024 L20).
 deny_files=(tools/secrets-deny.txt)
 [[ -z ${MIRQAB_SECRETS_DENY:-} ]] || deny_files+=("$MIRQAB_SECRETS_DENY")
 for f in "${deny_files[@]}"; do
@@ -246,8 +260,8 @@ for f in "${deny_files[@]}"; do
     while IFS= read -r word || [[ -n $word ]]; do
         [[ -n $word && $word != '#'* ]] || continue
         {
-            git grep -nIF -e "$word" -- . ':!tools/secrets-deny.txt' || true
-            grep -F -e "$word" "$added" || true
+            git grep -nIwF -e "$word" -- . ':!tools/secrets-deny.txt' || true
+            grep -wF -e "$word" "$added" || true
         } | report "a denied string from $f"
     done <"$f"
 done

@@ -82,9 +82,10 @@ scratch="$(mktemp -d /tmp/mqbench.XXXXXX)"
 # The daemon and the socat holding the subscription are children of this
 # shell, never of a command substitution, so the trap below always knows
 # them (review of PR #6: both leaked on every early exit).
-daemon="" holder="" bus="" watcher="" fd_open=0
+daemon="" holder="" bus="" watcher="" napper="" fd_open=0
 stop_children() {
     if ((fd_open)); then exec 3>&-; fd_open=0; fi
+    [[ -z $napper ]] || { kill "$napper" 2>/dev/null || true; wait "$napper" 2>/dev/null || true; napper=""; }
     [[ -z $watcher ]] || { kill "$watcher" 2>/dev/null || true; wait "$watcher" 2>/dev/null || true; watcher=""; }
     [[ -z $bus ]] || { kill "$bus" 2>/dev/null || true; wait "$bus" 2>/dev/null || true; bus=""; }
     [[ -z $holder ]] || { kill "$holder" 2>/dev/null || true; wait "$holder" 2>/dev/null || true; holder=""; }
@@ -95,7 +96,19 @@ cleanup() {
     rm -rf -- "$scratch"
 }
 trap cleanup EXIT
-trap 'exit 130' INT TERM
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+# nap SECONDS — sleep in the background and wait for it: bash runs a trap
+# only once the foreground command ends, so a SIGTERM to this script during
+# a foreground sleep waited out the whole measurement while the daemon ran
+# on (plan 024 L10). A trapped signal interrupts `wait` at once.
+nap() {
+    sleep "$1" &
+    napper=$!
+    wait "$napper"
+    napper=""
+}
 
 # The root the daemon reads: the fixture, or with --procs a scratch copy
 # with the user's processes cloned until it holds at least N.
@@ -181,7 +194,7 @@ measure() {
         fd_open=1
         printf '{"id":1,"method":"subscribe","stream":"%s","params":%s}\n' "$stream" "$params" >&3
     fi
-    sleep 5
+    nap 5
     if ((tray)) && ! grep -q '^registered ' "$run/watcher"; then
         cat "$run/err" >&2
         fail "the tray did not register with the stand-in host"
@@ -196,7 +209,7 @@ measure() {
     fi
     local t0 s0 t1 s1
     t0=$(ticks "$daemon") s0=$(switches "$daemon")
-    sleep "$seconds"
+    nap "$seconds"
     # A daemon that died during the minute is a failure, not an idle one.
     kill -0 "$daemon" 2>/dev/null || { fail "the daemon exited during the measurement"; return; }
     t1=$(ticks "$daemon") s1=$(switches "$daemon")

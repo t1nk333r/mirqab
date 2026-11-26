@@ -43,6 +43,29 @@ fn dirs(home: Option<&str>) -> Vec<String> {
     out
 }
 
+/// The longest entry read; real ones are a few KiB, the most translated
+/// some tens.
+const ENTRY_MAX: usize = 256 * 1024;
+
+/// The text of the entry at `rel`, when it is a regular file of at most
+/// `ENTRY_MAX` bytes (plan 024, C10). Any process of the user, a Flatpak
+/// app given its data directory among them, can put a FIFO there, or a
+/// link to `/dev/zero`; read plainly, the first blocks the walk under the
+/// sampler lock for good and the second grows until the daemon is killed.
+/// Links are followed, as Flatpak's exports are links, and the file is
+/// opened only once it is known to be a regular file (`Root::
+/// read_regular_prefix_cleared`). Every mount is cleared: the directories
+/// themselves, the user's under `$HOME`, are read on whatever holds them.
+fn read_entry(root: &Root, rel: &str) -> Option<String> {
+    let (bytes, _) = root
+        .read_regular_prefix_cleared(rel, ENTRY_MAX + 1, |_| true)
+        .ok()?;
+    if bytes.len() > ENTRY_MAX {
+        return None;
+    }
+    String::from_utf8(bytes).ok()
+}
+
 #[derive(Debug, Default)]
 pub struct Desktop {
     dirs: Vec<String>,
@@ -174,9 +197,7 @@ impl Desktop {
                 if self.by_id.contains_key(id) {
                     continue;
                 }
-                let Some(p) = root
-                    .read(&format!("{dir}/{file}"))
-                    .ok()
+                let Some(p) = read_entry(root, &format!("{dir}/{file}"))
                     .as_deref()
                     .and_then(parse)
                 else {
