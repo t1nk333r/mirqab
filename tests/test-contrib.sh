@@ -3,6 +3,7 @@
 # qmllint where that tool is installed (in CI it must be), and the Waybar
 # snippets are valid JSON naming only items `mirqab bar` knows.
 # mirqab:covers contrib/**
+# mirqab:covers crates/mirqab/src/bar/** crates/mirqab/src/{main,cli}.rs
 
 sandbox
 build_bins

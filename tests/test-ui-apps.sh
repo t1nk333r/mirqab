@@ -24,10 +24,15 @@
 # mirqab:covers crates/mirqab-ui/src/selftest.rs crates/mirqab-ui/src/client.rs
 # mirqab:covers crates/mirqab-ui/src/widgets/confirm_dialog.rs
 # mirqab:covers crates/mirqab-core/src/samplers/process.rs crates/mirqab-core/src/samplers/apps/**
-# mirqab:covers tests/fixtures/root-desktop/**
+# mirqab:covers tests/fixtures/root-desktop/** tests/fixtures/bin/pacman
 # mirqab:covers-shared
 
 sandbox
+# The verdict asks pacman who owns an executable: the fixture's stub, never
+# the host's package database (audit, plan 024 C2). The log beside it shows
+# that the stub answered.
+cp "$FIXTURES/bin/pacman" "$SANDBOX/stubs/pacman"
+: >"$SANDBOX/stubs/pacman.log"
 # The daemon on a fixture root gets the recording sender, which writes each
 # signal to MIRQAB_ACT_LOG and sends nothing; the caller it refuses is the
 # fixture's python3 in a terminal (the interface's real pid has no proc
@@ -83,6 +88,7 @@ SELECT="type apps-search Browser; activate apps-group:$BROWSER; wait apps-verdic
 apps "$SELECT; pause 500"
 is "the inspector names the group" true "$(q '[.. | objects | select(.visible and .text? == "Example Browser" and ((.classes // []) | index("title-4")))] | length > 0')"
 is "with the verdict of its main process" "Packaged by core/bash" "$(named apps-verdict | jq -r .text)"
+like "the fixture's pacman answered, not the host's" "$(<"$SANDBOX/stubs/pacman.log")" "-Qqo /usr/bin/bash"
 is "and offers Quit" true "$(named apps-quit | jq -r .visible)"
 
 apps "$SELECT; activate apps-quit; wait apps-dialog"

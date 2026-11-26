@@ -1,6 +1,7 @@
 # tests/test-secrets.sh — tools/secrets.sh flags host addresses (bare or in
 # CIDR form, IPv6, or hexadecimal in a fixture's /proc/net table), MAC
-# addresses, fine coordinates and denied strings, and allows network ranges
+# addresses, fine coordinates and denied strings (as whole words), and a
+# value in the tracked deny list, and allows network ranges
 # and the documentation ranges. gitleaks is stubbed: its own
 # rules are its business; this file tests the patterns around it.
 # mirqab:covers tools/secrets.sh tools/secrets-deny.txt tools/secrets-allow.txt
@@ -196,12 +197,38 @@ status_is "an address hidden in the allow list is found" 1 "$STATUS"
 printf '# none\n' >"$repo/tools/secrets-allow.txt"
 
 # A local deny list whose last line has no newline still counts.
-printf 'lunabox' >"$SANDBOX/deny"
+printf 'examplebox' >"$SANDBOX/deny"
 export MIRQAB_SECRETS_DENY="$SANDBOX/deny"
-scan 'connect to lunabox'
+scan 'connect to examplebox'
 status_is "a denied string without a trailing newline is caught" 1 "$STATUS"
 like "and named" "$OUTPUT" "denied string"
+# A denied name matches as a whole word: inside a longer word it is not that
+# host, beside a dot or a dash it still is (plan 024 L20).
+scan 'the exampleboxes and myexamplebox'
+status_is "a denied name inside a longer word passes" 0 "$STATUS"
+scan 'ssh examplebox.local'
+status_is "a denied name before a dot is caught" 1 "$STATUS"
+scan 'host examplebox-2'
+status_is "a denied name before a dash is caught" 1 "$STATUS"
 unset MIRQAB_SECRETS_DENY
+
+# The tracked deny list holds only comments: every scan skips it, so a name
+# written there would be published unseen (plan 024 L19).
+cp "$repo/tools/secrets-deny.txt" "$SANDBOX/deny.tracked"
+printf 'examplebox\n' >>"$repo/tools/secrets-deny.txt"
+scan 'clean'
+status_is "a value in the tracked deny list is found" 1 "$STATUS"
+like "and named" "$OUTPUT" "tracked tools/secrets-deny.txt"
+# Removed again, it is still in history.
+git -C "$repo" add -A
+git -C "$repo" -c user.name=t -c user.email=t@example.invalid commit -qm deny
+cp "$SANDBOX/deny.tracked" "$repo/tools/secrets-deny.txt"
+git -C "$repo" -c user.name=t -c user.email=t@example.invalid commit -qam undeny
+capture "$repo/tools/secrets.sh"
+status_is "a value once in the tracked deny list is found in history" 1 "$STATUS"
+like "and named" "$OUTPUT" "tracked tools/secrets-deny.txt"
+rm -rf "$repo/.git"
+git -C "$repo" init -q -b main
 
 # A commit on the allow list is skipped in history; the same text in the
 # working tree, or in a commit not on the list, is still found.
@@ -234,9 +261,9 @@ capture "$repo/tools/secrets.sh"
 status_is "an address and a MAC in a commit message are found" 1 "$STATUS"
 like "and the address is named" "$OUTPUT" "IPv4 address outside the documentation ranges"
 like "and the MAC" "$OUTPUT" "MAC address"
-printf 'lunabox' >"$SANDBOX/deny"
+printf 'examplebox' >"$SANDBOX/deny"
 export MIRQAB_SECRETS_DENY="$SANDBOX/deny"
-git -C "$repo" -c user.name=t -c user.email=t@example.invalid commit -q --allow-empty -m 'seen on lunabox'
+git -C "$repo" -c user.name=t -c user.email=t@example.invalid commit -q --allow-empty -m 'seen on examplebox'
 capture "$repo/tools/secrets.sh"
 like "a denied string in a commit message is found" "$OUTPUT" "denied string"
 unset MIRQAB_SECRETS_DENY

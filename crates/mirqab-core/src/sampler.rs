@@ -101,9 +101,11 @@ pub trait Sampler: Send {
 
     /// Whether `wants` narrows what a sample reads, so a sample serves only
     /// the params it was taken with: a subscriber whose params changed
-    /// while it was taken waits for the next one (at most `MIN_GAP`) rather
-    /// than get a view cut from a read for others (audit: `process` said a
-    /// live pid was gone, `ports` left out owners and UDP rows). A sampler
+    /// while it was taken waits for the next one (at most the smallest
+    /// floor the stream's subscribers hold: `live.intervalMs` for a live
+    /// one, 2 s otherwise; see `MIN_GAP` in server.rs) rather than get a
+    /// view cut from a read for others (audit: `process` said a live pid
+    /// was gone, `ports` left out owners and UDP rows). A sampler
     /// that reads everything keeps false, and such a subscriber is served
     /// from the sample at once.
     fn narrows(&self) -> bool {

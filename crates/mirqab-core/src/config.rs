@@ -230,7 +230,7 @@ impl Config {
                     self.problems = problems;
                     self.file = v;
                 }
-                Ok(_) => self.broken = Some("not a JSON object".into()),
+                Ok(_) => self.broken = Some(strings::CONFIG_NOT_OBJECT.into()),
                 Err(e) => self.broken = Some(e.to_string()),
             },
         }
@@ -377,6 +377,11 @@ mod tests {
             Err(SetError::Broken(_))
         ));
         assert_eq!(std::fs::read_to_string(&p).unwrap(), "{not json");
+        // JSON that is not an object: the reason comes from strings.rs
+        // (plan 024, L15).
+        std::fs::write(&p, "[]").unwrap();
+        let c = Config::load(&p);
+        assert_eq!(c.broken(), Some(strings::CONFIG_NOT_OBJECT));
         act::remove_path(&d, false).unwrap();
     }
 

@@ -11,6 +11,7 @@ use crate::samplers::apps::{group, procfs};
 use crate::sys;
 use serde_json::{Value, json};
 use std::os::fd::{AsFd, OwnedFd};
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -629,13 +630,29 @@ pub fn write_file(path: &Path, contents: &[u8], dry_run: bool) -> Result<Value, 
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default();
     let tmp = path.with_file_name(format!(".{name}.{}.tmp", std::process::id()));
+    // The mode of the file replaced, kept exactly (the umask would trim it):
+    // a `chmod 600` the user made, or a dotfiles target's, outlives a
+    // setting changed (plan 024, L12). A new file takes the usual mode.
+    // Created with it too, so the temporary is never wider than the file.
+    let keep = std::fs::metadata(path)
+        .ok()
+        .map(|m| m.permissions().mode() & 0o7777);
     // The bytes reach the disk before the rename makes them the file, or a
     // crash could leave a 0-byte config.json, which `Config::read` marks
     // broken and `config.set` then refuses (audit 2026-11-21, L8).
-    let written = std::fs::File::create(&tmp).and_then(|mut f| {
-        std::io::Write::write_all(&mut f, contents)?;
-        f.sync_all()
-    });
+    let written = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(keep.unwrap_or(0o666))
+        .open(&tmp)
+        .and_then(|mut f| {
+            if let Some(mode) = keep {
+                f.set_permissions(std::fs::Permissions::from_mode(mode))?;
+            }
+            std::io::Write::write_all(&mut f, contents)?;
+            f.sync_all()
+        });
     written
         .and_then(|()| std::fs::rename(&tmp, path))
         .map_err(|e| {
@@ -733,6 +750,40 @@ mod tests {
             std::fs::read_dir(&d).unwrap().count(),
             2,
             "no temporary left"
+        );
+        remove_path(&d, false).unwrap();
+    }
+
+    #[test]
+    fn a_rewrite_keeps_the_old_mode() {
+        // Plan 024, L12: the new file took the umask's mode, so a `chmod
+        // 600` (or a dotfiles target's 0640) was lost on every config.set.
+        let d = scratch("keepmode");
+        let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o7777;
+        let f = d.join("config.json");
+        write_file(&f, b"{\"old\":true}", false).unwrap();
+        std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o600)).unwrap();
+        write_file(&f, b"{}", false).unwrap();
+        assert_eq!(std::fs::read_to_string(&f).unwrap(), "{}");
+        assert_eq!(mode(&f), 0o600);
+        // Wider than the umask allows a new file, kept all the same.
+        std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o666)).unwrap();
+        write_file(&f, b"{\"a\":1}", false).unwrap();
+        assert_eq!(mode(&f), 0o666);
+        // Through a symlink, the target's mode.
+        std::fs::create_dir_all(d.join("dotfiles")).unwrap();
+        let target = d.join("dotfiles/config.json");
+        std::fs::write(&target, "{}").unwrap();
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o640)).unwrap();
+        std::os::unix::fs::symlink("dotfiles/config.json", d.join("linked.json")).unwrap();
+        write_file(&d.join("linked.json"), b"{\"b\":2}", false).unwrap();
+        assert_eq!(mode(&target), 0o640);
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "{\"b\":2}");
+        assert!(
+            std::fs::symlink_metadata(d.join("linked.json"))
+                .unwrap()
+                .file_type()
+                .is_symlink()
         );
         remove_path(&d, false).unwrap();
     }
