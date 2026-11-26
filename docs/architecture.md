@@ -857,7 +857,8 @@ Sizes are in em of the base font so the fractional-scale case works.
   inspector, no colour and no icon (plan 006, part 4).
 - **Strings live in one place.** The first release is English only
   (owner, 2026-11-13). Every string a person reads, in the interface, the
-  CLI and the daemon's stream data, is a function or constant in
+  CLI, the daemon's stream data and replies, and its start-up errors and
+  journal lines, is a function or constant in
   `crates/mirqab-proto/src/strings.rs`, so a translation later replaces
   one module's body (with gettext or a message file) and touches no call
   site. Lint greps `crates/mirqab-ui/src` for a string literal passed

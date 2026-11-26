@@ -440,7 +440,8 @@ fn mkdir_private(dir: &Path) -> Result<(), String> {
     // Only the leaf mirqab owns is private; parents it has to make (a
     // fresh `~/.local/state`) get the default mode (review of PR #6).
     if let Some(parent) = dir.parent().filter(|p| !p.as_os_str().is_empty()) {
-        std::fs::create_dir_all(parent).map_err(|e| format!("mkdir {}: {e}", parent.display()))?;
+        std::fs::create_dir_all(parent)
+            .map_err(|e| strings::mkdir_failed(&parent.display().to_string(), &e.to_string()))?;
     }
     match std::fs::DirBuilder::new().mode(0o700).create(dir) {
         Ok(()) => Ok(()),
@@ -454,7 +455,10 @@ fn mkdir_private(dir: &Path) -> Result<(), String> {
                 Err(strings::socket_dir_not_private(&dir.display().to_string()))
             }
         }
-        Err(e) => Err(format!("mkdir {}: {e}", dir.display())),
+        Err(e) => Err(strings::mkdir_failed(
+            &dir.display().to_string(),
+            &e.to_string(),
+        )),
     }
 }
 
@@ -495,26 +499,31 @@ fn take_lock(socket: &Path) -> Result<std::fs::File, ListenError> {
 /// leaf private first. The lock file is 0600, as the file it guards.
 fn lock_beside(target: &Path) -> Result<std::fs::File, ListenError> {
     if let Some(dir) = target.parent().filter(|d| !d.as_os_str().is_empty()) {
-        std::fs::create_dir_all(dir)
-            .map_err(|e| ListenError::Failed(format!("mkdir {}: {e}", dir.display())))?;
+        std::fs::create_dir_all(dir).map_err(|e| {
+            ListenError::Failed(strings::mkdir_failed(
+                &dir.display().to_string(),
+                &e.to_string(),
+            ))
+        })?;
     }
     let path = PathBuf::from(format!("{}.lock", target.display()));
+    let shown = path.display().to_string();
     let file = std::fs::OpenOptions::new()
         .create(true)
         .truncate(false)
         .write(true)
         .mode(0o600)
         .open(&path)
-        .map_err(|e| ListenError::Failed(format!("{}: {e}", path.display())))?;
+        .map_err(|e| ListenError::Failed(strings::lock_file_failed(&shown, &e.to_string())))?;
     // One made before modes were set is tightened.
     file.set_permissions(std::fs::Permissions::from_mode(0o600))
-        .map_err(|e| ListenError::Failed(format!("chmod {}: {e}", path.display())))?;
+        .map_err(|e| ListenError::Failed(strings::chmod_failed(&shown, &e.to_string())))?;
     match file.try_lock() {
         Ok(()) => Ok(file),
         Err(std::fs::TryLockError::WouldBlock) => Err(ListenError::AlreadyRunning),
-        Err(std::fs::TryLockError::Error(e)) => {
-            Err(ListenError::Failed(format!("{}: {e}", path.display())))
-        }
+        Err(std::fs::TryLockError::Error(e)) => Err(ListenError::Failed(
+            strings::lock_file_failed(&shown, &e.to_string()),
+        )),
     }
 }
 
@@ -584,15 +593,12 @@ pub fn listen(opts: Options) -> Result<Server, ListenError> {
         Some(path) => match History::open(path, unix_now()) {
             Ok(h) => {
                 if let Some(aside) = &h.moved_aside {
-                    log(&format!(
-                        "history could not be opened; moved it to {}",
-                        aside.display()
-                    ));
+                    log(&strings::history_moved_aside(&aside.display().to_string()));
                 }
                 (Some(Mutex::new(h)), None)
             }
             Err(e) => {
-                log(&format!("history is off: {e}"));
+                log(&strings::history_off(&e.to_string()));
                 (None, Some(e.to_string()))
             }
         },
@@ -677,10 +683,11 @@ fn bind(socket: &Path) -> Result<UnixListener, ListenError> {
         }
         remove_socket(socket).map_err(ListenError::Failed)?;
     }
+    let shown = socket.display().to_string();
     let listener = UnixListener::bind(socket)
-        .map_err(|e| ListenError::Failed(format!("bind {}: {e}", socket.display())))?;
+        .map_err(|e| ListenError::Failed(strings::bind_failed(&shown, &e.to_string())))?;
     std::fs::set_permissions(socket, std::fs::Permissions::from_mode(0o600))
-        .map_err(|e| ListenError::Failed(format!("chmod {}: {e}", socket.display())))?;
+        .map_err(|e| ListenError::Failed(strings::chmod_failed(&shown, &e.to_string())))?;
     Ok(listener)
 }
 
@@ -739,16 +746,16 @@ fn history_loop(inner: Arc<Inner>) {
             // minute running now is then never half-written in a query
             // (review of phase C).
             if let Err(e) = h.write_minute(ts - 30, &values) {
-                failed("history write failed".into(), e);
+                failed(strings::HISTORY_WRITE_FAILED.into(), e);
             }
             for (kind, data) in &events {
                 if let Err(e) = h.add_event(ts - 30, kind, data) {
-                    failed(format!("history: the {kind} event was not written"), e);
+                    failed(strings::history_event_not_written(kind), e);
                 }
             }
             if prune_due(last_prune, ts) {
                 if let Err(e) = h.prune(ts) {
-                    failed("history prune failed".into(), e);
+                    failed(strings::HISTORY_PRUNE_FAILED.into(), e);
                 }
                 last_prune = ts;
             }
@@ -758,11 +765,11 @@ fn history_loop(inner: Arc<Inner>) {
             match h.compaction_due(ts) {
                 Ok(true) => {
                     if let Err(e) = h.compact(ts) {
-                        failed("history compaction failed".into(), e);
+                        failed(strings::HISTORY_COMPACTION_FAILED.into(), e);
                     }
                 }
                 Ok(false) => {}
-                Err(e) => failed("history compaction check failed".into(), e),
+                Err(e) => failed(strings::HISTORY_COMPACTION_CHECK_FAILED.into(), e),
             }
         }
         if corrupt || h.broken.is_some() {
@@ -799,15 +806,14 @@ fn prune_due(last: i64, ts: i64) -> bool {
 fn recover_history(h: &mut History, ts: i64) {
     let before = h.broken.clone();
     match h.recover(ts) {
-        Ok(()) => log(&format!(
-            "history was damaged; moved it to {}",
-            h.moved_aside
+        Ok(()) => log(&strings::history_damaged_moved(
+            &h.moved_aside
                 .as_ref()
                 .map(|p| p.display().to_string())
-                .unwrap_or_default()
+                .unwrap_or_default(),
         )),
         Err(e) if before.as_deref() != Some(e.0.as_str()) => {
-            log(&format!("history is off: {e}"));
+            log(&strings::history_off(&e.to_string()));
         }
         Err(_) => {}
     }
@@ -953,7 +959,7 @@ impl Server {
                         .stack_size(STACK)
                         .spawn(move || inner.handle(stream, caller));
                     if let Err(e) = spawned {
-                        log(&format!("cannot serve a client: {e}"));
+                        log(&strings::client_spawn_failed(&e.to_string()));
                     }
                 }
                 Err(e) if e.kind() == ErrorKind::Interrupted => continue,
@@ -975,7 +981,7 @@ impl Server {
                     let errno = e.raw_os_error().unwrap_or_default();
                     let (wait, say) = backoff.failed(errno, Instant::now());
                     if say {
-                        log(&format!("accept: {e}; retrying"));
+                        log(&strings::accept_retrying(&e.to_string()));
                     }
                     std::thread::sleep(wait);
                 }
@@ -1989,6 +1995,23 @@ mod tests {
         assert!(!prune_due(1_000_000, 1_000_000 + 3599));
         assert!(prune_due(1_000_000, 1_000_000 + 3600));
         assert!(prune_due(1_000_000, 1_000_000 - 1));
+    }
+
+    #[test]
+    fn a_directory_that_cannot_be_made_is_said_with_strings() {
+        // Plan 024, L13: the daemon's start-up errors were worded here, not
+        // in strings.rs.
+        let d = std::env::temp_dir().join(format!("mirqab-mkdir-{}", std::process::id()));
+        let _ = crate::act::remove_path(&d, false);
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(d.join("file"), "").unwrap();
+        let parent = d.join("file/sub");
+        let why = std::io::Error::from_raw_os_error(libc::ENOTDIR).to_string();
+        assert_eq!(
+            mkdir_private(&parent.join("mirqab")),
+            Err(strings::mkdir_failed(&parent.display().to_string(), &why))
+        );
+        let _ = crate::act::remove_path(&d, false);
     }
 
     #[test]
