@@ -722,10 +722,11 @@ impl Sampler for Apps {
             Ok(inspect::Read::Done(i)) => Answer::Ready(Ok(to_value(&i))),
             Ok(inspect::Read::Owner(p)) => {
                 // pacman, up to 5 s a call, after the server let go of
-                // this sampler's lock.
+                // this sampler's lock. The `Owners` lock is taken only for
+                // that call, after `finish` has checked the host's file.
                 let owners = Arc::clone(&self.owners);
                 Answer::Later(Box::new(move || {
-                    let i = inspect::finish(*p, &mut lock(&owners));
+                    let i = inspect::finish(*p, |exe| lock(&owners).owner(exe));
                     Ok(to_value(&i))
                 }))
             }

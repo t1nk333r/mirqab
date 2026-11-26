@@ -251,6 +251,71 @@ impl Root {
         Some((m.dev(), m.ino()))
     }
 
+    /// The device and inode of `rel`, found one component at a time so
+    /// that no name is looked up in a directory on a mount `clear` does not
+    /// accept by id (plan 024, review of C11). The path can come from a
+    /// process in another mount namespace, which chooses it, and a lookup
+    /// or a `stat` on a FUSE mount waits on its server for as long as it
+    /// likes:
+    ///
+    /// 1. The root is opened with O_PATH and its mount id goes to `clear`.
+    /// 2. Each component is opened O_PATH|O_NOFOLLOW through the pinned
+    ///    descriptor of the directory before it (`/proc/self/fd/N/name`),
+    ///    which was cleared already; its own mount id is cleared next,
+    ///    since a lookup may cross onto a mount placed on it.
+    /// 3. Only a cleared descriptor is asked for its metadata. A component
+    ///    before the last must be a directory, so a symlink there is
+    ///    refused, not followed; a symlink as the last gives its own id.
+    ///
+    /// O_DIRECTORY is not passed, so an automount point is not triggered.
+    /// `clear` reads its state at each call, for the reason
+    /// `read_regular_prefix_in` gives.
+    pub fn file_id_cleared(&self, rel: &str, clear: impl Fn(u64) -> bool) -> io::Result<FileId> {
+        use std::os::fd::AsRawFd;
+        use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+        let invalid = |what: String| io::Error::new(io::ErrorKind::InvalidInput, what);
+        let mut parts = Vec::new();
+        for c in Path::new(rel).components() {
+            match c {
+                Component::Normal(part) => parts.push(part),
+                Component::CurDir => {}
+                _ => return Err(invalid(format!("not a plain path: {rel}"))),
+            }
+        }
+        if parts.is_empty() {
+            return Err(invalid(format!("no name: {rel:?}")));
+        }
+        let open = |p: &Path, flags: libc::c_int| {
+            std::fs::OpenOptions::new()
+                .read(true)
+                .custom_flags(flags)
+                .open(p)
+        };
+        let check = |f: &std::fs::File| -> io::Result<()> {
+            if clear(pinned_mount_id(f)?) {
+                Ok(())
+            } else {
+                Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    format!("{rel} crosses an uncleared mount"),
+                ))
+            }
+        };
+        let mut cur = open(&self.base, libc::O_PATH | libc::O_DIRECTORY)?;
+        check(&cur)?;
+        let mut meta = cur.metadata()?;
+        for part in parts {
+            if !meta.is_dir() {
+                return Err(invalid(format!("not a directory on the way to {rel}")));
+            }
+            let at = PathBuf::from(format!("/proc/self/fd/{}", cur.as_raw_fd())).join(part);
+            cur = open(&at, libc::O_PATH | libc::O_NOFOLLOW)?;
+            check(&cur)?;
+            meta = cur.metadata()?;
+        }
+        Ok((meta.dev(), meta.ino()))
+    }
+
     /// At most the first `n` bytes of `name` inside the directory `dir`
     /// resolves to (`proc/<pid>/root`), when it is a regular file on a
     /// mount `clear` accepts by id (audit 2026-11-21, L7). A process
@@ -539,6 +604,56 @@ mod tests {
             .read_regular_prefix_cleared("proc/2", 4, |_| true)
             .unwrap_err();
         assert_eq!(e.kind(), std::io::ErrorKind::PermissionDenied, "{e}");
+    }
+
+    #[test]
+    fn a_cleared_file_id_asks_about_each_mount_before_looking_inside() {
+        // Plan 024, review of C11: the host's path comes from another mount
+        // namespace, and a lookup on a hung FUSE mount waits for good, so
+        // each directory's mount is cleared before a name is looked up in
+        // it. A refused root is refused before the (missing) name is looked
+        // up: the error is a refusal, not "not found", and only the root's
+        // mount was asked about.
+        let s = scratch("id-order");
+        std::fs::create_dir_all(s.0.join("usr/bin")).unwrap();
+        std::fs::write(s.0.join("usr/bin/tool"), "x").unwrap();
+        let r = Root::new(&s.0);
+        let mnt = r.mount_id("usr").unwrap();
+        let asked = std::cell::RefCell::new(Vec::new());
+        let e = r
+            .file_id_cleared("absent/tool", |id| {
+                asked.borrow_mut().push(id);
+                false
+            })
+            .unwrap_err();
+        assert_eq!(e.kind(), std::io::ErrorKind::PermissionDenied, "{e}");
+        assert_eq!(*asked.borrow(), [mnt]);
+        // Cleared, every component is asked about: the root, usr, bin and
+        // tool, and the id is the file's.
+        asked.borrow_mut().clear();
+        let got = r.file_id_cleared("usr/bin/tool", |id| {
+            asked.borrow_mut().push(id);
+            true
+        });
+        assert_eq!(got.unwrap(), r.file_id("usr/bin/tool").unwrap());
+        assert_eq!(asked.borrow().len(), 4);
+    }
+
+    #[test]
+    fn a_cleared_file_id_follows_no_symlink_on_the_way() {
+        let s = scratch("id-link");
+        std::fs::create_dir_all(s.0.join("usr/bin")).unwrap();
+        std::fs::write(s.0.join("usr/bin/tool"), "x").unwrap();
+        std::os::unix::fs::symlink("usr/bin", s.0.join("bin")).unwrap();
+        std::os::unix::fs::symlink("tool", s.0.join("usr/bin/alias")).unwrap();
+        let r = Root::new(&s.0);
+        let tool = r.file_id("usr/bin/tool").unwrap();
+        let e = r.file_id_cleared("bin/tool", |_| true).unwrap_err();
+        assert_eq!(e.kind(), std::io::ErrorKind::InvalidInput, "{e}");
+        // The last component names itself, so a link there is not the file.
+        assert_ne!(r.file_id_cleared("usr/bin/alias", |_| true).unwrap(), tool);
+        assert!(r.file_id_cleared("usr/../usr/bin/tool", |_| true).is_err());
+        assert!(r.file_id_cleared("/usr/bin/tool", |_| true).is_err());
     }
 
     #[test]

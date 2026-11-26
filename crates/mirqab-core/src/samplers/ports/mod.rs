@@ -9,11 +9,13 @@
 //! gone or is another one (a new start time), or the map is 30 s old (a
 //! worker forked since holds a mapped socket); between rebuilds a tick reads
 //! the tables and `stat` and `statm` of the few mapped processes. A `get`
-//! rebuilds it. While the user listens on nothing, no process is walked. A row is a port, a protocol, a bind pair and an owner: for
-//! the user's sockets, the tree of processes that hold it (a forked
-//! server and its workers are one row, `pids` listing them, root first;
-//! independent holders are rows of their own). While every subscriber is lite (the counts, for a badge, the
-//! tray and a bar item) the tables are all that is read.
+//! rebuilds it. While the user listens on nothing, no process is walked.
+//! A row is a port, a protocol, a bind pair and an owner: for the user's
+//! sockets, the tree of processes that hold it (a forked server and its
+//! workers are one row, `pids` listing them, root first; independent
+//! holders are rows of their own). While every subscriber is lite (the
+//! counts, for a badge, the tray and a bar item) the tables are all that
+//! is read.
 //!
 //! The sampler is its own slot with its own lock and its own process
 //! cache, so a tick never waits behind the `apps` walk. It takes no
@@ -266,6 +268,11 @@ impl Ports {
         }
     }
 
+    /// Processes whose command line the cache holds (tests).
+    pub fn cached(&self) -> usize {
+        self.cache.len()
+    }
+
     /// The interface table for these sockets: read again when the set of
     /// addresses only it can place changed, or after a minute; not read
     /// at all while every address places itself.
@@ -324,9 +331,11 @@ impl Ports {
 
     /// Walks the user's processes and maps each wanted inode to those that
     /// hold it. With no socket of the user's to map, the map is empty
-    /// without a walk, which is not counted as one (plan 024, L5).
+    /// without a walk, which is not counted as one (plan 024, L5), and the
+    /// process cache, with the command lines of the last walk, goes too.
     fn rebuild(&mut self, root: &Root, mine: BTreeSet<u64>, now: Instant) {
         if mine.is_empty() {
+            self.cache = procfs::Cache::default();
             self.owners.clear();
             self.built_for = Some(mine);
             self.built_at = Some(now);

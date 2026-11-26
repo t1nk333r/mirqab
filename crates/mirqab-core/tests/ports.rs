@@ -13,7 +13,8 @@
 //! their scopes, and the interface table is read again when the bind
 //! addresses change. From the audit: a tick maps a worker that joined a
 //! mapped socket once the map is 30 s old. Plan 024, L5: no process is
-//! walked while the user listens on nothing.
+//! walked while the user listens on nothing, and the last walk's process
+//! cache is dropped then.
 
 use mirqab_core::Root;
 use mirqab_core::act::Recording;
@@ -619,6 +620,21 @@ fn no_process_is_walked_while_the_user_listens_on_nothing() {
     p.wants(&all);
     p.sample(&root, t0 + Duration::from_secs(35));
     assert_eq!(rebuilds(&p), 1, "a listening socket of yours");
+    assert!(p.cached() > 0, "the walk kept the processes it read");
+    // The socket closes: the map is emptied without a walk, and the cache
+    // of the last walk, every process's command line, is dropped with it.
+    let tcp = s.0.join("proc/net/tcp");
+    let text = std::fs::read_to_string(&tcp).unwrap();
+    let kept: String = text
+        .lines()
+        .filter(|l| !l.contains(" 70061 "))
+        .map(|l| format!("{l}\n"))
+        .collect();
+    std::fs::write(&tcp, kept).unwrap();
+    p.wants(&all);
+    p.sample(&root, t0 + Duration::from_secs(40));
+    assert_eq!(rebuilds(&p), 1, "nothing of yours to map again");
+    assert_eq!(p.cached(), 0);
 }
 
 #[test]

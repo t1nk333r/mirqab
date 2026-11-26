@@ -22,9 +22,9 @@
 //! for the same pids that is still too young to use. Plan 024: the
 //! executable's header is read only from a local mount (C5, C7); a process
 //! in another mount namespace is asked about only when the host's file at
-//! its path is the one it runs (C11); a desktop entry that is a FIFO or
-//! too large is skipped without waiting (C10); and `idle` drops the
-//! process cache (L27).
+//! its path, reached through local mounts only, is the one it runs (C11);
+//! a desktop entry that is a FIFO or too large is skipped without waiting
+//! (C10); and `idle` drops the process cache (L27).
 
 use mirqab_core::Root;
 use mirqab_core::desktop::{Focus, FocusedSince, focused_since};
@@ -1612,6 +1612,23 @@ fn a_process_in_another_mount_namespace_is_asked_about_only_for_the_hosts_file()
     assert_ne!(code(&mut a, 9711), "packaged");
     assert_eq!(code(&mut a, 9711), "unknown");
     assert_eq!(log(), "", "pacman was asked about another file");
+    // Review of C11: the host's path is walked only through mounts the
+    // daemon's own mountinfo lists as local, since a `stat` through a hung
+    // FUSE mount on the way would wait for good. Read as FUSE, the host's
+    // very file is no match, and nothing is asked.
+    let shown = s.0.strip_prefix("/").unwrap().join("usr/bin/bash");
+    let mnt = root.mount_id(&shown.to_string_lossy()).unwrap();
+    let mountinfo = |fstype: &str| {
+        std::fs::write(
+            s.0.join("proc/self/mountinfo"),
+            format!("{mnt} 1 0:40 / / rw - {fstype} x rw\n"),
+        )
+        .unwrap()
+    };
+    mountinfo("fuse.example");
+    assert_eq!(code(&mut a, 9710), "unknown");
+    assert_eq!(log(), "", "pacman was asked through a FUSE mount");
+    mountinfo("ext4");
     code(&mut a, 9710);
     assert!(log().contains("usr/bin/bash\n"), "{}", log());
     code(&mut a, 9712);
