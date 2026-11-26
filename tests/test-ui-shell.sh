@@ -15,6 +15,12 @@ sandbox
 build_bins
 start_daemon root-desktop
 start_broadway || not_ok "gtk4-broadwayd starts"
+# Its HTTP frontend listens on loopback only, never on every interface
+# (audit, plan 024 C3). ss lists the listener by its port, 8080 + N.
+if command -v ss >/dev/null 2>&1; then
+    listen="$(ss -ltnH "sport = :$((8080 + ${BROADWAY_DISPLAY#:}))" | awk '{ print $4 }' | xargs)"
+    is "the Broadway frontend is bound to loopback" "127.0.0.1:$((8080 + ${BROADWAY_DISPLAY#:}))" "$listen"
+fi
 
 capture timeout 20 "$BIN/mirqab-ui" --socket "$MIRQAB_SOCKET" --selftest home
 status_is "--selftest home exits 0" 0 "$STATUS"

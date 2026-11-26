@@ -2,6 +2,7 @@
 # `systemd-analyze verify --user`, with ExecStart pointed at the built
 # binaries; and a unit with a broken ExecStart fails it; and the tray icon.
 # mirqab:covers dist/**
+# mirqab:covers crates/mirqab-proto/src/strings.rs
 
 sandbox
 build_bins
