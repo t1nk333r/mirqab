@@ -147,6 +147,10 @@ struct State {
     starting_ui: Option<UiStart>,
     /// Numbers the start attempts.
     ui_starts: u64,
+    /// The last attempt whose `systemctl start` failed, and why: the opens
+    /// that joined it report that, not the display timeout (plan 024, C1).
+    /// Ids only grow, so it never matches a later attempt.
+    ui_start_failed: Option<(u64, String)>,
 }
 
 /// One attempt to start the interface. It owns the deadline and the queued
@@ -610,6 +614,7 @@ pub fn listen(opts: Options) -> Result<Server, ListenError> {
             ui: None,
             starting_ui: None,
             ui_starts: 0,
+            ui_start_failed: None,
         }),
         ui_attached: Condvar::new(),
         slots,
@@ -1741,7 +1746,9 @@ impl Inner {
                 if state.starting_ui.as_ref().is_some_and(|s| s.id == id) {
                     state.starting_ui = None;
                 }
-                // Other opens waiting on this attempt leave now too.
+                // Other opens waiting on this attempt leave now too, and
+                // with this failure.
+                state.ui_start_failed = Some((id, why.clone()));
                 self.ui_attached.notify_all();
                 return Err((Code::Failed, strings::interface_start_failed(&why)));
             }
@@ -1758,6 +1765,11 @@ impl Inner {
                 .wait_timeout(state, left)
                 .map(|(g, _)| g)
                 .unwrap_or_else(|p| p.into_inner().0);
+        }
+        if let Some((failed, why)) = &state.ui_start_failed
+            && *failed == id
+        {
+            return Err((Code::Failed, strings::interface_start_failed(why)));
         }
         if state.ui.is_some() {
             Ok(())
