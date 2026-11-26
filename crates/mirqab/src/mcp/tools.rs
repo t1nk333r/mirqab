@@ -17,7 +17,7 @@ pub struct Tool {
     pub read_only: bool,
     /// The JSON Schema of the tool's arguments.
     input: fn() -> Value,
-    handler: fn(&Path, &Value) -> Value,
+    handler: fn(Option<&Path>, &Value) -> Value,
 }
 
 pub const TOOLS: &[Tool] = &[
@@ -107,7 +107,7 @@ pub fn find(name: &str) -> Option<&'static Tool> {
     TOOLS.iter().find(|t| t.name == name)
 }
 
-pub fn call_tool(t: &Tool, socket: &Path, args: &Value) -> Value {
+pub fn call_tool(t: &Tool, socket: Option<&Path>, args: &Value) -> Value {
     (t.handler)(socket, args)
 }
 
@@ -132,7 +132,13 @@ fn failed(text: String) -> Value {
 }
 
 /// One request to the daemon; a failure is the tool error to return.
-fn fetch(socket: &Path, req: Request) -> Result<Value, Value> {
+/// With no socket to name (no `--socket`, `$MIRQAB_SOCKET` or
+/// `$XDG_RUNTIME_DIR`), starting the daemon cannot help: the error says so
+/// and how to name one (plan 024 C15).
+fn fetch(socket: Option<&Path>, req: Request) -> Result<Value, Value> {
+    let Some(socket) = socket else {
+        return Err(failed(strings::MCP_NO_SOCKET.to_string()));
+    };
     call(socket, req).map_err(|e| match e {
         CallError::NoDaemon(why) => failed(strings::no_daemon(&socket.display().to_string(), &why)),
         CallError::Timeout(secs) => failed(strings::daemon_no_answer(secs)),
@@ -140,7 +146,7 @@ fn fetch(socket: &Path, req: Request) -> Result<Value, Value> {
     })
 }
 
-fn snapshot(socket: &Path) -> Result<SystemData, Value> {
+fn snapshot(socket: Option<&Path>) -> Result<SystemData, Value> {
     let v = fetch(socket, Request::new(1, "get").with_stream(stream::SYSTEM))?;
     system(&v).map_err(failed)
 }
@@ -167,14 +173,14 @@ fn summary(d: &SystemData) -> Value {
     })
 }
 
-fn system_load(socket: &Path, _args: &Value) -> Value {
+fn system_load(socket: Option<&Path>, _args: &Value) -> Value {
     match snapshot(socket) {
         Ok(d) => done(load_lines(&d).join("\n"), summary(&d)),
         Err(e) => e,
     }
 }
 
-fn explain_slowness(socket: &Path, _args: &Value) -> Value {
+fn explain_slowness(socket: Option<&Path>, _args: &Value) -> Value {
     match snapshot(socket) {
         Ok(d) => {
             let text = format!(
@@ -190,7 +196,7 @@ fn explain_slowness(socket: &Path, _args: &Value) -> Value {
     }
 }
 
-fn top_apps(socket: &Path, args: &Value) -> Value {
+fn top_apps(socket: Option<&Path>, args: &Value) -> Value {
     let sort = match args.get("sort") {
         None => "cpu",
         Some(v) => match v.as_str() {
@@ -200,7 +206,7 @@ fn top_apps(socket: &Path, args: &Value) -> Value {
     };
     let limit = match args.get("limit") {
         None => TOP_APPS_DEFAULT,
-        Some(v) => match v.as_u64() {
+        Some(v) => match whole(v) {
             Some(n @ 1..=TOP_APPS_MAX) => n,
             _ => return failed(strings::mcp_bad_argument("limit", strings::MCP_ARG_LIMIT)),
         },
@@ -238,6 +244,18 @@ fn top_apps(socket: &Path, args: &Value) -> Value {
         },
     });
     done(apps_lines(&d, false).join("\n"), data)
+}
+
+/// A whole number at or above zero. JSON Schema's `integer` takes any
+/// number with no fraction, so a client may send `5.0`, which serde_json
+/// holds as a float (plan 024 L8). The callers' range checks still refuse
+/// what is out of range.
+fn whole(v: &Value) -> Option<u64> {
+    v.as_u64().or_else(|| {
+        v.as_f64()
+            .filter(|f| f.is_finite() && f.fract() == 0.0 && *f >= 0.0 && *f <= u64::MAX as f64)
+            .map(|f| f as u64)
+    })
 }
 
 /// A parsed daemon answer, or the tool error saying it could not be read.
@@ -280,10 +298,10 @@ fn inspect_summary(i: &Inspect) -> Value {
     })
 }
 
-fn what_is_process(socket: &Path, args: &Value) -> Value {
+fn what_is_process(socket: Option<&Path>, args: &Value) -> Value {
     let Some(pid) = args
         .get("pid")
-        .and_then(Value::as_u64)
+        .and_then(whole)
         .filter(|p| (1..=u64::from(u32::MAX)).contains(p))
     else {
         return failed(strings::MCP_PID_REQUIRED.to_string());
@@ -312,5 +330,15 @@ mod tests {
         let text = e["content"][0]["text"].as_str().unwrap();
         assert!(text.contains("restart the daemon"), "{text}");
         assert!(answer(parse_inspect(json!({"pid": 1, "name": "x"}))).is_ok());
+    }
+
+    #[test]
+    fn whole_numbers_written_with_a_zero_fraction_are_whole() {
+        assert_eq!(whole(&json!(5)), Some(5));
+        assert_eq!(whole(&json!(5.0)), Some(5));
+        assert_eq!(whole(&json!(1234.0)), Some(1234));
+        for not in [json!(5.5), json!(-1.0), json!(-1), json!("5"), json!(1e300)] {
+            assert_eq!(whole(&not), None, "{not}");
+        }
     }
 }

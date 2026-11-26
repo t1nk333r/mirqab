@@ -283,7 +283,10 @@ Part 2 (2026-11-14), where it differs from the plan:
 - The server connects to the daemon for each tool call instead of holding
   one connection: a daemon restarted between calls is found again. With
   no socket to name (no `XDG_RUNTIME_DIR`) it still starts, and each tool
-  says there is no daemon.
+  says that `XDG_RUNTIME_DIR` is not set and how to name a socket in the
+  client's settings, not to start `mirqab.socket`, which cannot help
+  (`no_runtime_dir_names_the_cause_not_the_socket_unit` in
+  `crates/mirqab/tests/mcp.rs`).
 - **No acting tool yet**, so the confirm flow's parts are in
   `mirqab-core`, tested on their own: `plan.rs` (single-use plan ids, a
   120 s expiry, only targets that were planned and are still there) and
