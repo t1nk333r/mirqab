@@ -732,7 +732,9 @@ file in `movedAside`. If the move fails, history is off with the reason in
 `status.history.error`, and the writer tries again each minute. Damage met
 again within six hours of a replacement is left in place and history is off
 until the six hours have passed, so failing storage adds at most one
-`.broken-*` file every six hours.
+`.broken-*` file every six hours. A damaged file deleted by hand is not
+waited for: the next try moves aside any `-wal` or `-shm` left behind and
+makes a new file.
 
 Rejected: one wide row per minute (every new series is a migration), a
 round-robin file format (a second storage engine for no gain), keeping
