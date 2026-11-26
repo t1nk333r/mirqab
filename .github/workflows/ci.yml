@@ -25,9 +25,12 @@ permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.ref }}
-  # A newer push to a pull request cancels its older run; a run on main is
-  # never cancelled, because it is the full suite behind affected-only PRs.
+  # A newer push to a pull request cancels its older run. A run on main is
+  # never cancelled, because it is the full suite behind affected-only PRs:
+  # each push to main gets a group of its own commit, since a group keeps
+  # one pending run and a newer queued one cancels it whatever
+  # cancel-in-progress says (plan 024 L22).
+  group: ci-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 defaults:
