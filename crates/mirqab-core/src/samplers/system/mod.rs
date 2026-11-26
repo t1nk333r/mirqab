@@ -737,7 +737,9 @@ impl Sampler for System {
     /// it averaged since the daemon started); with none, no rate. It
     /// never sleeps: the reading is stamped `now`, so a late lock cannot
     /// inflate a rate. This get's primed reading is taken whichever
-    /// answers.
+    /// answers. The queued reading taken may be another pending get's:
+    /// any of them is a reading of this machine taken before `now`, so it
+    /// is as good a baseline, and that get then takes another or none.
     fn snapshot(&mut self, root: &Root, now: Instant) -> Value {
         self.primed
             .retain(|r| now.saturating_duration_since(r.at) <= PRIMED_MAX);
